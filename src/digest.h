@@ -27,6 +27,9 @@
 #define DIGEST_TMP_SUFFIX   ".tmp"     /* staging name for atomic replacement */
 
 /* JSON keys of the digest. */
+#define DJK_CONFIG          "config"
+#define DJK_LEVELS_DIR      "levels_dir"
+#define DJK_PALETTES_DIR    "palettes_dir"
 #define DJK_TABS            "tabs"
 #define DJK_ATTRIBUTES      "attributes"
 #define DJK_SIGNATURE       "signature"
@@ -41,6 +44,10 @@
 
 /* Length of the "YYYY-MM-DD" prefix of an ISO 8601 timestamp. */
 #define DIGEST_DATE_LEN     10
+
+/* Used when the digest omits the folder names, as the game names them today. */
+#define DIGEST_DEFAULT_LEVELS_DIR   "Levels"
+#define DIGEST_DEFAULT_PALETTES_DIR "Palettes"
 
 /* One custom tab. Strings are borrowed from the parsed document. */
 typedef struct {
@@ -81,5 +88,13 @@ char *digest_cache_path(void);
 
 /* Looks up a tab by its code, case-insensitively. NULL when absent. */
 const npp_tab *digest_find(const digest *dig, const char *code);
+
+/*
+ * Global settings block, and the folder names inside a tab archive. The game
+ * may rename these one day, which is why the digest carries them.
+ */
+const json_value *digest_config(const digest *dig);
+const char *digest_levels_dir(const digest *dig);
+const char *digest_palettes_dir(const digest *dig);
 
 #endif /* TABBER_DIGEST_H */

@@ -70,6 +70,16 @@ int plat_replace_file(const char *src, const char *dst);
 
 int plat_remove_file(const char *path);
 
+/* Creates a directory, including any missing parent. Returns 0 on success
+ * (also when it already exists). */
+int plat_mkdir_p(const char *path);
+
+/*
+ * Deletes a directory and everything inside it. Returns 0 on success, and also
+ * when `path` does not exist. Handle with care: it recurses.
+ */
+int plat_remove_tree(const char *path);
+
 /*
  * Absolute, symlink-free path with the on-disk spelling (letter case
  * included). The path must exist; returns NULL if it cannot be resolved.

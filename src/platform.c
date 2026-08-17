@@ -193,6 +193,71 @@ int plat_remove_file(const char *path)
     return rc;
 }
 
+/* Creates a single directory; an existing one counts as success. */
+static int plat_mkdir_one(const char *path)
+{
+    wchar_t *wpath = wide_from_utf8(path);
+    int rc = -1;
+
+    if (wpath) {
+        if (CreateDirectoryW(wpath, NULL) || GetLastError() == ERROR_ALREADY_EXISTS)
+            rc = 0;
+    }
+    free(wpath);
+    return rc;
+}
+
+int plat_remove_tree(const char *path)
+{
+    WIN32_FIND_DATAW info;
+    HANDLE search;
+    wchar_t *wpattern, *wpath;
+    char *pattern;
+    int failures = 0;
+
+    if (!plat_is_dir(path))
+        return plat_is_file(path) ? plat_remove_file(path) : 0;
+
+    pattern = path_join(path, "*");
+    wpattern = wide_from_utf8(pattern);
+    free(pattern);
+    if (!wpattern)
+        return -1;
+
+    search = FindFirstFileW(wpattern, &info);
+    free(wpattern);
+    if (search != INVALID_HANDLE_VALUE) {
+        do {
+            char *name, *child;
+
+            if (wcscmp(info.cFileName, L".") == 0 || wcscmp(info.cFileName, L"..") == 0)
+                continue;
+            name = utf8_from_wide(info.cFileName);
+            if (!name) {
+                failures++;
+                continue;
+            }
+            child = path_join(path, name);
+            free(name);
+
+            if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                failures += plat_remove_tree(child) != 0;
+            else
+                failures += plat_remove_file(child) != 0;
+            free(child);
+        } while (FindNextFileW(search, &info));
+        FindClose(search);
+    }
+
+    wpath = wide_from_utf8(path);
+    if (!wpath)
+        return -1;
+    if (!RemoveDirectoryW(wpath))
+        failures++;
+    free(wpath);
+    return failures ? -1 : 0;
+}
+
 /* Shared attribute query for plat_is_dir / plat_is_file. */
 static DWORD win_attrs(const char *path)
 {
@@ -313,6 +378,8 @@ done:
 /* ====================================================================== */
 #else
 
+#include <dirent.h>
+#include <errno.h>
 #include <limits.h>
 #include <pwd.h>
 #include <sys/stat.h>
@@ -412,6 +479,45 @@ int plat_remove_file(const char *path)
     return unlink(path) == 0 ? 0 : -1;
 }
 
+/* Creates a single directory; an existing one counts as success. */
+static int plat_mkdir_one(const char *path)
+{
+    if (mkdir(path, 0777) == 0 || errno == EEXIST)
+        return 0;
+    return -1;
+}
+
+int plat_remove_tree(const char *path)
+{
+    DIR *dir;
+    struct dirent *ent;
+    int failures = 0;
+
+    if (!plat_is_dir(path))
+        return plat_is_file(path) ? plat_remove_file(path) : 0;
+
+    dir = opendir(path);
+    if (dir) {
+        while ((ent = readdir(dir)) != NULL) {
+            char *child;
+
+            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+                continue;
+            child = path_join(path, ent->d_name);
+            if (plat_is_dir(child))
+                failures += plat_remove_tree(child) != 0;
+            else
+                failures += plat_remove_file(child) != 0;
+            free(child);
+        }
+        closedir(dir);
+    }
+
+    if (rmdir(path) != 0)
+        failures++;
+    return failures ? -1 : 0;
+}
+
 int plat_is_dir(const char *path)
 {
     struct stat st;
@@ -496,6 +602,43 @@ int plat_write_file(const char *path, const void *data, size_t len)
     if (fclose(f) != 0 || written != len)
         return -1;
     return 0;
+}
+
+int plat_mkdir_p(const char *path)
+{
+    char *work;
+    size_t i;
+    int rc = 0;
+
+    if (!path || !*path)
+        return -1;
+    if (plat_is_dir(path))
+        return 0;
+
+    work = str_dup(path);
+    path_to_native(work);
+
+    /* Create each ancestor in turn by temporarily cutting the path short.
+     * Start at 1 so a leading separator (or "C:") is never treated as a name. */
+    for (i = 1; work[i]; i++) {
+        if (work[i] != PATH_SEP)
+            continue;
+#ifdef _WIN32
+        if (i == 2 && work[1] == ':')
+            continue;   /* "C:\" is a root, not a directory to create */
+#endif
+        work[i] = '\0';
+        if (*work && plat_mkdir_one(work) != 0 && !plat_is_dir(work)) {
+            rc = -1;
+            break;
+        }
+        work[i] = PATH_SEP;
+    }
+    if (rc == 0)
+        rc = plat_mkdir_one(work);
+
+    free(work);
+    return rc;
 }
 
 char *path_dirname(const char *path)

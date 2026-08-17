@@ -24,6 +24,7 @@ tabber [options] [command]
   paths            Locate N++'s installation and personal directories (default)
   list             List the custom tabs available in the digest
   update           Download the latest digest of custom tabs
+  fetch CODE       Download, verify and unpack the custom tab CODE
 
   -b, --bare       Machine-readable output: paths or tab-separated fields only
   -v, --verbose    Print extra detail
@@ -43,8 +44,12 @@ and warnings go to stderr, so stdout stays parseable.
 | `src/main.c`     | CLI entry point and argument parsing |
 | `src/paths.c/.h` | Discovery of N++'s installation and personal directories; all Steam/N++ layout constants |
 | `src/digest.c/.h`| The custom tab catalogue: fetch, cache, parse, look up |
+| `src/tabs.c/.h`  | Downloading, verifying and unpacking a custom tab |
 | `src/kv.c/.h`    | Parser for Valve's KeyValues format (`.vdf`, `.acf`) |
 | `src/json.c/.h`  | Minimal JSON parser (RFC 8259) |
+| `src/zip.c/.h`   | In-memory ZIP reader with CRC-32 verification |
+| `src/inflate.c/.h` | DEFLATE decompressor (RFC 1951) |
+| `src/md5.c/.h`   | MD5 digest (RFC 1321), for download integrity |
 | `src/net.c/.h`   | HTTPS client: WinHTTP on Windows, libcurl elsewhere |
 | `src/platform.c/.h` | OS abstraction: filesystem, environment, Windows registry, UTF-8 paths |
 | `src/util.c/.h`  | Allocation, string, buffer and error helpers |
@@ -92,11 +97,34 @@ serves HTML). It is cached as `digest.json` **next to the executable**.
 `DIGEST_URL` can be overridden at build time (`-DDIGEST_URL='"…"'`) to point the
 tool at a staging server.
 
+## Fetching a custom tab
+
+`tabber fetch CODE` downloads the tab's ZIP from the link in the digest and
+unpacks it into `tabs/<code>/` **next to the executable**, preserving the
+archive's own layout (`Levels/`, `Palettes/<name>/`, `AUTHORS`, `SCORES`).
+
+Everything is checked in memory, before a single byte reaches the disk:
+
+| Check | Against |
+| --- | --- |
+| Downloaded size | `download.size` |
+| MD5 of the archive | `download.md5` |
+| Total uncompressed size | `disk.size` |
+| Level files present under `config.levels_dir` | `disk.level_files` |
+| Challenge files present under `config.levels_dir` | `disk.challenge_files` |
+| CRC-32 of every entry | the archive's own central directory |
+| Entry paths | rejected if absolute or containing `..` |
+
+Only once all of them pass is the tab written out, replacing any previous copy
+of that same tab. A failed fetch reports the reason and leaves nothing behind;
+a tab that was already installed and verified earlier is left untouched rather
+than being deleted because a later download went wrong.
+
 ## Status
 
 - [x] Locate the installation and personal directories
 - [x] Fetch, cache and list the custom tab digest
-- [ ] Download and verify custom tab ZIPs
+- [x] Download, verify and unpack custom tab ZIPs
 - [ ] Swap level and challenge files
 - [ ] Patch the main library to redirect server queries
 - [ ] Install custom palettes

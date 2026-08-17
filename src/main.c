@@ -5,6 +5,7 @@
  * available custom tabs (the digest) up to date. Later stages (level/challenge
  * swapping, library patching, palettes, savefile, texts) build on both.
  */
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,7 @@
 #include "digest.h"
 #include "paths.h"
 #include "platform.h"
+#include "tabs.h"
 #include "util.h"
 #include "version.h"
 
@@ -30,6 +32,9 @@
 #define COL_NAME_MAX    32     /* longer values are ellipsised    */
 #define COL_AUTHORS_MAX 28
 #define COL_ELLIPSIS    "..."
+
+/* Width of the step labels in the `fetch` log. */
+#define FETCH_LABEL_WIDTH 9
 
 /* Exit codes. */
 #define EXIT_OK         0
@@ -52,6 +57,7 @@ static void print_usage(FILE *out)
         "  paths            Locate N++'s installation and personal directories (default)\n"
         "  list             List the custom tabs available in the digest\n"
         "  update           Download the latest digest of custom tabs\n"
+        "  fetch CODE       Download, verify and unpack the custom tab CODE\n"
         "\n"
         "Options:\n"
         "  -b, --bare       Machine-readable output: paths or tab-separated fields only\n"
@@ -285,12 +291,86 @@ static int cmd_list(const options *opts)
     return EXIT_OK;
 }
 
+/* ---- fetch ------------------------------------------------------------- */
+
+/* Prints one aligned "  label  detail" line of the fetch log. */
+static void log_step(const char *label, const char *fmt, ...)
+{
+    va_list ap;
+
+    printf("  %-*s ", FETCH_LABEL_WIDTH, label);
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+    fputc('\n', stdout);
+}
+
+static int cmd_fetch(const options *opts, const char *code)
+{
+    char err[TB_ERR_LEN];
+    digest *dig;
+    const npp_tab *tab;
+    tab_report report;
+    char upper[16];
+    int rc = EXIT_FAILED;
+
+    if (!code) {
+        fprintf(stderr, TABBER_NAME ": 'fetch' needs a tab code, e.g. '%s fetch met'\n",
+                TABBER_NAME);
+        return EXIT_USAGE;
+    }
+
+    if (!opts->offline && digest_ensure_fresh(0, err, sizeof err) != 0)
+        fprintf(stderr, TABBER_NAME ": could not refresh the digest (%s), using the cached copy\n", err);
+
+    dig = digest_load(err, sizeof err);
+    if (!dig) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        return EXIT_FAILED;
+    }
+
+    tab = digest_find(dig, code);
+    if (!tab) {
+        fprintf(stderr, TABBER_NAME ": no custom tab with code '%s' (run '%s list' to see them all)\n",
+                code, TABBER_NAME);
+        digest_free(dig);
+        return EXIT_NOT_FOUND;
+    }
+
+    code_upper(upper, sizeof upper, tab->code);
+    printf("Fetching %s (%s)...\n", upper, tab->name);
+
+    if (tab_fetch(dig, tab, &report, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s could not be installed: %s\n", upper, err);
+        digest_free(dig);
+        return EXIT_FAILED;
+    }
+
+    if (opts->verbose)
+        log_step("source", "%s", report.link);
+    log_step("download", "%lu bytes, MD5 %s (ok)",
+             (unsigned long)report.zip_bytes, report.md5);
+    log_step("archive", "%lu entries, %lu bytes uncompressed (ok)",
+             (unsigned long)report.entry_count, (unsigned long)report.disk_bytes);
+    log_step("contents", "%lu level file(s), %lu challenge file(s) in %s/ (ok)",
+             (unsigned long)report.level_files, (unsigned long)report.challenge_files,
+             digest_levels_dir(dig));
+    log_step("extracted", "%lu file(s) to %s", (unsigned long)report.file_count, report.dir);
+    printf("%s fetched successfully.\n", upper);
+
+    rc = EXIT_OK;
+    tab_report_free(&report);
+    digest_free(dig);
+    return rc;
+}
+
 /* ---- Entry point ------------------------------------------------------- */
 
 int main(int argc, char **argv)
 {
     options opts = {0};
-    const char *command = "paths";
+    const char *command = NULL;
+    const char *argument = NULL;
     int i;
 
     plat_init();
@@ -310,18 +390,30 @@ int main(int argc, char **argv)
             opts.verbose = 1;
         } else if (!strcmp(arg, "-o") || !strcmp(arg, "--offline")) {
             opts.offline = 1;
-        } else if (!strcmp(arg, "paths") || !strcmp(arg, "list") || !strcmp(arg, "update")) {
-            command = arg;
-        } else {
-            fprintf(stderr, TABBER_NAME ": unknown argument '%s'\n", arg);
+        } else if (arg[0] == '-') {
+            fprintf(stderr, TABBER_NAME ": unknown option '%s'\n", arg);
             print_usage(stderr);
+            return EXIT_USAGE;
+        } else if (!command) {
+            command = arg;         /* first bare word is the command  */
+        } else if (!argument) {
+            argument = arg;        /* second one is its argument      */
+        } else {
+            fprintf(stderr, TABBER_NAME ": unexpected argument '%s'\n", arg);
             return EXIT_USAGE;
         }
     }
 
+    if (!command || !strcmp(command, "paths"))
+        return cmd_paths(&opts);
     if (!strcmp(command, "list"))
         return cmd_list(&opts);
     if (!strcmp(command, "update"))
         return cmd_update(&opts);
-    return cmd_paths(&opts);
+    if (!strcmp(command, "fetch"))
+        return cmd_fetch(&opts, argument);
+
+    fprintf(stderr, TABBER_NAME ": unknown command '%s'\n", command);
+    print_usage(stderr);
+    return EXIT_USAGE;
 }

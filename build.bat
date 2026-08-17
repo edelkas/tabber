@@ -5,7 +5,7 @@ setlocal
 cd /d "%~dp0"
 
 set "OUTDIR=build"
-set "SOURCES=src\main.c src\util.c src\platform.c src\kv.c src\json.c src\net.c src\paths.c src\digest.c"
+set "SOURCES=src\main.c src\util.c src\platform.c src\kv.c src\json.c src\net.c src\md5.c src\inflate.c src\zip.c src\paths.c src\digest.c src\tabs.c"
 set "CFLAGS=/nologo /W4 /O2 /std:c11 /D_CRT_SECURE_NO_WARNINGS"
 
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"

@@ -162,6 +162,21 @@ void digest_free(digest *dig)
     free(dig);
 }
 
+const json_value *digest_config(const digest *dig)
+{
+    return dig ? json_get(dig->root, DJK_CONFIG) : NULL;
+}
+
+const char *digest_levels_dir(const digest *dig)
+{
+    return json_get_string(digest_config(dig), DJK_LEVELS_DIR, DIGEST_DEFAULT_LEVELS_DIR);
+}
+
+const char *digest_palettes_dir(const digest *dig)
+{
+    return json_get_string(digest_config(dig), DJK_PALETTES_DIR, DIGEST_DEFAULT_PALETTES_DIR);
+}
+
 const npp_tab *digest_find(const digest *dig, const char *code)
 {
     size_t i;
