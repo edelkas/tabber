@@ -173,6 +173,21 @@ void config_set_installed(config *cfg, int id, const char *code)
     json_object_set(entry, CJK_DOWNLOADED, json_new_bool(1));
 }
 
+void config_set_uninstalled(config *cfg, int id, const char *code)
+{
+    json_value *entry = config_tab_entry(cfg, id, code);
+    char now[TB_TIMESTAMP_LEN + 1];
+
+    if (!entry)
+        return;
+    time_now_iso8601(now, sizeof now);
+
+    json_object_set(entry, CJK_ID, json_new_number(id));
+    json_object_set(entry, CJK_INSTALLED, json_new_bool(0));
+    json_object_set(entry, CJK_UNINSTALL_DATE, json_new_string(now));
+    /* CJK_INSTALL_DATE stays: it records when the tab was last installed. */
+}
+
 int config_set_removed(config *cfg, int id, const char *code)
 {
     json_value *entry = config_find_tab(cfg, code);

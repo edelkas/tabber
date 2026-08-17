@@ -292,3 +292,200 @@ void install_report_free(install_report *report)
     str_list_free(&report->skipped);
     report->game_levels_dir = report->tab_levels_dir = NULL;
 }
+
+/* ---- Uninstall --------------------------------------------------------- */
+
+/*
+ * The files this tab ships according to the digest, split into the ones the
+ * game reads and the ones it does not. Taking the list from the digest instead
+ * of the tab folder means an uninstall still works once the download is gone.
+ */
+static void collect_shipped_files(const digest *dig, const npp_tab *tab,
+                                  str_list *wanted, str_list *skipped)
+{
+    const json_value *cfg_node = digest_config(dig);
+    const json_value *disk = json_get(tab->node, TJK_DISK);
+    str_list supported = {0}, shipped = {0};
+    size_t i;
+
+    json_array_to_list(json_get(cfg_node, DJK_LEVEL_FILES), &supported);
+    json_array_to_list(json_get(cfg_node, DJK_CHALLENGE_FILES), &supported);
+    json_array_to_list(json_get(disk, TJK_LEVEL_FILES), &shipped);
+    json_array_to_list(json_get(disk, TJK_CHALLENGE_FILES), &shipped);
+
+    for (i = 0; i < shipped.count; i++) {
+        if (str_list_contains(&supported, shipped.items[i]))
+            str_list_push(wanted, str_dup(shipped.items[i]));
+        else
+            str_list_push(skipped, str_dup(shipped.items[i]));
+    }
+
+    str_list_free(&supported);
+    str_list_free(&shipped);
+}
+
+/*
+ * Collects backups left in the game folder that this uninstall did not handle.
+ * They are a sign of drift (an older install, a tab whose file list changed)
+ * and worth telling the user about, without failing the uninstall.
+ */
+static void collect_leftover_backups(const char *game_dir, const str_list *handled,
+                                     str_list *leftovers)
+{
+    str_list entries = {0};
+    size_t i, suffix_len = sizeof(INSTALL_BACKUP_SUFFIX) - 1;
+
+    if (plat_list_dir(game_dir, &entries) != 0)
+        return;
+
+    for (i = 0; i < entries.count; i++) {
+        const char *name = entries.items[i];
+        size_t len = strlen(name);
+        char *original;
+
+        if (len <= suffix_len || strcmp(name + len - suffix_len, INSTALL_BACKUP_SUFFIX) != 0)
+            continue;
+        original = str_fmt("%.*s", (int)(len - suffix_len), name);
+        if (!str_list_contains(handled, original))
+            str_list_push(leftovers, original);
+        else
+            free(original);
+    }
+
+    str_list_free(&entries);
+}
+
+int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
+                  uninstall_report *report, char *err, size_t errsz)
+{
+    const char *levels_name = digest_levels_dir(dig);
+    str_list wanted = {0}, missing = {0}, no_backup = {0};
+    install_file *files = NULL;
+    size_t count = 0, i, restored = 0;
+    char *game_dir;
+    char cfg_err[TB_ERR_LEN];
+    config *state;
+    int rc = -1;
+
+    memset(report, 0, sizeof(*report));
+
+    game_dir = path_join(paths->install_dir, NPP_ASSETS_SUBDIR);
+    {
+        char *levels = path_join(game_dir, levels_name);
+        free(game_dir);
+        game_dir = levels;
+    }
+    if (!plat_is_dir(game_dir)) {
+        err_set(err, errsz, "the game has no '%s' folder at '%s'", levels_name, game_dir);
+        goto done;
+    }
+
+    collect_shipped_files(dig, tab, &wanted, &report->skipped);
+    if (wanted.count == 0) {
+        err_set(err, errsz, "the digest lists no installable files for this tab");
+        goto done;
+    }
+
+    files = xmalloc(wanted.count * sizeof(*files));
+    for (i = 0; i < wanted.count; i++) {
+        files[count].name = str_dup(wanted.items[i]);
+        files[count].target = path_join(game_dir, wanted.items[i]);
+        files[count].backup = str_fmt("%s%s", files[count].target, INSTALL_BACKUP_SUFFIX);
+        files[count].source = NULL;
+        files[count].data = NULL;
+        files[count].len = 0;
+        count++;
+    }
+
+    /* --- Checks, all of them, before anything moves --- */
+    for (i = 0; i < count; i++) {
+        if (!plat_is_file(files[i].target))
+            str_list_push(&missing, str_dup(files[i].name));
+        if (!plat_is_file(files[i].backup))
+            str_list_push(&no_backup, str_dup(files[i].name));
+    }
+    if (missing.count > 0) {
+        char *names = list_to_text(&missing);
+        err_set(err, errsz, "%u of the tab's file(s) are not in the game folder: %s. "
+                            "Is this tab really installed?",
+                (unsigned)missing.count, names);
+        free(names);
+        goto done;
+    }
+    if (no_backup.count > 0) {
+        char *names = list_to_text(&no_backup);
+        err_set(err, errsz, "%u original(s) are missing their '%s' backup: %s. "
+                            "Restoring them would leave the game without those files",
+                (unsigned)no_backup.count, INSTALL_BACKUP_SUFFIX, names);
+        free(names);
+        goto done;
+    }
+    if (!dir_is_writable(game_dir)) {
+        err_set(err, errsz, "cannot write to '%s'; check the folder's permissions "
+                            "and that the game is not running", game_dir);
+        goto done;
+    }
+
+    /* Keep the tab's copies in memory, so a failure part-way can be undone. */
+    for (i = 0; i < count; i++) {
+        files[i].data = plat_read_file(files[i].target, &files[i].len);
+        if (!files[i].data) {
+            err_set(err, errsz, "cannot read '%s'", files[i].target);
+            goto done;
+        }
+    }
+
+    /* --- Apply: one atomic rename per file puts the original back --- */
+    for (i = 0; i < count; i++) {
+        if (plat_replace_file(files[i].backup, files[i].target) != 0) {
+            err_set(err, errsz, "cannot restore '%s' from '%s'; is the game running?",
+                    files[i].target, files[i].backup);
+            /* Put back what was already restored: move the original aside
+             * again and rewrite the tab's copy from memory. */
+            while (restored-- > 0) {
+                plat_replace_file(files[restored].target, files[restored].backup);
+                plat_write_file(files[restored].target, files[restored].data,
+                                files[restored].len);
+            }
+            goto done;
+        }
+        restored++;
+    }
+
+    report->restored_count = restored;
+    report->game_levels_dir = game_dir;
+    collect_leftover_backups(report->game_levels_dir, &wanted, &report->leftovers);
+    game_dir = NULL;                 /* ownership moves to the report */
+
+    /* --- Record it. install_date is left alone: it is still true. --- */
+    state = config_load(cfg_err, sizeof cfg_err);
+    if (!state) {
+        err_set(report->warning, sizeof report->warning,
+                "the uninstall was not recorded: %s", cfg_err);
+    } else {
+        config_set_uninstalled(state, tab->id, tab->code);
+        if (config_save(state, cfg_err, sizeof cfg_err) != 0)
+            err_set(report->warning, sizeof report->warning,
+                    "the uninstall was not recorded: %s", cfg_err);
+        else
+            snprintf(report->state_path, sizeof report->state_path, "%s", state->path);
+        config_free(state);
+    }
+    rc = 0;
+
+done:
+    install_files_free(files, count);
+    str_list_free(&wanted);
+    str_list_free(&missing);
+    str_list_free(&no_backup);
+    free(game_dir);
+    return rc;
+}
+
+void uninstall_report_free(uninstall_report *report)
+{
+    free(report->game_levels_dir);
+    str_list_free(&report->skipped);
+    str_list_free(&report->leftovers);
+    report->game_levels_dir = NULL;
+}

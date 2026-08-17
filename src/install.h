@@ -60,4 +60,24 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
 
 void install_report_free(install_report *report);
 
+typedef struct {
+    char *game_levels_dir;      /* folder that was restored                */
+    size_t restored_count;      /* originals put back                      */
+    str_list skipped;           /* shipped files the game does not support */
+    str_list leftovers;         /* other backups still in the game folder  */
+    char state_path[512];       /* state file updated, empty if none       */
+    char warning[TB_ERR_LEN];   /* non-fatal problem, empty if none        */
+} uninstall_report;
+
+/*
+ * Puts the game back as it was: deletes the tab's files and renames each
+ * original back over them. The file list comes from the digest rather than the
+ * tab store, so uninstalling works even after the tab's download was removed.
+ * Returns 0 on success, or -1 with a reason in `err` and nothing changed.
+ */
+int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
+                  uninstall_report *report, char *err, size_t errsz);
+
+void uninstall_report_free(uninstall_report *report);
+
 #endif /* TABBER_INSTALL_H */

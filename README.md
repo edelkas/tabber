@@ -27,6 +27,7 @@ tabber [options] [command]
   fetch CODE       Download, verify and unpack the custom tab CODE
   remove CODE      Delete the downloaded files of the custom tab CODE
   install CODE     Install the custom tab CODE into the game (fetching it if needed)
+  uninstall CODE   Restore the game's original files, undoing an install
 
   -b, --bare       Machine-readable output: paths or tab-separated fields only
   -v, --verbose    Print extra detail
@@ -167,6 +168,29 @@ overwrite a pristine original with a modded file. If a rename or write still
 fails part-way through, the files already done are rolled back, so a failed
 install leaves the game folder exactly as it was.
 
+## Uninstalling
+
+`tabber uninstall CODE` puts the game back: it deletes the tab's files and
+renames each `OG` original back over them, one atomic rename per file. The list
+of files comes from the digest (`disk.level_files` and `disk.challenge_files`,
+again limited to what `config` says the game reads), not from the tab store, so
+an uninstall still works after `remove` has deleted the download.
+
+Both checks run before anything moves, and either aborts the whole thing:
+
+| Check | Abort reason |
+| --- | --- |
+| Every file the tab installed is in the game folder | the tab does not look installed |
+| Every one of them has its `OG` backup | restoring would leave the game short of files |
+
+The files on disk are the authority, not `config.json`: a state file that has
+drifted out of step will not stop a real installation from being undone.
+Afterwards `installed` goes back to false and `uninstall_date` is stamped, while
+`install_date` is kept, so when the tab was last installed is not lost.
+
+Backups left in the game folder that were not part of this tab are reported as
+warnings, since they point at an older install or a tab whose file list changed.
+
 ## State
 
 `config.json`, next to the executable, holds the tool's configuration and what
@@ -207,8 +231,7 @@ alone rather than overwriting whatever is in there.
 - [x] Download, verify and unpack custom tab ZIPs
 - [x] Track configuration and per-tab state in `config.json`
 - [x] Remove a downloaded tab
-- [x] Swap level and challenge files (install)
-- [ ] Uninstall: restore the `OG` originals
+- [x] Swap level and challenge files (install / uninstall)
 - [ ] Patch the main library to redirect server queries
 - [ ] Install custom palettes
 - [ ] Swap the savefile

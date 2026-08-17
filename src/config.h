@@ -77,6 +77,13 @@ void config_set_downloaded(config *cfg, int id, const char *code);
 void config_set_installed(config *cfg, int id, const char *code);
 
 /*
+ * Records that a tab has just been uninstalled: clears "installed" and stamps
+ * "uninstall_date". "install_date" is deliberately kept, so when the tab was
+ * last installed is not lost.
+ */
+void config_set_uninstalled(config *cfg, int id, const char *code);
+
+/*
  * Records that a tab's files have been removed: clears "downloaded" and stamps
  * "remove_date". The entry itself is kept, so a later re-download still has its
  * history. `id` may be -1 when unknown, in which case an entry is only updated,

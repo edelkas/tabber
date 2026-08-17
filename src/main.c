@@ -62,6 +62,7 @@ static void print_usage(FILE *out)
         "  fetch CODE       Download, verify and unpack the custom tab CODE\n"
         "  remove CODE      Delete the downloaded files of the custom tab CODE\n"
         "  install CODE     Install the custom tab CODE into the game (fetching it if needed)\n"
+        "  uninstall CODE   Restore the game's original files, undoing an install\n"
         "\n"
         "Options:\n"
         "  -b, --bare       Machine-readable output: paths or tab-separated fields only\n"
@@ -493,6 +494,82 @@ done:
     return rc;
 }
 
+/* ---- uninstall --------------------------------------------------------- */
+
+static int cmd_uninstall(const options *opts, const char *code)
+{
+    char err[TB_ERR_LEN];
+    digest *dig;
+    const npp_tab *tab;
+    npp_paths paths = {0};
+    uninstall_report report;
+    char upper[16];
+    size_t i;
+    int rc = EXIT_FAILED;
+
+    if (!code) {
+        fprintf(stderr, TABBER_NAME ": 'uninstall' needs a tab code, e.g. '%s uninstall met'\n",
+                TABBER_NAME);
+        return EXIT_USAGE;
+    }
+
+    /* Uninstalling is a local repair job: use whatever digest is at hand. */
+    (void)opts;
+    dig = digest_load(err, sizeof err);
+    if (!dig) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        return EXIT_FAILED;
+    }
+
+    tab = digest_find(dig, code);
+    if (!tab) {
+        fprintf(stderr, TABBER_NAME ": no custom tab with code '%s' (run '%s list' to see them all)\n",
+                code, TABBER_NAME);
+        digest_free(dig);
+        return EXIT_NOT_FOUND;
+    }
+    code_upper(upper, sizeof upper, tab->code);
+
+    if (npp_find_game_dirs(&paths, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        goto done;
+    }
+
+    printf("Uninstalling %s (%s)...\n", upper, tab->name);
+
+    /* The files on disk decide, not the state file: a config that drifted out
+     * of step must not stop a real installation from being undone. */
+    if (tab_uninstall(dig, tab, &paths, &report, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s could not be uninstalled: %s\n", upper, err);
+        uninstall_report_free(&report);
+        goto done;
+    }
+
+    for (i = 0; i < report.skipped.count; i++)
+        fprintf(stderr, TABBER_NAME ": warning: '%s' is not a level or challenge file "
+                        "the game reads, skipped\n", report.skipped.items[i]);
+    for (i = 0; i < report.leftovers.count; i++)
+        fprintf(stderr, TABBER_NAME ": warning: '%s%s' is still in the game folder and "
+                        "was not part of this tab\n", report.leftovers.items[i],
+                INSTALL_BACKUP_SUFFIX);
+
+    log_step("target", "%s", report.game_levels_dir);
+    log_step("restored", "%lu original file(s)", (unsigned long)report.restored_count);
+    if (report.state_path[0])
+        log_step("recorded", "uninstall in %s", report.state_path);
+    if (report.warning[0])
+        fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
+    printf("%s uninstalled successfully.\n", upper);
+
+    uninstall_report_free(&report);
+    rc = EXIT_OK;
+
+done:
+    npp_paths_free(&paths);
+    digest_free(dig);
+    return rc;
+}
+
 /* ---- remove ------------------------------------------------------------ */
 
 static int cmd_remove(const options *opts, const char *code)
@@ -609,6 +686,8 @@ int main(int argc, char **argv)
         return cmd_remove(&opts, argument);
     if (!strcmp(command, "install"))
         return cmd_install(&opts, argument);
+    if (!strcmp(command, "uninstall"))
+        return cmd_uninstall(&opts, argument);
 
     fprintf(stderr, TABBER_NAME ": unknown command '%s'\n", command);
     print_usage(stderr);
