@@ -8,33 +8,6 @@
 
 /* ---- Small helpers ----------------------------------------------------- */
 
-/* Growable list of owned strings, used for candidate directories. */
-typedef struct {
-    char **items;
-    size_t count, cap;
-} str_list;
-
-static void list_push(str_list *l, char *s)
-{
-    if (!s)
-        return;   /* tolerate failed lookups: nothing to add */
-    if (l->count == l->cap) {
-        l->cap = l->cap ? l->cap * 2 : 8;
-        l->items = xrealloc(l->items, l->cap * sizeof(*l->items));
-    }
-    l->items[l->count++] = s;
-}
-
-static void list_free(str_list *l)
-{
-    size_t i;
-    for (i = 0; i < l->count; i++)
-        free(l->items[i]);
-    free(l->items);
-    l->items = NULL;
-    l->count = l->cap = 0;
-}
-
 static char *join3(const char *a, const char *b, const char *c)
 {
     char *ab = path_join(a, b);
@@ -99,42 +72,42 @@ static void collect_steam_candidates(str_list *out)
 {
 #ifdef _WIN32
     /* The registry covers non-default install locations, so it comes first. */
-    list_push(out, plat_reg_read_str(PLAT_REG_HKLM, STEAM_REG_SUBKEY_WOW64,
+    str_list_push(out, plat_reg_read_str(PLAT_REG_HKLM, STEAM_REG_SUBKEY_WOW64,
                                      STEAM_REG_VALUE_INSTALL));
-    list_push(out, plat_reg_read_str(PLAT_REG_HKLM, STEAM_REG_SUBKEY_NATIVE,
+    str_list_push(out, plat_reg_read_str(PLAT_REG_HKLM, STEAM_REG_SUBKEY_NATIVE,
                                      STEAM_REG_VALUE_INSTALL));
-    list_push(out, plat_reg_read_str(PLAT_REG_HKCU, STEAM_REG_SUBKEY_USER,
+    str_list_push(out, plat_reg_read_str(PLAT_REG_HKCU, STEAM_REG_SUBKEY_USER,
                                      STEAM_REG_VALUE_PATH));
 
     /* Default locations: %PROGRAMFILES(X86)%\Steam on 64-bit, %PROGRAMFILES%\Steam on 32-bit. */
     {
         char *progfiles = plat_getenv(WIN_ENV_PROGFILES_X86);
         if (progfiles) {
-            list_push(out, path_join(progfiles, STEAM_DEFAULT_DIRNAME));
+            str_list_push(out, path_join(progfiles, STEAM_DEFAULT_DIRNAME));
             free(progfiles);
         }
         progfiles = plat_getenv(WIN_ENV_PROGFILES);
         if (progfiles) {
-            list_push(out, path_join(progfiles, STEAM_DEFAULT_DIRNAME));
+            str_list_push(out, path_join(progfiles, STEAM_DEFAULT_DIRNAME));
             free(progfiles);
         }
     }
 
 #elif defined(__APPLE__)
-    list_push(out, home_join(MACOS_STEAM_SUPPORT));
+    str_list_push(out, home_join(MACOS_STEAM_SUPPORT));
 
 #else /* Linux, Steam Deck */
     {
         char *xdg = plat_getenv(XDG_ENV_DATA_HOME);
         if (xdg) {
-            list_push(out, path_join(xdg, STEAM_DEFAULT_DIRNAME));
+            str_list_push(out, path_join(xdg, STEAM_DEFAULT_DIRNAME));
             free(xdg);
         } else {
-            list_push(out, home_join(XDG_DEFAULT_DATA_HOME "/" STEAM_DEFAULT_DIRNAME));
+            str_list_push(out, home_join(XDG_DEFAULT_DATA_HOME "/" STEAM_DEFAULT_DIRNAME));
         }
-        list_push(out, home_join(LINUX_STEAM_ALT_1));
-        list_push(out, home_join(LINUX_STEAM_ALT_2));
-        list_push(out, home_join(LINUX_STEAM_FLATPAK));
+        str_list_push(out, home_join(LINUX_STEAM_ALT_1));
+        str_list_push(out, home_join(LINUX_STEAM_ALT_2));
+        str_list_push(out, home_join(LINUX_STEAM_FLATPAK));
     }
 #endif
 }
@@ -159,7 +132,7 @@ static char *find_steam_dir(char *err, size_t errsz)
         err_set(err, errsz, "could not locate Steam (checked %u location(s) on %s)",
                 (unsigned)candidates.count, PLAT_NAME);
     }
-    list_free(&candidates);
+    str_list_free(&candidates);
     return found;
 }
 
@@ -201,7 +174,7 @@ static char *find_library_dir(const char *steam_dir, char *err, size_t errsz)
     size_t i;
 
     /* The Steam folder is always an implicit library candidate. */
-    list_push(&candidates, str_dup(steam_dir));
+    str_list_push(&candidates, str_dup(steam_dir));
 
     vdf_path = join3(steam_dir, STEAM_APPS_SUBDIR, STEAM_LIBFOLDERS_FILE);
     root = kv_parse_file(vdf_path, kv_err, sizeof kv_err);
@@ -224,7 +197,7 @@ static char *find_library_dir(const char *steam_dir, char *err, size_t errsz)
                 free(dir);
                 break;
             }
-            list_push(&candidates, dir);
+            str_list_push(&candidates, dir);
         }
         kv_free(root);
     }
@@ -240,7 +213,7 @@ static char *find_library_dir(const char *steam_dir, char *err, size_t errsz)
                 NPP_STEAM_APPID, vdf_path);
     }
     free(vdf_path);
-    list_free(&candidates);
+    str_list_free(&candidates);
     return found;
 }
 
@@ -326,13 +299,13 @@ static void collect_personal_candidates(str_list *out)
     {
         char *docs = plat_documents_dir();
         if (docs) {
-            list_push(out, path_join(docs, NPP_PERSONAL_VENDOR));
+            str_list_push(out, path_join(docs, NPP_PERSONAL_VENDOR));
             free(docs);
         }
     }
 
 #elif defined(__APPLE__)
-    list_push(out, home_join("Documents/" NPP_PERSONAL_VENDOR));
+    str_list_push(out, home_join("Documents/" NPP_PERSONAL_VENDOR));
 
 #else /* Linux, Steam Deck */
     {
@@ -342,12 +315,12 @@ static void collect_personal_candidates(str_list *out)
 
         if (data_home) {
             /* Native build. */
-            list_push(out, path_join(data_home, NPP_PERSONAL_VENDOR));
+            str_list_push(out, path_join(data_home, NPP_PERSONAL_VENDOR));
             /* Windows build running under Proton, which writes into its prefix. */
-            list_push(out, join3(data_home, PROTON_PERSONAL_SUFFIX, NPP_PERSONAL_VENDOR));
+            str_list_push(out, join3(data_home, PROTON_PERSONAL_SUFFIX, NPP_PERSONAL_VENDOR));
             free(data_home);
         }
-        list_push(out, home_join("Documents/" NPP_PERSONAL_VENDOR));
+        str_list_push(out, home_join("Documents/" NPP_PERSONAL_VENDOR));
     }
 #endif
 }
@@ -374,7 +347,7 @@ int npp_find_personal_dir(npp_paths *paths, char *err, size_t errsz)
                             "has the game been run at least once?", first);
         free(first);
     }
-    list_free(&candidates);
+    str_list_free(&candidates);
     return paths->personal_dir ? 0 : -1;
 }
 

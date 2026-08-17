@@ -25,6 +25,8 @@ tabber [options] [command]
   list             List the custom tabs available in the digest
   update           Download the latest digest of custom tabs
   fetch CODE       Download, verify and unpack the custom tab CODE
+  remove CODE      Delete the downloaded files of the custom tab CODE
+  install CODE     Install the custom tab CODE into the game (fetching it if needed)
 
   -b, --bare       Machine-readable output: paths or tab-separated fields only
   -v, --verbose    Print extra detail
@@ -45,6 +47,7 @@ and warnings go to stderr, so stdout stays parseable.
 | `src/paths.c/.h` | Discovery of N++'s installation and personal directories; all Steam/N++ layout constants |
 | `src/digest.c/.h`| The custom tab catalogue: fetch, cache, parse, look up |
 | `src/tabs.c/.h`  | Downloading, verifying and unpacking a custom tab |
+| `src/install.c/.h` | Installing a custom tab into the game |
 | `src/config.c/.h`| The tool's own configuration and state (`config.json`) |
 | `src/kv.c/.h`    | Parser for Valve's KeyValues format (`.vdf`, `.acf`) |
 | `src/json.c/.h`  | Minimal JSON parser (RFC 8259) |
@@ -121,6 +124,49 @@ of that same tab. A failed fetch reports the reason and leaves nothing behind;
 a tab that was already installed and verified earlier is left untouched rather
 than being deleted because a later download went wrong.
 
+`tabber remove CODE` is the reverse: it deletes `tabs/<code>/` and everything in
+it, then clears `downloaded` and stamps `remove_date`. The entry itself stays,
+so a tab that is fetched again keeps its history. Removal is a local operation
+and works with no network and no digest at all. Removing a tab that is not
+downloaded changes nothing and reports it, rather than restamping the date.
+
+Because the code becomes a directory that is deleted recursively, it is checked
+first: letters and digits only, so `..`, `a/b` and friends are refused outright.
+
+## Installing a tab
+
+`tabber install CODE` fetches the tab first if it is not in the store, then
+replaces the game's level and challenge files with the tab's own, in
+`<installation dir>/NPP/<config.levels_dir>/`. Each original is kept next to it
+with `OG` appended to the whole file name (`SI.txt` -> `SI.txtOG`), a name the
+game does not parse, so uninstalling means deleting the tab's files and renaming
+the originals back.
+
+**Only one custom tab can be installed at a time.** Before installing (but after
+downloading, which touches nothing in the game) `install_detect` decides whether
+a tab is already in place and refuses if so. Today it reads the `installed`
+flags in `config.json`; it takes the game paths as well, so later versions can
+weigh evidence from the game folder itself without changing any caller.
+
+Only files the game actually reads are copied: a tab file must be listed in
+`config.level_files` or `config.challenge_files` in the digest, otherwise it is
+left alone and reported as skipped, which does not stop the install.
+
+Everything is checked before the first rename, and the whole set of files is
+read into memory before any of it is written:
+
+| Check | Abort reason |
+| --- | --- |
+| No other tab installed | another tab is in place |
+| Every file the tab replaces exists in the game | the game is missing files |
+| No `OG` backup exists yet | a previous install was never undone |
+| The game folder accepts writes | permissions, or the game is running |
+
+That last one matters: without it, installing over an existing backup would
+overwrite a pristine original with a modded file. If a rename or write still
+fails part-way through, the files already done are rolled back, so a failed
+install leaves the game folder exactly as it was.
+
 ## State
 
 `config.json`, next to the executable, holds the tool's configuration and what
@@ -160,7 +206,9 @@ alone rather than overwriting whatever is in there.
 - [x] Fetch, cache and list the custom tab digest
 - [x] Download, verify and unpack custom tab ZIPs
 - [x] Track configuration and per-tab state in `config.json`
-- [ ] Swap level and challenge files
+- [x] Remove a downloaded tab
+- [x] Swap level and challenge files (install)
+- [ ] Uninstall: restore the `OG` originals
 - [ ] Patch the main library to redirect server queries
 - [ ] Install custom palettes
 - [ ] Swap the savefile

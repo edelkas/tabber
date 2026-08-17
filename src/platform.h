@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#include "util.h"
+
 /* Native path separator. Windows accepts '/' as well, but we emit '\'. */
 #ifdef _WIN32
 #  define PATH_SEP      '\\'
@@ -52,6 +54,12 @@ char *plat_exe_dir(void);
 
 int plat_is_dir(const char *path);
 int plat_is_file(const char *path);
+
+/*
+ * Names of the entries in a directory, sorted, without "." and "..".
+ * Returns 0 on success, -1 if the directory cannot be read.
+ */
+int plat_list_dir(const char *path, str_list *out);
 
 /* Opens a file with a UTF-8 path; `mode` is a stdio mode string. */
 FILE *plat_fopen(const char *path, const char *mode);

@@ -101,19 +101,28 @@ void config_free(config *cfg)
     free(cfg);
 }
 
-json_value *config_tab_entry(config *cfg, int id, const char *code)
+json_value *config_find_tab(config *cfg, const char *code)
 {
     json_value *tabs = (json_value *)json_get(cfg->root, CJK_TABS);
     json_value *entry;
 
     if (!tabs)
         return NULL;
-
-    /* An existing entry wins, so its history is preserved. */
     for (entry = tabs->children; entry; entry = entry->next) {
         if (entry->type == JSON_OBJECT && str_ieq(json_get_string(entry, CJK_CODE, ""), code))
             return entry;
     }
+    return NULL;
+}
+
+json_value *config_tab_entry(config *cfg, int id, const char *code)
+{
+    json_value *tabs = (json_value *)json_get(cfg->root, CJK_TABS);
+    json_value *entry = config_find_tab(cfg, code);
+
+    /* An existing entry wins, so its history is preserved. */
+    if (entry || !tabs)
+        return entry;
 
     entry = json_new_object();
     json_object_set(entry, CJK_ID, json_new_number(id));
@@ -141,4 +150,47 @@ void config_set_downloaded(config *cfg, int id, const char *code)
     json_object_set(entry, CJK_ID, json_new_number(id));
     json_object_set(entry, CJK_DOWNLOADED, json_new_bool(1));
     json_object_set(entry, CJK_DOWNLOAD_DATE, json_new_string(now));
+}
+
+void config_set_installed(config *cfg, int id, const char *code)
+{
+    json_value *entry = config_tab_entry(cfg, id, code);
+    char now[TB_TIMESTAMP_LEN + 1];
+
+    if (!entry)
+        return;
+    time_now_iso8601(now, sizeof now);
+
+    json_object_set(entry, CJK_ID, json_new_number(id));
+    json_object_set(entry, CJK_INSTALLED, json_new_bool(1));
+    json_object_set(entry, CJK_INSTALL_DATE, json_new_string(now));
+
+    /*
+     * A tab cannot be installed unless its files are in the store, so the flag
+     * must be true here. This corrects entries for tabs downloaded before the
+     * state file existed; the date stays null, since we do not know it.
+     */
+    json_object_set(entry, CJK_DOWNLOADED, json_new_bool(1));
+}
+
+int config_set_removed(config *cfg, int id, const char *code)
+{
+    json_value *entry = config_find_tab(cfg, code);
+    char now[TB_TIMESTAMP_LEN + 1];
+
+    if (!entry) {
+        /* Nothing on record: only start one if we know which tab this is. */
+        if (id < 0)
+            return 0;
+        entry = config_tab_entry(cfg, id, code);
+        if (!entry)
+            return 0;
+    }
+    time_now_iso8601(now, sizeof now);
+
+    if (id >= 0)
+        json_object_set(entry, CJK_ID, json_new_number(id));
+    json_object_set(entry, CJK_DOWNLOADED, json_new_bool(0));
+    json_object_set(entry, CJK_REMOVE_DATE, json_new_string(now));
+    return 1;
 }

@@ -283,6 +283,32 @@ int plat_is_file(const char *path)
     return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+int plat_list_dir(const char *path, str_list *out)
+{
+    WIN32_FIND_DATAW info;
+    HANDLE search;
+    char *pattern = path_join(path, "*");
+    wchar_t *wpattern = wide_from_utf8(pattern);
+
+    free(pattern);
+    if (!wpattern)
+        return -1;
+    search = FindFirstFileW(wpattern, &info);
+    free(wpattern);
+    if (search == INVALID_HANDLE_VALUE)
+        return -1;
+
+    do {
+        if (wcscmp(info.cFileName, L".") == 0 || wcscmp(info.cFileName, L"..") == 0)
+            continue;
+        str_list_push(out, utf8_from_wide(info.cFileName));
+    } while (FindNextFileW(search, &info));
+    FindClose(search);
+
+    str_list_sort(out);
+    return 0;
+}
+
 FILE *plat_fopen(const char *path, const char *mode)
 {
     wchar_t *wpath = wide_from_utf8(path);
@@ -528,6 +554,24 @@ int plat_is_file(const char *path)
 {
     struct stat st;
     return path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+int plat_list_dir(const char *path, str_list *out)
+{
+    DIR *dir = opendir(path);
+    struct dirent *ent;
+
+    if (!dir)
+        return -1;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue;
+        str_list_push(out, str_dup(ent->d_name));
+    }
+    closedir(dir);
+
+    str_list_sort(out);
+    return 0;
 }
 
 FILE *plat_fopen(const char *path, const char *mode)

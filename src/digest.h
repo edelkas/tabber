@@ -30,6 +30,8 @@
 #define DJK_CONFIG          "config"
 #define DJK_LEVELS_DIR      "levels_dir"
 #define DJK_PALETTES_DIR    "palettes_dir"
+#define DJK_LEVEL_FILES     "level_files"       /* files the game reads */
+#define DJK_CHALLENGE_FILES "challenge_files"
 #define DJK_TABS            "tabs"
 #define DJK_ATTRIBUTES      "attributes"
 #define DJK_SIGNATURE       "signature"

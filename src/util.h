@@ -20,6 +20,9 @@ void *xrealloc(void *ptr, size_t size);
 /* Returns a copy of `s` (NULL if `s` is NULL). Caller frees. */
 char *str_dup(const char *s);
 
+/* Returns a copy of `s` with ASCII letters lowercased. Caller frees. */
+char *str_dup_lower(const char *s);
+
 /* printf-style formatting into a freshly allocated string. Caller frees. */
 char *str_fmt(const char *fmt, ...);
 
@@ -40,6 +43,25 @@ void err_set(char *err, size_t errsz, const char *fmt, ...);
 
 /* Current UTC time as an ISO 8601 timestamp, the format the digest uses. */
 void time_now_iso8601(char *out, size_t outsz);
+
+/* ---- Growable list of owned strings ------------------------------------ */
+
+typedef struct {
+    char **items;
+    size_t count, cap;
+} str_list;
+
+/* Appends `s`, taking ownership. A NULL is ignored, which lets failed lookups
+ * be pushed directly. */
+void str_list_push(str_list *list, char *s);
+
+/* Sorts in ASCII order, so output does not depend on directory order. */
+void str_list_sort(str_list *list);
+
+/* Case-insensitive membership test. */
+int str_list_contains(const str_list *list, const char *s);
+
+void str_list_free(str_list *list);
 
 /* ---- Growable byte buffer ---------------------------------------------- */
 

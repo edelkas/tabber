@@ -29,10 +29,40 @@ char *tabs_root_dir(void)
 char *tab_dir_path(const char *code)
 {
     char *root = tabs_root_dir();
-    char *dir = path_join(root, code);
+    char *lower = str_dup_lower(code);   /* the store is lowercase everywhere */
+    char *dir = path_join(root, lower);
 
     free(root);
+    free(lower);
     return dir;
+}
+
+int tab_is_downloaded(const char *code)
+{
+    char *dir;
+    int present;
+
+    if (!tab_code_is_valid(code))
+        return 0;
+    dir = tab_dir_path(code);
+    present = plat_is_dir(dir);
+    free(dir);
+    return present;
+}
+
+int tab_code_is_valid(const char *code)
+{
+    size_t i;
+
+    if (!code || !*code)
+        return 0;
+    for (i = 0; code[i]; i++) {
+        int alpha = (code[i] >= 'a' && code[i] <= 'z') || (code[i] >= 'A' && code[i] <= 'Z');
+        int digit = code[i] >= '0' && code[i] <= '9';
+        if (!alpha && !digit)
+            return 0;
+    }
+    return i <= TAB_CODE_MAX_LEN;
 }
 
 /* ---- Verification ------------------------------------------------------ */
@@ -293,6 +323,71 @@ done:
 }
 
 void tab_report_free(tab_report *report)
+{
+    free(report->dir);
+    report->dir = NULL;
+}
+
+/* ---- Remove ------------------------------------------------------------ */
+
+int tab_remove(const char *code, int id, tab_remove_report *report,
+               char *err, size_t errsz)
+{
+    char cfg_err[TB_ERR_LEN];
+    config *cfg;
+    char *dir;
+
+    memset(report, 0, sizeof(*report));
+
+    /* The code becomes a directory we delete recursively, so vet it first. */
+    if (!tab_code_is_valid(code)) {
+        err_set(err, errsz, "'%s' is not a valid tab code", code ? code : "");
+        return -1;
+    }
+
+    dir = tab_dir_path(code);
+    report->had_files = plat_is_dir(dir);
+
+    if (report->had_files && plat_remove_tree(dir) != 0) {
+        err_set(err, errsz, "cannot remove '%s'; is a file in it open?", dir);
+        free(dir);
+        return -1;
+    }
+
+    /* Keep the entry: its history is worth having if the tab comes back. */
+    cfg = config_load(cfg_err, sizeof cfg_err);
+    if (!cfg) {
+        err_set(report->warning, sizeof report->warning,
+                "the removal was not recorded: %s", cfg_err);
+    } else {
+        /*
+         * Only record something that actually happened: either files were
+         * deleted, or the state claimed the tab was downloaded and its files
+         * had gone missing behind our back. Removing an already-removed tab
+         * changes nothing and must not restamp the date.
+         */
+        const json_value *entry = config_find_tab(cfg, code);
+        int claimed = entry && json_get_bool(entry, CJK_DOWNLOADED, 0);
+
+        if (report->had_files || claimed)
+            report->recorded = config_set_removed(cfg, id, code);
+        if (report->recorded) {
+            if (config_save(cfg, cfg_err, sizeof cfg_err) != 0) {
+                err_set(report->warning, sizeof report->warning,
+                        "the removal was not recorded: %s", cfg_err);
+                report->recorded = 0;
+            } else {
+                snprintf(report->state_path, sizeof report->state_path, "%s", cfg->path);
+            }
+        }
+        config_free(cfg);
+    }
+
+    report->dir = dir;
+    return 0;
+}
+
+void tab_remove_report_free(tab_remove_report *report)
 {
     free(report->dir);
     report->dir = NULL;

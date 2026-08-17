@@ -39,6 +39,18 @@ char *str_dup(const char *s)
     return copy;
 }
 
+char *str_dup_lower(const char *s)
+{
+    char *copy = str_dup(s);
+    char *p;
+
+    for (p = copy; p && *p; p++) {
+        if (*p >= 'A' && *p <= 'Z')
+            *p = (char)(*p - 'A' + 'a');
+    }
+    return copy;
+}
+
 /* Formats into a right-sized buffer: vsnprintf first reports the length needed. */
 static char *str_vfmt(const char *fmt, va_list ap)
 {
@@ -116,6 +128,50 @@ void time_now_iso8601(char *out, size_t outsz)
 
     if (!utc || strftime(out, outsz, "%Y-%m-%dT%H:%M:%SZ", utc) == 0)
         snprintf(out, outsz, "1970-01-01T00:00:00Z");   /* clock unavailable */
+}
+
+void str_list_push(str_list *list, char *s)
+{
+    if (!s)
+        return;
+    if (list->count == list->cap) {
+        list->cap = list->cap ? list->cap * 2 : 8;
+        list->items = xrealloc(list->items, list->cap * sizeof(*list->items));
+    }
+    list->items[list->count++] = s;
+}
+
+static int str_list_cmp(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+void str_list_sort(str_list *list)
+{
+    if (list->count > 1)
+        qsort(list->items, list->count, sizeof(*list->items), str_list_cmp);
+}
+
+int str_list_contains(const str_list *list, const char *s)
+{
+    size_t i;
+
+    for (i = 0; i < list->count; i++) {
+        if (str_ieq(list->items[i], s))
+            return 1;
+    }
+    return 0;
+}
+
+void str_list_free(str_list *list)
+{
+    size_t i;
+
+    for (i = 0; i < list->count; i++)
+        free(list->items[i]);
+    free(list->items);
+    list->items = NULL;
+    list->count = list->cap = 0;
 }
 
 void buf_append(byte_buf *buf, const void *data, size_t len)

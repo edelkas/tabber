@@ -30,6 +30,9 @@
 /* How many missing files an error message names before summarising. */
 #define TABS_MAX_REPORTED   5
 
+/* Longest tab code accepted. Codes are 3 letters today, with room to spare. */
+#define TAB_CODE_MAX_LEN    16
+
 /* What a successful fetch did, for the caller to report. */
 typedef struct {
     char *dir;                     /* where the tab was written        */
@@ -54,6 +57,36 @@ int tab_fetch(const digest *dig, const npp_tab *tab, tab_report *report,
               char *err, size_t errsz);
 
 void tab_report_free(tab_report *report);
+
+/* What a removal did. */
+typedef struct {
+    char *dir;                  /* directory that was removed        */
+    int had_files;              /* the directory was actually there  */
+    int recorded;               /* the state file was updated        */
+    char state_path[512];       /* state file updated, empty if none */
+    char warning[TB_ERR_LEN];   /* non-fatal problem, empty if none  */
+} tab_remove_report;
+
+/*
+ * Deletes a tab's unpacked files and its subfolder, then records the removal in
+ * the state file (clearing "downloaded" and stamping "remove_date", keeping the
+ * entry so a later re-download still has its history). `id` may be -1 when the
+ * tab is not in the digest. Returns 0 on success, -1 with a reason in `err`.
+ */
+int tab_remove(const char *code, int id, tab_remove_report *report,
+               char *err, size_t errsz);
+
+void tab_remove_report_free(tab_remove_report *report);
+
+/*
+ * A code is only ever used as a directory name, so it must be plain: letters
+ * and digits, at most TAB_CODE_MAX_LEN of them, and nothing that could climb
+ * out of the tab store.
+ */
+int tab_code_is_valid(const char *code);
+
+/* Whether a tab's files are present in the local store. */
+int tab_is_downloaded(const char *code);
 
 /* Root of the local tab store, and the directory of one tab. Caller frees. */
 char *tabs_root_dir(void);

@@ -61,6 +61,9 @@ int config_save(config *cfg, char *err, size_t errsz);
 
 void config_free(config *cfg);
 
+/* The entry for `code`, or NULL when the tab has no history yet. */
+json_value *config_find_tab(config *cfg, const char *code);
+
 /*
  * The entry for `code`, created with all fields at their defaults (not
  * downloaded, not installed, every date null) if it is not there yet.
@@ -69,5 +72,16 @@ json_value *config_tab_entry(config *cfg, int id, const char *code);
 
 /* Records that a tab has just been downloaded: sets the flag and the date. */
 void config_set_downloaded(config *cfg, int id, const char *code);
+
+/* Records that a tab has just been installed into the game. */
+void config_set_installed(config *cfg, int id, const char *code);
+
+/*
+ * Records that a tab's files have been removed: clears "downloaded" and stamps
+ * "remove_date". The entry itself is kept, so a later re-download still has its
+ * history. `id` may be -1 when unknown, in which case an entry is only updated,
+ * never created. Returns 1 if anything was recorded.
+ */
+int config_set_removed(config *cfg, int id, const char *code);
 
 #endif /* TABBER_CONFIG_H */

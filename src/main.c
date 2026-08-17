@@ -10,7 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "config.h"
 #include "digest.h"
+#include "install.h"
 #include "paths.h"
 #include "platform.h"
 #include "tabs.h"
@@ -58,6 +60,8 @@ static void print_usage(FILE *out)
         "  list             List the custom tabs available in the digest\n"
         "  update           Download the latest digest of custom tabs\n"
         "  fetch CODE       Download, verify and unpack the custom tab CODE\n"
+        "  remove CODE      Delete the downloaded files of the custom tab CODE\n"
+        "  install CODE     Install the custom tab CODE into the game (fetching it if needed)\n"
         "\n"
         "Options:\n"
         "  -b, --bare       Machine-readable output: paths or tab-separated fields only\n"
@@ -368,6 +372,191 @@ static int cmd_fetch(const options *opts, const char *code)
     return rc;
 }
 
+/* ---- install ----------------------------------------------------------- */
+
+/* Downloads the tab first if its files are not in the local store. */
+static int ensure_downloaded(const digest *dig, const npp_tab *tab, const char *upper)
+{
+    char err[TB_ERR_LEN];
+    tab_report report;
+
+    if (tab_is_downloaded(tab->code))
+        return 0;
+
+    printf("%s is not downloaded yet, fetching it first...\n", upper);
+    if (tab_fetch(dig, tab, &report, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s could not be downloaded: %s\n", upper, err);
+        return -1;
+    }
+    log_step("downloaded", "%lu file(s) to %s",
+             (unsigned long)report.file_count, report.dir);
+    if (report.warning[0])
+        fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
+    tab_report_free(&report);
+    return 0;
+}
+
+static int cmd_install(const options *opts, const char *code)
+{
+    char err[TB_ERR_LEN];
+    char installed_code[64];
+    digest *dig;
+    const npp_tab *tab;
+    npp_paths paths = {0};
+    config *state;
+    install_report report;
+    char upper[16], other[16];
+    size_t i;
+    int rc = EXIT_FAILED;
+
+    if (!code) {
+        fprintf(stderr, TABBER_NAME ": 'install' needs a tab code, e.g. '%s install met'\n",
+                TABBER_NAME);
+        return EXIT_USAGE;
+    }
+
+    if (!opts->offline && digest_ensure_fresh(0, err, sizeof err) != 0)
+        fprintf(stderr, TABBER_NAME ": could not refresh the digest (%s), using the cached copy\n", err);
+
+    dig = digest_load(err, sizeof err);
+    if (!dig) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        return EXIT_FAILED;
+    }
+
+    tab = digest_find(dig, code);
+    if (!tab) {
+        fprintf(stderr, TABBER_NAME ": no custom tab with code '%s' (run '%s list' to see them all)\n",
+                code, TABBER_NAME);
+        digest_free(dig);
+        return EXIT_NOT_FOUND;
+    }
+    code_upper(upper, sizeof upper, tab->code);
+
+    /* The game's own folders. */
+    if (npp_find_game_dirs(&paths, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        goto done;
+    }
+
+    /* Downloading first is fine; it changes nothing in the game folder. */
+    if (ensure_downloaded(dig, tab, upper) != 0)
+        goto done;
+
+    /* Only one tab may be installed at a time. */
+    state = config_load(err, sizeof err);
+    if (!state) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        goto done;
+    }
+    if (install_detect(state, &paths, installed_code, sizeof installed_code)) {
+        code_upper(other, sizeof other, installed_code);
+        config_free(state);
+        if (!strcmp(other, upper))
+            fprintf(stderr, TABBER_NAME ": %s is already installed\n", upper);
+        else
+            fprintf(stderr, TABBER_NAME ": %s is installed; only one custom tab can be "
+                            "installed at a time, so uninstall it first\n", other);
+        goto done;
+    }
+    config_free(state);
+
+    printf("Installing %s (%s)...\n", upper, tab->name);
+
+    if (tab_install(dig, tab, &paths, &report, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s could not be installed: %s\n", upper, err);
+        install_report_free(&report);
+        goto done;
+    }
+
+    /* Files the tab ships that the game has no use for. */
+    for (i = 0; i < report.skipped.count; i++)
+        fprintf(stderr, TABBER_NAME ": warning: '%s' is not a level or challenge file "
+                        "the game reads, skipped\n", report.skipped.items[i]);
+
+    log_step("target", "%s", report.game_levels_dir);
+    log_step("installed", "%lu file(s), %lu skipped",
+             (unsigned long)report.installed_count, (unsigned long)report.skipped.count);
+    log_step("originals", "kept alongside with the '%s' suffix", INSTALL_BACKUP_SUFFIX);
+    if (report.state_path[0])
+        log_step("recorded", "install in %s", report.state_path);
+    if (report.warning[0])
+        fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
+    printf("%s installed successfully.\n", upper);
+
+    install_report_free(&report);
+    rc = EXIT_OK;
+
+done:
+    npp_paths_free(&paths);
+    digest_free(dig);
+    return rc;
+}
+
+/* ---- remove ------------------------------------------------------------ */
+
+static int cmd_remove(const options *opts, const char *code)
+{
+    char err[TB_ERR_LEN];
+    digest *dig;
+    const npp_tab *tab;
+    tab_remove_report report;
+    char upper[16];
+    const char *name = NULL;
+    int id = -1;
+
+    (void)opts;
+
+    if (!code) {
+        fprintf(stderr, TABBER_NAME ": 'remove' needs a tab code, e.g. '%s remove met'\n",
+                TABBER_NAME);
+        return EXIT_USAGE;
+    }
+
+    /* Removal is purely local: the digest is only consulted, never refreshed,
+     * and its absence is not a reason to refuse. */
+    dig = digest_load(err, sizeof err);
+    tab = dig ? digest_find(dig, code) : NULL;
+    if (tab) {
+        id = tab->id;
+        code = tab->code;
+        name = tab->name;
+    }
+
+    code_upper(upper, sizeof upper, code);
+    if (tab_remove(code, id, &report, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s could not be removed: %s\n", upper, err);
+        digest_free(dig);
+        return EXIT_FAILED;
+    }
+
+    if (!report.had_files && !report.recorded) {
+        fprintf(stderr, TABBER_NAME ": %s is not downloaded; nothing to remove\n", upper);
+        tab_remove_report_free(&report);
+        digest_free(dig);
+        return EXIT_NOT_FOUND;
+    }
+
+    if (name)
+        printf("Removing %s (%s)...\n", upper, name);
+    else
+        printf("Removing %s...\n", upper);
+
+    if (report.had_files)
+        log_step("deleted", "%s", report.dir);
+    else
+        log_step("deleted", "nothing on disk, %s was already gone", report.dir);
+    if (report.recorded)
+        log_step("recorded", "removal in %s", report.state_path);
+    if (report.warning[0])
+        fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
+    printf("%s removed successfully.\n", upper);
+
+    tab_remove_report_free(&report);
+    digest_free(dig);
+    return EXIT_OK;
+}
+
 /* ---- Entry point ------------------------------------------------------- */
 
 int main(int argc, char **argv)
@@ -416,6 +605,10 @@ int main(int argc, char **argv)
         return cmd_update(&opts);
     if (!strcmp(command, "fetch"))
         return cmd_fetch(&opts, argument);
+    if (!strcmp(command, "remove"))
+        return cmd_remove(&opts, argument);
+    if (!strcmp(command, "install"))
+        return cmd_install(&opts, argument);
 
     fprintf(stderr, TABBER_NAME ": unknown command '%s'\n", command);
     print_usage(stderr);
