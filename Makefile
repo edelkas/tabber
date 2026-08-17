@@ -10,10 +10,12 @@ SOURCES := $(wildcard $(SRCDIR)/*.c)
 OBJECTS := $(patsubst $(SRCDIR)/%.c,$(OBJDIR)/%.o,$(SOURCES))
 TARGET  := $(OBJDIR)/tabber
 
-# Windows (MinGW) needs the shell and registry libraries linked explicitly.
+# HTTP comes from WinHTTP on Windows and from libcurl everywhere else.
 ifeq ($(OS),Windows_NT)
   TARGET := $(OBJDIR)/tabber.exe
-  LDLIBS += -ladvapi32 -lole32 -lshell32 -luuid
+  LDLIBS += -ladvapi32 -lole32 -lshell32 -luuid -lwinhttp
+else
+  LDLIBS += -lcurl
 endif
 
 all: $(TARGET)

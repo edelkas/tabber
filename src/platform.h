@@ -45,6 +45,9 @@ char *plat_home_dir(void);
 /* The user's "Documents" folder (relocation-aware on Windows). */
 char *plat_documents_dir(void);
 
+/* Directory holding the running executable, or NULL if it cannot be found. */
+char *plat_exe_dir(void);
+
 /* ---- Filesystem -------------------------------------------------------- */
 
 int plat_is_dir(const char *path);
@@ -59,6 +62,14 @@ FILE *plat_fopen(const char *path, const char *mode);
  */
 char *plat_read_file(const char *path, size_t *len_out);
 
+/* Writes `len` bytes to `path`, truncating it. Returns 0 on success. */
+int plat_write_file(const char *path, const void *data, size_t len);
+
+/* Renames `src` over `dst`, replacing it atomically. Returns 0 on success. */
+int plat_replace_file(const char *src, const char *dst);
+
+int plat_remove_file(const char *path);
+
 /*
  * Absolute, symlink-free path with the on-disk spelling (letter case
  * included). The path must exist; returns NULL if it cannot be resolved.
@@ -72,6 +83,9 @@ char *path_join(const char *base, const char *leaf);
 
 /* In place: rewrites separators to the native one and drops trailing ones. */
 void path_to_native(char *path);
+
+/* Everything before the last separator of `path`. Caller frees. */
+char *path_dirname(const char *path);
 
 int path_is_absolute(const char *path);
 

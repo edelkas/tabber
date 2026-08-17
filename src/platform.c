@@ -141,6 +141,58 @@ char *plat_documents_dir(void)
     return docs;
 }
 
+char *plat_exe_dir(void)
+{
+    wchar_t *wbuf = NULL;
+    DWORD cap = MAX_PATH, len;
+    char *path, *dir;
+
+    /* GetModuleFileNameW truncates instead of reporting the size: grow blindly. */
+    for (;;) {
+        wbuf = xrealloc(wbuf, cap * sizeof(wchar_t));
+        len = GetModuleFileNameW(NULL, wbuf, cap);
+        if (len == 0) {
+            free(wbuf);
+            return NULL;
+        }
+        if (len < cap)
+            break;
+        cap *= 2;
+    }
+
+    path = utf8_from_wide(wbuf);
+    free(wbuf);
+    if (!path)
+        return NULL;
+    dir = path_dirname(path);
+    free(path);
+    return dir;
+}
+
+int plat_replace_file(const char *src, const char *dst)
+{
+    wchar_t *wsrc = wide_from_utf8(src);
+    wchar_t *wdst = wide_from_utf8(dst);
+    int rc = -1;
+
+    if (wsrc && wdst)
+        rc = MoveFileExW(wsrc, wdst, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+    free(wsrc);
+    free(wdst);
+    return rc;
+}
+
+int plat_remove_file(const char *path)
+{
+    wchar_t *wpath = wide_from_utf8(path);
+    int rc = -1;
+
+    if (wpath)
+        rc = DeleteFileW(wpath) ? 0 : -1;
+    free(wpath);
+    return rc;
+}
+
 /* Shared attribute query for plat_is_dir / plat_is_file. */
 static DWORD win_attrs(const char *path)
 {
@@ -266,6 +318,11 @@ done:
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+#  include <mach-o/dyld.h>   /* _NSGetExecutablePath */
+#  include <stdint.h>
+#endif
+
 void plat_init(void)
 {
     /* Nothing to do: POSIX consoles are UTF-8 already. */
@@ -302,6 +359,57 @@ char *plat_documents_dir(void)
     docs = path_join(home, "Documents");
     free(home);
     return docs;
+}
+
+char *plat_exe_dir(void)
+{
+    char *path = NULL, *dir;
+
+#if defined(__APPLE__)
+    {
+        uint32_t size = 0;
+        _NSGetExecutablePath(NULL, &size);   /* first call reports the size */
+        if (size == 0)
+            return NULL;
+        path = xmalloc(size);
+        if (_NSGetExecutablePath(path, &size) != 0) {
+            free(path);
+            return NULL;
+        }
+    }
+#else
+    {
+        size_t cap = 256;
+        for (;;) {
+            ssize_t len;
+            path = xrealloc(path, cap);
+            len = readlink("/proc/self/exe", path, cap - 1);
+            if (len < 0) {
+                free(path);
+                return NULL;
+            }
+            if ((size_t)len < cap - 1) {
+                path[len] = '\0';
+                break;
+            }
+            cap *= 2;   /* truncated: try again with more room */
+        }
+    }
+#endif
+
+    dir = path_dirname(path);
+    free(path);
+    return dir;
+}
+
+int plat_replace_file(const char *src, const char *dst)
+{
+    return rename(src, dst) == 0 ? 0 : -1;   /* POSIX rename replaces atomically */
+}
+
+int plat_remove_file(const char *path)
+{
+    return unlink(path) == 0 ? 0 : -1;
 }
 
 int plat_is_dir(const char *path)
@@ -375,6 +483,36 @@ char *plat_read_file(const char *path, size_t *len_out)
     if (len_out)
         *len_out = len;
     return buf;
+}
+
+int plat_write_file(const char *path, const void *data, size_t len)
+{
+    FILE *f = plat_fopen(path, "wb");
+    size_t written;
+
+    if (!f)
+        return -1;
+    written = len ? fwrite(data, 1, len, f) : 0;
+    if (fclose(f) != 0 || written != len)
+        return -1;
+    return 0;
+}
+
+char *path_dirname(const char *path)
+{
+    const char *slash = NULL, *p;
+
+    if (!path)
+        return NULL;
+    for (p = path; *p; p++) {
+        if (*p == '/' || *p == '\\')
+            slash = p;
+    }
+    if (!slash)
+        return str_dup(".");           /* no directory part */
+    if (slash == path)
+        return str_dup(PATH_SEP_STR);  /* the root itself */
+    return str_fmt("%.*s", (int)(slash - path), path);
 }
 
 char *path_join(const char *base, const char *leaf)

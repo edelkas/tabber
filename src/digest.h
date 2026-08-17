@@ -1,0 +1,85 @@
+/*
+ * digest.h - The custom tab catalogue.
+ *
+ * A JSON digest published alongside the mappacks lists every supported custom
+ * tab. It is cached next to the executable so the tool still works offline,
+ * and refreshed from the network once per session (see digest_ensure_fresh).
+ */
+#ifndef TABBER_DIGEST_H
+#define TABBER_DIGEST_H
+
+#include <stddef.h>
+
+#include "json.h"
+
+/*
+ * Source of the digest. The canonical page is
+ * https://github.com/edelkas/inne/blob/master/db/mappacks/digest.json,
+ * which serves HTML; this is the raw file behind it. Overridable at build time
+ * to point the tool at a staging server.
+ */
+#ifndef DIGEST_URL
+#define DIGEST_URL          "https://raw.githubusercontent.com/edelkas/inne/master/db/mappacks/digest.json"
+#endif
+
+/* On-disk cache, kept next to the executable. */
+#define DIGEST_FILENAME     "digest.json"
+#define DIGEST_TMP_SUFFIX   ".tmp"     /* staging name for atomic replacement */
+
+/* JSON keys of the digest. */
+#define DJK_TABS            "tabs"
+#define DJK_ATTRIBUTES      "attributes"
+#define DJK_SIGNATURE       "signature"
+#define DJK_ID              "id"
+#define DJK_NAME            "name"
+#define DJK_CODE            "code"
+#define DJK_AUTHORS         "authors"
+#define DJK_DATE            "date"
+#define DJK_VERSION         "version"
+#define DJK_ENABLED         "enabled"
+#define DJK_MD5             "md5"
+
+/* Length of the "YYYY-MM-DD" prefix of an ISO 8601 timestamp. */
+#define DIGEST_DATE_LEN     10
+
+/* One custom tab. Strings are borrowed from the parsed document. */
+typedef struct {
+    int id;                    /* index in the catalogue, 0-based    */
+    const char *code;          /* 3-letter code, lowercase as stored */
+    const char *name;
+    const char *authors;
+    const char *date;          /* ISO 8601 release timestamp         */
+    int version;
+    int enabled;
+    const json_value *node;    /* full entry, for the download/disk/... keys */
+} npp_tab;
+
+/* A parsed digest. Owns the JSON document its strings point into. */
+typedef struct {
+    json_value *root;
+    npp_tab *tabs;
+    size_t tab_count;
+    const char *signature_date;
+    const char *signature_md5;
+    char *path;                /* file it was loaded from */
+} digest;
+
+/*
+ * Downloads the digest and replaces the on-disk cache. Unless `force` is set,
+ * the download happens only once per session; later calls are no-ops that
+ * succeed. Returns 0 on success, -1 with a reason in `err`.
+ */
+int digest_ensure_fresh(int force, char *err, size_t errsz);
+
+/* Parses the cached digest. Returns NULL with a reason in `err`. */
+digest *digest_load(char *err, size_t errsz);
+
+void digest_free(digest *dig);
+
+/* Path of the on-disk cache. Caller frees. */
+char *digest_cache_path(void);
+
+/* Looks up a tab by its code, case-insensitively. NULL when absent. */
+const npp_tab *digest_find(const digest *dig, const char *code);
+
+#endif /* TABBER_DIGEST_H */

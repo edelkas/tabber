@@ -26,7 +26,27 @@ char *str_fmt(const char *fmt, ...);
 /* ASCII case-insensitive equality; NULL-safe (NULL only equals NULL). */
 int str_ieq(const char *a, const char *b);
 
+/*
+ * Number of characters a UTF-8 string occupies on screen, i.e. its codepoint
+ * count. Used to align table columns, which byte counts would get wrong.
+ */
+size_t str_display_width(const char *s);
+
 /* Writes a formatted message into `err` if it is non-NULL. */
 void err_set(char *err, size_t errsz, const char *fmt, ...);
+
+/* ---- Growable byte buffer ---------------------------------------------- */
+
+typedef struct {
+    char *data;
+    size_t len, cap;
+} byte_buf;
+
+void buf_append(byte_buf *buf, const void *data, size_t len);
+
+/* NUL-terminates and hands the buffer over to the caller, who must free it. */
+char *buf_finish(byte_buf *buf, size_t *len_out);
+
+void buf_free(byte_buf *buf);
 
 #endif /* TABBER_UTIL_H */

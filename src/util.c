@@ -83,6 +83,20 @@ int str_ieq(const char *a, const char *b)
     return *a == *b;
 }
 
+size_t str_display_width(const char *s)
+{
+    size_t width = 0;
+
+    if (!s)
+        return 0;
+    for (; *s; s++) {
+        /* Skip UTF-8 continuation bytes: they belong to the previous glyph. */
+        if (((unsigned char)*s & 0xC0) != 0x80)
+            width++;
+    }
+    return width;
+}
+
 void err_set(char *err, size_t errsz, const char *fmt, ...)
 {
     va_list ap;
@@ -92,4 +106,43 @@ void err_set(char *err, size_t errsz, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(err, errsz, fmt, ap);
     va_end(ap);
+}
+
+void buf_append(byte_buf *buf, const void *data, size_t len)
+{
+    if (len == 0)
+        return;
+    if (buf->len + len + 1 > buf->cap) {
+        size_t cap = buf->cap ? buf->cap : 1024;
+        while (cap < buf->len + len + 1)   /* +1 keeps room for a terminator */
+            cap *= 2;
+        buf->data = xrealloc(buf->data, cap);
+        buf->cap = cap;
+    }
+    memcpy(buf->data + buf->len, data, len);
+    buf->len += len;
+}
+
+char *buf_finish(byte_buf *buf, size_t *len_out)
+{
+    char *data;
+
+    if (!buf->data) {
+        buf->data = xmalloc(1);
+        buf->cap = 1;
+    }
+    buf->data[buf->len] = '\0';
+    data = buf->data;
+    if (len_out)
+        *len_out = buf->len;
+    buf->data = NULL;
+    buf->len = buf->cap = 0;
+    return data;
+}
+
+void buf_free(byte_buf *buf)
+{
+    free(buf->data);
+    buf->data = NULL;
+    buf->len = buf->cap = 0;
 }

@@ -9,25 +9,32 @@ line side is complete.
 | Platform | Command | Notes |
 | --- | --- | --- |
 | Windows (MSVC) | `build.bat` | Imports the MSVC environment automatically via `vswhere` |
-| Linux / macOS  | `make`      | Any C99 compiler |
-| Windows (MinGW)| `make`      | Links `advapi32`, `ole32`, `shell32`, `uuid` |
+| Linux / macOS  | `make`      | Any C99 compiler; needs libcurl (`libcurl4-openssl-dev` or equivalent) |
+| Windows (MinGW)| `make`      | Links `advapi32`, `ole32`, `shell32`, `uuid`, `winhttp` |
 
-The binary lands in `build/tabber[.exe]`.
+The binary lands in `build/tabber[.exe]`. HTTP goes through WinHTTP on Windows
+(no dependency) and libcurl elsewhere, both behind the two-function API in
+`src/net.h`.
 
 ## Usage
 
 ```
-tabber [options] [paths]
+tabber [options] [command]
 
   paths            Locate N++'s installation and personal directories (default)
-  -b, --bare       Print the paths only, one per line (installation first)
-  -v, --verbose    Also print the Steam folder and the Steam library used
+  list             List the custom tabs available in the digest
+  update           Download the latest digest of custom tabs
+
+  -b, --bare       Machine-readable output: paths or tab-separated fields only
+  -v, --verbose    Print extra detail
+  -o, --offline    Skip the automatic digest refresh, use the cached copy
   -h, --help       Show help
   -V, --version    Show version
 ```
 
-Exit status is `0` on success, `1` when a directory could not be found (the
-reason goes to stderr) and `3` on a usage error.
+Exit status is `0` on success, `1` when a directory could not be found, `2` when
+an operation failed (network, corrupt digest) and `3` on a usage error. Errors
+and warnings go to stderr, so stdout stays parseable.
 
 ## Layout
 
@@ -35,9 +42,13 @@ reason goes to stderr) and `3` on a usage error.
 | --- | --- |
 | `src/main.c`     | CLI entry point and argument parsing |
 | `src/paths.c/.h` | Discovery of N++'s installation and personal directories; all Steam/N++ layout constants |
+| `src/digest.c/.h`| The custom tab catalogue: fetch, cache, parse, look up |
 | `src/kv.c/.h`    | Parser for Valve's KeyValues format (`.vdf`, `.acf`) |
+| `src/json.c/.h`  | Minimal JSON parser (RFC 8259) |
+| `src/net.c/.h`   | HTTPS client: WinHTTP on Windows, libcurl elsewhere |
 | `src/platform.c/.h` | OS abstraction: filesystem, environment, Windows registry, UTF-8 paths |
-| `src/util.c/.h`  | Allocation, string and error helpers |
+| `src/util.c/.h`  | Allocation, string, buffer and error helpers |
+| `src/version.h`  | Program name and version |
 
 ## How the directories are found
 
@@ -62,9 +73,30 @@ relocated Documents folder works), `~/Documents/Metanet/N++` on macOS, and
 Every returned path is canonicalised, so its separators and letter case match
 what is actually on disk.
 
+## The digest
+
+The catalogue of supported custom tabs is a JSON digest published at
+[`db/mappacks/digest.json`](https://github.com/edelkas/inne/blob/master/db/mappacks/digest.json)
+(the tool fetches the `raw.githubusercontent.com` equivalent, since the blob URL
+serves HTML). It is cached as `digest.json` **next to the executable**.
+
+- The cache is refreshed from the network at most **once per session**, the
+  first time something needs it — so `list` is up to date without `update`.
+- `update` forces a refresh, and is the command to run more often than that.
+- A download is only written to disk after it parses and contains a `tabs`
+  array, and it is staged in a `.tmp` file then swapped in, so a failed or
+  interrupted refresh can never corrupt the cache.
+- When the network is unavailable the cached copy is used and a warning is
+  printed to stderr; `--offline` skips the refresh entirely.
+
+`DIGEST_URL` can be overridden at build time (`-DDIGEST_URL='"…"'`) to point the
+tool at a staging server.
+
 ## Status
 
 - [x] Locate the installation and personal directories
+- [x] Fetch, cache and list the custom tab digest
+- [ ] Download and verify custom tab ZIPs
 - [ ] Swap level and challenge files
 - [ ] Patch the main library to redirect server queries
 - [ ] Install custom palettes
