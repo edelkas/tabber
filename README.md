@@ -45,6 +45,7 @@ and warnings go to stderr, so stdout stays parseable.
 | `src/paths.c/.h` | Discovery of N++'s installation and personal directories; all Steam/N++ layout constants |
 | `src/digest.c/.h`| The custom tab catalogue: fetch, cache, parse, look up |
 | `src/tabs.c/.h`  | Downloading, verifying and unpacking a custom tab |
+| `src/config.c/.h`| The tool's own configuration and state (`config.json`) |
 | `src/kv.c/.h`    | Parser for Valve's KeyValues format (`.vdf`, `.acf`) |
 | `src/json.c/.h`  | Minimal JSON parser (RFC 8259) |
 | `src/zip.c/.h`   | In-memory ZIP reader with CRC-32 verification |
@@ -120,11 +121,45 @@ of that same tab. A failed fetch reports the reason and leaves nothing behind;
 a tab that was already installed and verified earlier is left untouched rather
 than being deleted because a later download went wrong.
 
+## State
+
+`config.json`, next to the executable, holds the tool's configuration and what
+it has done so far. Its `tabs` array carries one entry per tab the tool has
+touched:
+
+```json
+{
+  "tabs": [
+    {
+      "id": 21,
+      "code": "lit",
+      "downloaded": true,
+      "installed": false,
+      "download_date": "2026-08-17T19:15:06Z",
+      "install_date": null,
+      "uninstall_date": null,
+      "remove_date": null
+    }
+  ]
+}
+```
+
+Dates are ISO 8601 UTC, the format the digest itself uses, and are `null` until
+the corresponding action happens. A successful `fetch` creates the entry if
+needed and sets `downloaded` and `download_date`; the install fields are wired
+up but left untouched until installing exists.
+
+The file is edited in place rather than regenerated: keys this version does not
+know about, and fields it does not own, survive a rewrite. If it is missing it
+is created; if it is unreadable the tool says so, carries on, and leaves it
+alone rather than overwriting whatever is in there.
+
 ## Status
 
 - [x] Locate the installation and personal directories
 - [x] Fetch, cache and list the custom tab digest
 - [x] Download, verify and unpack custom tab ZIPs
+- [x] Track configuration and per-tab state in `config.json`
 - [ ] Swap level and challenge files
 - [ ] Patch the main library to redirect server queries
 - [ ] Install custom palettes

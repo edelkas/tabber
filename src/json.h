@@ -52,4 +52,29 @@ const char *json_get_string(const json_value *object, const char *key, const cha
 long        json_get_int(const json_value *object, const char *key, long fallback);
 int         json_get_bool(const json_value *object, const char *key, int fallback);
 
+/* ---- Building and writing ---------------------------------------------- */
+
+/* Constructors. Each returns a value the caller owns until it is inserted. */
+json_value *json_new_object(void);
+json_value *json_new_array(void);
+json_value *json_new_string(const char *text);
+json_value *json_new_number(double number);
+json_value *json_new_bool(int boolean);
+json_value *json_new_null(void);
+
+/*
+ * Sets a member, taking ownership of `value`. An existing member of the same
+ * name is replaced where it stands, so key order stays stable across rewrites.
+ */
+void json_object_set(json_value *object, const char *key, json_value *value);
+
+/* Appends to an array, taking ownership of `value`. */
+void json_array_append(json_value *array, json_value *value);
+
+/*
+ * Renders the value as JSON text. `pretty` indents with two spaces and one
+ * member per line, matching the style of the files we read. Caller frees.
+ */
+char *json_serialize(const json_value *value, int pretty);
+
 #endif /* TABBER_JSON_H */

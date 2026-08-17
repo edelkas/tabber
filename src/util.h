@@ -35,6 +35,12 @@ size_t str_display_width(const char *s);
 /* Writes a formatted message into `err` if it is non-NULL. */
 void err_set(char *err, size_t errsz, const char *fmt, ...);
 
+/* Length of an ISO 8601 UTC timestamp, "YYYY-MM-DDTHH:MM:SSZ". */
+#define TB_TIMESTAMP_LEN 20
+
+/* Current UTC time as an ISO 8601 timestamp, the format the digest uses. */
+void time_now_iso8601(char *out, size_t outsz);
+
 /* ---- Growable byte buffer ---------------------------------------------- */
 
 typedef struct {

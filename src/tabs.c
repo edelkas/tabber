@@ -1,6 +1,8 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "config.h"
 #include "json.h"
 #include "md5.h"
 #include "net.h"
@@ -114,6 +116,33 @@ done:
     free(full);
     free(parent);
     return rc;
+}
+
+/* ---- State ------------------------------------------------------------- */
+
+/*
+ * Records the download in the tool's state file. A problem here does not undo
+ * a good installation, so it is reported as a warning rather than a failure.
+ */
+static void record_download(const npp_tab *tab, tab_report *report)
+{
+    char err[TB_ERR_LEN];
+    config *cfg = config_load(err, sizeof err);
+
+    if (!cfg) {
+        err_set(report->warning, sizeof report->warning,
+                "the download was not recorded: %s", err);
+        return;
+    }
+
+    config_set_downloaded(cfg, tab->id, tab->code);
+    if (config_save(cfg, err, sizeof err) != 0)
+        err_set(report->warning, sizeof report->warning,
+                "the download was not recorded: %s", err);
+    else
+        snprintf(report->state_path, sizeof report->state_path, "%s", cfg->path);
+
+    config_free(cfg);
 }
 
 /* ---- Fetch ------------------------------------------------------------- */
@@ -249,6 +278,7 @@ int tab_fetch(const digest *dig, const npp_tab *tab, tab_report *report,
     report->file_count = staged_count;
     report->level_files = (size_t)level_files;
     report->challenge_files = (size_t)challenge_files;
+    record_download(tab, report);
     rc = 0;
 
 done:

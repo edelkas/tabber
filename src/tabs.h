@@ -13,6 +13,7 @@
 
 #include "digest.h"
 #include "md5.h"
+#include "util.h"
 
 /* Local store: <directory of the executable>/tabs/<code>/ */
 #define TABS_DIR_NAME       "tabs"
@@ -40,6 +41,8 @@ typedef struct {
     size_t level_files;            /* required level files found       */
     size_t challenge_files;        /* required challenge files found   */
     char md5[MD5_HEX_LEN + 1];     /* verified hash of the archive     */
+    char state_path[512];          /* state file updated, empty if none */
+    char warning[TB_ERR_LEN];      /* non-fatal problem, empty if none  */
 } tab_report;
 
 /*

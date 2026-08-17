@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -430,4 +431,166 @@ int json_get_bool(const json_value *object, const char *key, int fallback)
 {
     const json_value *v = json_get(object, key);
     return (v && v->type == JSON_BOOL) ? v->boolean : fallback;
+}
+
+/* ---- Building ---------------------------------------------------------- */
+
+json_value *json_new_object(void) { return json_new(JSON_OBJECT); }
+json_value *json_new_array(void)  { return json_new(JSON_ARRAY); }
+json_value *json_new_null(void)   { return json_new(JSON_NULL); }
+
+json_value *json_new_string(const char *text)
+{
+    json_value *v = json_new(JSON_STRING);
+    v->string = str_dup(text ? text : "");
+    return v;
+}
+
+json_value *json_new_number(double number)
+{
+    json_value *v = json_new(JSON_NUMBER);
+    v->number = number;
+    return v;
+}
+
+json_value *json_new_bool(int boolean)
+{
+    json_value *v = json_new(JSON_BOOL);
+    v->boolean = boolean ? 1 : 0;
+    return v;
+}
+
+void json_object_set(json_value *object, const char *key, json_value *value)
+{
+    json_value *existing;
+
+    if (!object || object->type != JSON_OBJECT || !value)
+        return;
+
+    existing = (json_value *)json_get(object, key);
+    if (existing) {
+        /* Swap the payload into the node already in place, so the member keeps
+         * its position in the object and the file keeps its shape. */
+        char *saved_key = existing->key;
+        json_value *saved_next = existing->next;
+
+        json_free(existing->children);
+        free(existing->string);
+        *existing = *value;
+        existing->key = saved_key;
+        existing->next = saved_next;
+        free(value);                 /* the shell only: its payload moved */
+        return;
+    }
+
+    value->key = str_dup(key);
+    json_append(object, value);
+}
+
+void json_array_append(json_value *array, json_value *value)
+{
+    if (!array || array->type != JSON_ARRAY || !value)
+        return;
+    json_append(array, value);
+}
+
+/* ---- Writing ----------------------------------------------------------- */
+
+/* Escapes a string into `out`, including the surrounding quotes. */
+static void json_write_string(byte_buf *out, const char *text)
+{
+    const unsigned char *p = (const unsigned char *)(text ? text : "");
+
+    buf_append(out, "\"", 1);
+    for (; *p; p++) {
+        switch (*p) {
+            case '"':  buf_append(out, "\\\"", 2); break;
+            case '\\': buf_append(out, "\\\\", 2); break;
+            case '\b': buf_append(out, "\\b", 2);  break;
+            case '\f': buf_append(out, "\\f", 2);  break;
+            case '\n': buf_append(out, "\\n", 2);  break;
+            case '\r': buf_append(out, "\\r", 2);  break;
+            case '\t': buf_append(out, "\\t", 2);  break;
+            default:
+                if (*p < 0x20) {          /* other control characters */
+                    char esc[7];
+                    snprintf(esc, sizeof esc, "\\u%04x", *p);
+                    buf_append(out, esc, 6);
+                } else {
+                    buf_append(out, p, 1);   /* UTF-8 passes through as is */
+                }
+                break;
+        }
+    }
+    buf_append(out, "\"", 1);
+}
+
+/* Writes a number, keeping whole values free of a decimal point. */
+static void json_write_number(byte_buf *out, double number)
+{
+    char text[40];
+
+    if (number >= -9.0e15 && number <= 9.0e15 && number == (double)(long long)number)
+        snprintf(text, sizeof text, "%lld", (long long)number);
+    else
+        snprintf(text, sizeof text, "%.17g", number);
+    buf_append(out, text, strlen(text));
+}
+
+static void json_write_indent(byte_buf *out, int pretty, int depth)
+{
+    int i;
+
+    if (!pretty)
+        return;
+    buf_append(out, "\n", 1);
+    for (i = 0; i < depth; i++)
+        buf_append(out, "  ", 2);
+}
+
+static void json_write(byte_buf *out, const json_value *value, int pretty, int depth)
+{
+    const json_value *child;
+
+    switch (value->type) {
+        case JSON_NULL:   buf_append(out, "null", 4); break;
+        case JSON_BOOL:   if (value->boolean) buf_append(out, "true", 4);
+                          else                buf_append(out, "false", 5);
+                          break;
+        case JSON_NUMBER: json_write_number(out, value->number); break;
+        case JSON_STRING: json_write_string(out, value->string); break;
+
+        case JSON_ARRAY:
+        case JSON_OBJECT: {
+            int is_object = value->type == JSON_OBJECT;
+
+            buf_append(out, is_object ? "{" : "[", 1);
+            for (child = value->children; child; child = child->next) {
+                json_write_indent(out, pretty, depth + 1);
+                if (is_object) {
+                    json_write_string(out, child->key);
+                    buf_append(out, pretty ? ": " : ":", pretty ? 2 : 1);
+                }
+                json_write(out, child, pretty, depth + 1);
+                if (child->next)
+                    buf_append(out, ",", 1);
+            }
+            if (value->children)
+                json_write_indent(out, pretty, depth);
+            buf_append(out, is_object ? "}" : "]", 1);
+            break;
+        }
+    }
+}
+
+char *json_serialize(const json_value *value, int pretty)
+{
+    byte_buf out = {0};
+
+    if (!value)
+        return str_dup("null");
+    json_write(&out, value, pretty, 0);
+    if (pretty)
+        buf_append(&out, "\n", 1);
+    return buf_finish(&out, NULL);
 }

@@ -356,6 +356,10 @@ static int cmd_fetch(const options *opts, const char *code)
              (unsigned long)report.level_files, (unsigned long)report.challenge_files,
              digest_levels_dir(dig));
     log_step("extracted", "%lu file(s) to %s", (unsigned long)report.file_count, report.dir);
+    if (report.state_path[0])
+        log_step("recorded", "download in %s", report.state_path);
+    if (report.warning[0])
+        fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
     printf("%s fetched successfully.\n", upper);
 
     rc = EXIT_OK;

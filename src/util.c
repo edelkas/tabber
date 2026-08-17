@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "util.h"
 
@@ -106,6 +107,15 @@ void err_set(char *err, size_t errsz, const char *fmt, ...)
     va_start(ap, fmt);
     vsnprintf(err, errsz, fmt, ap);
     va_end(ap);
+}
+
+void time_now_iso8601(char *out, size_t outsz)
+{
+    time_t now = time(NULL);
+    struct tm *utc = gmtime(&now);
+
+    if (!utc || strftime(out, outsz, "%Y-%m-%dT%H:%M:%SZ", utc) == 0)
+        snprintf(out, outsz, "1970-01-01T00:00:00Z");   /* clock unavailable */
 }
 
 void buf_append(byte_buf *buf, const void *data, size_t len)
