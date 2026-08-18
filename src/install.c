@@ -5,7 +5,9 @@
 #include "config.h"
 #include "install.h"
 #include "json.h"
+#include "patch.h"
 #include "platform.h"
+#include "server.h"
 #include "tabs.h"
 #include "util.h"
 
@@ -124,14 +126,33 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     const char *levels_name = digest_levels_dir(dig);
     const json_value *cfg_node = digest_config(dig);
     str_list supported = {0}, entries = {0}, missing = {0}, conflicts = {0};
+    str_list known = {0};
     install_file *files = NULL;
     size_t count = 0, i, done = 0;
-    char *game_dir = NULL, *tab_dir = NULL, *tab_root = NULL;
+    char *game_dir = NULL, *tab_dir = NULL, *tab_root = NULL, *patch_uri = NULL;
     char cfg_err[TB_ERR_LEN];
-    config *state;
-    int rc = -1;
+    config *state = NULL;
+    lib_image img;
+    lib_health health;
+    server_addr addr;
+    server_source source;
+    int lib_loaded = 0, rc = -1;
 
     memset(report, 0, sizeof(*report));
+
+    /* --- Is the game in the state we think it is? --- */
+    state = config_load(cfg_err, sizeof cfg_err);
+    if (!state) {
+        err_set(err, errsz, "%s", cfg_err);
+        goto done;
+    }
+    if (lib_check(state, dig, paths, &health, err, errsz) != 0)
+        goto done;
+    config_save(state, cfg_err, sizeof cfg_err);   /* record what the check saw */
+    if (!health.healthy) {
+        err_set(err, errsz, "the game is not in a clean state: %s", health.detail);
+        goto done;
+    }
 
     /* --- Where the files come from and go to --- */
     game_dir = path_join(paths->install_dir, NPP_ASSETS_SUBDIR);
@@ -169,21 +190,21 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     files = entries.count ? xmalloc(entries.count * sizeof(*files)) : NULL;
     for (i = 0; i < entries.count; i++) {
         const char *name = entries.items[i];
-        char *source = path_join(tab_dir, name);
+        char *src_path = path_join(tab_dir, name);
 
-        if (!plat_is_file(source)) {       /* subfolders are not ours to install */
-            free(source);
+        if (!plat_is_file(src_path)) {     /* subfolders are not ours to install */
+            free(src_path);
             continue;
         }
         if (!str_list_contains(&supported, name)) {
             /* Not a file the game reads: leave it behind and say so. */
             str_list_push(&report->skipped, str_dup(name));
-            free(source);
+            free(src_path);
             continue;
         }
 
         files[count].name = str_dup(name);
-        files[count].source = source;
+        files[count].source = src_path;
         files[count].target = path_join(game_dir, name);
         files[count].backup = str_fmt("%s%s", files[count].target, INSTALL_BACKUP_SUFFIX);
         files[count].data = NULL;
@@ -225,6 +246,35 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     }
 
+    /* --- The library must still carry the official URI, exactly once --- */
+    server_known_uris(state, dig, &known);
+    if (lib_open(paths, &known, &img, err, errsz) != 0)
+        goto done;
+    lib_loaded = 1;
+
+    if (img.state == LIB_PATCHED) {
+        err_set(err, errsz, "the library already points at '%s'; a custom tab "
+                            "appears to be installed", img.uri);
+        goto done;
+    }
+    if (img.state != LIB_ORIGINAL) {
+        err_set(err, errsz, "the official server URI is not in '%s'; the library "
+                            "may have been patched by another tool", img.path);
+        goto done;
+    }
+    if (img.occurrences != 1) {
+        err_set(err, errsz, "the official server URI appears %d times in the library, "
+                            "expected exactly once", img.occurrences);
+        goto done;
+    }
+
+    /* The address to point the game at, and the URI that will replace the
+     * official one. Both have to be settled before anything is written. */
+    server_resolve(state, dig, 1, &addr, &source);
+    patch_uri = lib_build_uri(&addr, tab->code, LIB_URI_BUDGET, err, errsz);
+    if (!patch_uri)
+        goto done;
+
     /* Read everything up front, so the writing phase is as short as possible. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].source, &files[i].len);
@@ -252,33 +302,42 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         done++;
     }
 
+    /* --- Redirect the game's queries, last and quickest --- */
+    if (lib_write_uri(&img, patch_uri, err, errsz) != 0) {
+        rollback(files, done);        /* the level files go back as they were */
+        goto done;
+    }
+
     report->installed_count = done;
     report->game_levels_dir = game_dir;
     report->tab_levels_dir = tab_dir;
     game_dir = tab_dir = NULL;               /* ownership moves to the report */
+    snprintf(report->server_uri, sizeof report->server_uri, "%s", patch_uri);
+    snprintf(report->server_source, sizeof report->server_source, "%s",
+             server_source_name(source));
 
     /* --- Record it --- */
-    state = config_load(cfg_err, sizeof cfg_err);
-    if (!state) {
+    config_set_installed(state, tab->id, tab->code);
+    config_set_state_library(state, 1);      /* the library now matches */
+    if (config_save(state, cfg_err, sizeof cfg_err) != 0)
         err_set(report->warning, sizeof report->warning,
                 "the install was not recorded: %s", cfg_err);
-    } else {
-        config_set_installed(state, tab->id, tab->code);
-        if (config_save(state, cfg_err, sizeof cfg_err) != 0)
-            err_set(report->warning, sizeof report->warning,
-                    "the install was not recorded: %s", cfg_err);
-        else
-            snprintf(report->state_path, sizeof report->state_path, "%s", state->path);
-        config_free(state);
-    }
+    else
+        snprintf(report->state_path, sizeof report->state_path, "%s", state->path);
     rc = 0;
 
 done:
+    if (lib_loaded)
+        lib_close(&img);
+    if (state)
+        config_free(state);
     install_files_free(files, count);
     str_list_free(&supported);
     str_list_free(&entries);
     str_list_free(&missing);
     str_list_free(&conflicts);
+    str_list_free(&known);
+    free(patch_uri);
     free(game_dir);
     free(tab_dir);
     free(tab_root);
@@ -359,15 +418,33 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
                   uninstall_report *report, char *err, size_t errsz)
 {
     const char *levels_name = digest_levels_dir(dig);
-    str_list wanted = {0}, missing = {0}, no_backup = {0};
+    str_list wanted = {0}, missing = {0}, no_backup = {0}, known = {0};
     install_file *files = NULL;
     size_t count = 0, i, restored = 0;
-    char *game_dir;
+    char *game_dir = NULL;          /* the checks above may bail out first */
     char cfg_err[TB_ERR_LEN];
-    config *state;
-    int rc = -1;
+    char patched_uri[LIB_URI_MAX];
+    config *state = NULL;
+    lib_image img;
+    lib_health health;
+    int lib_loaded = 0, rc = -1;
 
     memset(report, 0, sizeof(*report));
+    patched_uri[0] = '\0';
+
+    /* --- Is the game in the state we think it is? --- */
+    state = config_load(cfg_err, sizeof cfg_err);
+    if (!state) {
+        err_set(err, errsz, "%s", cfg_err);
+        goto done;
+    }
+    if (lib_check(state, dig, paths, &health, err, errsz) != 0)
+        goto done;
+    config_save(state, cfg_err, sizeof cfg_err);   /* record what the check saw */
+    if (!health.healthy) {
+        err_set(err, errsz, "the game is not in a clean state: %s", health.detail);
+        goto done;
+    }
 
     game_dir = path_join(paths->install_dir, NPP_ASSETS_SUBDIR);
     {
@@ -426,6 +503,38 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     }
 
+    /* --- The library must point at this very tab --- */
+    server_known_uris(state, dig, &known);
+    if (lib_open(paths, &known, &img, err, errsz) != 0)
+        goto done;
+    lib_loaded = 1;
+
+    if (img.state == LIB_ORIGINAL) {
+        err_set(err, errsz, "the library still points at the official server, so no "
+                            "custom tab appears to be installed");
+        goto done;
+    }
+    if (img.state != LIB_PATCHED) {
+        err_set(err, errsz, "the library points at no URI we recognise; it may have "
+                            "been patched by another tool");
+        goto done;
+    }
+    if (img.occurrences != 1) {
+        err_set(err, errsz, "the server URI appears %d times in the library, expected "
+                            "exactly once", img.occurrences);
+        goto done;
+    }
+    if (!str_ieq(img.code, tab->code)) {
+        /* The library names a different tab than the one being uninstalled:
+         * whatever the state file says, the game is not consistent. */
+        err_set(err, errsz, "the library is patched for '%s', not '%s'. The game is in "
+                            "an inconsistent state: what is installed is not what we "
+                            "were asked to remove",
+                img.code[0] ? img.code : "an unnamed tab", tab->code);
+        goto done;
+    }
+    snprintf(patched_uri, sizeof patched_uri, "%s", img.uri);
+
     /* Keep the tab's copies in memory, so a failure part-way can be undone. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].target, &files[i].len);
@@ -435,18 +544,25 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         }
     }
 
-    /* --- Apply: one atomic rename per file puts the original back --- */
+    /*
+     * --- Apply, undoing the install in reverse order: the library first,
+     * then the level files ---
+     */
+    if (lib_write_uri(&img, LIB_OFFICIAL_URI, err, errsz) != 0)
+        goto done;
+
     for (i = 0; i < count; i++) {
         if (plat_replace_file(files[i].backup, files[i].target) != 0) {
             err_set(err, errsz, "cannot restore '%s' from '%s'; is the game running?",
                     files[i].target, files[i].backup);
             /* Put back what was already restored: move the original aside
-             * again and rewrite the tab's copy from memory. */
+             * again, rewrite the tab's copy, and re-point the library. */
             while (restored-- > 0) {
                 plat_replace_file(files[restored].target, files[restored].backup);
                 plat_write_file(files[restored].target, files[restored].data,
                                 files[restored].len);
             }
+            lib_write_uri(&img, patched_uri, cfg_err, sizeof cfg_err);
             goto done;
         }
         restored++;
@@ -456,28 +572,28 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     report->game_levels_dir = game_dir;
     collect_leftover_backups(report->game_levels_dir, &wanted, &report->leftovers);
     game_dir = NULL;                 /* ownership moves to the report */
+    snprintf(report->server_uri, sizeof report->server_uri, "%s", LIB_OFFICIAL_URI);
 
     /* --- Record it. install_date is left alone: it is still true. --- */
-    state = config_load(cfg_err, sizeof cfg_err);
-    if (!state) {
+    config_set_uninstalled(state, tab->id, tab->code);
+    config_set_state_library(state, 1);      /* the library is official again */
+    if (config_save(state, cfg_err, sizeof cfg_err) != 0)
         err_set(report->warning, sizeof report->warning,
                 "the uninstall was not recorded: %s", cfg_err);
-    } else {
-        config_set_uninstalled(state, tab->id, tab->code);
-        if (config_save(state, cfg_err, sizeof cfg_err) != 0)
-            err_set(report->warning, sizeof report->warning,
-                    "the uninstall was not recorded: %s", cfg_err);
-        else
-            snprintf(report->state_path, sizeof report->state_path, "%s", state->path);
-        config_free(state);
-    }
+    else
+        snprintf(report->state_path, sizeof report->state_path, "%s", state->path);
     rc = 0;
 
 done:
+    if (lib_loaded)
+        lib_close(&img);
+    if (state)
+        config_free(state);
     install_files_free(files, count);
     str_list_free(&wanted);
     str_list_free(&missing);
     str_list_free(&no_backup);
+    str_list_free(&known);
     free(game_dir);
     return rc;
 }

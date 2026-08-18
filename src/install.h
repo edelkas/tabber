@@ -37,6 +37,8 @@ typedef struct {
     char *tab_levels_dir;       /* where they came from                    */
     size_t installed_count;     /* files replaced                          */
     str_list skipped;           /* tab files the game does not support     */
+    char server_uri[128];       /* what the library now points at          */
+    char server_source[32];     /* where that address came from            */
     char state_path[512];       /* state file updated, empty if none       */
     char warning[TB_ERR_LEN];   /* non-fatal problem, empty if none        */
 } install_report;
@@ -65,6 +67,7 @@ typedef struct {
     size_t restored_count;      /* originals put back                      */
     str_list skipped;           /* shipped files the game does not support */
     str_list leftovers;         /* other backups still in the game folder  */
+    char server_uri[128];       /* the URI the library points at again     */
     char state_path[512];       /* state file updated, empty if none       */
     char warning[TB_ERR_LEN];   /* non-fatal problem, empty if none        */
 } uninstall_report;

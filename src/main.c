@@ -13,6 +13,7 @@
 #include "config.h"
 #include "digest.h"
 #include "install.h"
+#include "patch.h"
 #include "paths.h"
 #include "platform.h"
 #include "tabs.h"
@@ -63,6 +64,7 @@ static void print_usage(FILE *out)
         "  remove CODE      Delete the downloaded files of the custom tab CODE\n"
         "  install CODE     Install the custom tab CODE into the game (fetching it if needed)\n"
         "  uninstall CODE   Restore the game's original files, undoing an install\n"
+        "  check            Verify the game library matches the recorded state\n"
         "\n"
         "Options:\n"
         "  -b, --bare       Machine-readable output: paths or tab-separated fields only\n"
@@ -479,6 +481,8 @@ static int cmd_install(const options *opts, const char *code)
     log_step("installed", "%lu file(s), %lu skipped",
              (unsigned long)report.installed_count, (unsigned long)report.skipped.count);
     log_step("originals", "kept alongside with the '%s' suffix", INSTALL_BACKUP_SUFFIX);
+    log_step("library", "queries redirected to %s (from %s)",
+             report.server_uri, report.server_source);
     if (report.state_path[0])
         log_step("recorded", "install in %s", report.state_path);
     if (report.warning[0])
@@ -490,6 +494,68 @@ static int cmd_install(const options *opts, const char *code)
 
 done:
     npp_paths_free(&paths);
+    digest_free(dig);
+    return rc;
+}
+
+/* ---- check ------------------------------------------------------------- */
+
+/* Names the library state in a way that reads well in a report. */
+static const char *lib_state_text(lib_state state)
+{
+    switch (state) {
+        case LIB_ORIGINAL: return "official server (no tab installed)";
+        case LIB_PATCHED:  return "3rd party server (a tab is installed)";
+        default:           return "unrecognised";
+    }
+}
+
+static int cmd_check(const options *opts)
+{
+    char err[TB_ERR_LEN];
+    digest *dig;
+    config *state;
+    npp_paths paths = {0};
+    lib_health health;
+    int rc = EXIT_FAILED;
+
+    (void)opts;
+
+    dig = digest_load(err, sizeof err);   /* may be absent: only used for a server key */
+    state = config_load(err, sizeof err);
+    if (!state) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        digest_free(dig);
+        return EXIT_FAILED;
+    }
+
+    if (npp_find_game_dirs(&paths, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        goto done;
+    }
+
+    if (lib_check(state, dig, &paths, &health, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        goto done;
+    }
+    /* The verdict is part of the state, so it is saved whatever it says. */
+    if (config_save(state, err, sizeof err) != 0)
+        fprintf(stderr, TABBER_NAME ": warning: the check was not recorded: %s\n", err);
+
+    log_step("library", "%s", lib_state_text(health.state));
+    log_step("points at", "%s", health.uri[0] ? health.uri : "(nothing recognisable)");
+    log_step("recorded", "%s", health.state_code[0] ? health.state_code : "no tab installed");
+    if (health.healthy) {
+        printf("Library check passed.\n");
+        rc = EXIT_OK;
+    } else {
+        fprintf(stderr, TABBER_NAME ": library check FAILED: %s\n", health.detail);
+        rc = EXIT_FAILED;
+    }
+
+done:
+    npp_paths_free(&paths);
+    config_free(state);
     digest_free(dig);
     return rc;
 }
@@ -555,6 +621,7 @@ static int cmd_uninstall(const options *opts, const char *code)
 
     log_step("target", "%s", report.game_levels_dir);
     log_step("restored", "%lu original file(s)", (unsigned long)report.restored_count);
+    log_step("library", "queries point back at %s", report.server_uri);
     if (report.state_path[0])
         log_step("recorded", "uninstall in %s", report.state_path);
     if (report.warning[0])
@@ -688,6 +755,8 @@ int main(int argc, char **argv)
         return cmd_install(&opts, argument);
     if (!strcmp(command, "uninstall"))
         return cmd_uninstall(&opts, argument);
+    if (!strcmp(command, "check"))
+        return cmd_check(&opts);
 
     fprintf(stderr, TABBER_NAME ": unknown command '%s'\n", command);
     print_usage(stderr);

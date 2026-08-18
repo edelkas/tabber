@@ -13,9 +13,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winhttp.h>
+#include <ws2tcpip.h>   /* getaddrinfo */
 
 #ifdef _MSC_VER
 #  pragma comment(lib, "winhttp.lib")
+#  pragma comment(lib, "ws2_32.lib")
 #endif
 
 /* Size of the chunks pulled out of a response body. */
@@ -186,12 +188,54 @@ done:
     return rc;
 }
 
+int net_host_resolves(const char *host)
+{
+    WSADATA wsa;
+    struct addrinfo hints, *result = NULL;
+    int ok;
+
+    if (!host || !*host)
+        return 0;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+        return 0;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    ok = getaddrinfo(host, NULL, &hints, &result) == 0;
+    if (result)
+        freeaddrinfo(result);
+    WSACleanup();
+    return ok;
+}
+
 /* ====================================================================== */
 /*  POSIX: libcurl                                                        */
 /* ====================================================================== */
 #else
 
 #include <curl/curl.h>
+#include <netdb.h>      /* getaddrinfo */
+#include <sys/socket.h>
+
+int net_host_resolves(const char *host)
+{
+    struct addrinfo hints, *result = NULL;
+    int ok;
+
+    if (!host || !*host)
+        return 0;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    ok = getaddrinfo(host, NULL, &hints, &result) == 0;
+    if (result)
+        freeaddrinfo(result);
+    return ok;
+}
 
 /* Accumulates the response body, enforcing the size cap. */
 static size_t net_sink(char *ptr, size_t size, size_t nmemb, void *userdata)

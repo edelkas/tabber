@@ -28,6 +28,7 @@ tabber [options] [command]
   remove CODE      Delete the downloaded files of the custom tab CODE
   install CODE     Install the custom tab CODE into the game (fetching it if needed)
   uninstall CODE   Restore the game's original files, undoing an install
+  check            Verify the game library matches the recorded state
 
   -b, --bare       Machine-readable output: paths or tab-separated fields only
   -v, --verbose    Print extra detail
@@ -49,6 +50,8 @@ and warnings go to stderr, so stdout stays parseable.
 | `src/digest.c/.h`| The custom tab catalogue: fetch, cache, parse, look up |
 | `src/tabs.c/.h`  | Downloading, verifying and unpacking a custom tab |
 | `src/install.c/.h` | Installing a custom tab into the game |
+| `src/patch.c/.h` | Redirecting the game's server queries, and the library health check |
+| `src/server.c/.h` | Which 3rd party server to point the game at |
 | `src/config.c/.h`| The tool's own configuration and state (`config.json`) |
 | `src/kv.c/.h`    | Parser for Valve's KeyValues format (`.vdf`, `.acf`) |
 | `src/json.c/.h`  | Minimal JSON parser (RFC 8259) |
@@ -158,15 +161,67 @@ read into memory before any of it is written:
 
 | Check | Abort reason |
 | --- | --- |
+| The library check passes | the game is not in a state we recognise |
 | No other tab installed | another tab is in place |
 | Every file the tab replaces exists in the game | the game is missing files |
 | No `OG` backup exists yet | a previous install was never undone |
 | The game folder accepts writes | permissions, or the game is running |
+| The library still carries the official URI, once | it looks patched already |
+| The new URI fits in the original's length | the server address is too long |
 
 That last one matters: without it, installing over an existing backup would
 overwrite a pristine original with a modded file. If a rename or write still
 fails part-way through, the files already done are rolled back, so a failed
 install leaves the game folder exactly as it was.
+
+## Redirecting the server
+
+Installing also points the game at a 3rd party server, so custom tabs get their
+own leaderboards. The main library (`npp.dll`, `libnpp.so`, or
+`libnpp.dylib` inside `N++.app/Contents/Frameworks/` on macOS) carries the
+server URI as a plain string; it is overwritten in place with the 3rd party URI
+plus the tab's code as the first path component, then padded with NUL bytes to
+the original's exact length, so nothing in the binary moves:
+
+```
+https://dojo.nplusplus.ninja   ->   http://outte.ovh:8126/ctp\0\0\0
+```
+
+The address is looked up in four places, first match wins:
+
+1. the `server` object in `config.json` — `{"scheme": "http", "host": ..., "port": ...}`
+2. the `server` object in the digest, same shape
+3. the built-in host, `outte.ovh:8126`
+4. the built-in address, `45.32.150.168:8126`, used when the host stops resolving
+
+`scheme` is optional and defaults to HTTP, which the game also assumes for a
+URI without one. That is what lets the `http://` prefix be dropped when the URI
+would otherwise not fit — necessary for an address literal, since
+`http://45.32.150.168:8126/ctp` is 29 bytes against a budget of 28.
+
+The official URI must appear exactly once, or the install is refused.
+
+## The library check
+
+`tabber check` reads the library, works out which URI it carries, and compares
+that with what `config.json` says is installed:
+
+| Recorded | Library | Verdict |
+| --- | --- | --- |
+| nothing installed | official URI | healthy |
+| tab X installed | 3rd party URI ending in `/X` | healthy |
+| nothing installed | 3rd party URI | a tab is installed that we do not know about |
+| tab X installed | official URI | no tab is really installed |
+| tab X installed | URI ending in `/Y` | the game is serving a different tab |
+
+The verdict is written to `state.library` in `config.json` every time the check
+runs, and the check runs automatically before every install and uninstall, so
+neither ever starts from a state we do not understand.
+
+Recognising a patched library does not depend on knowing which form was
+written: every URI from all four sources is searched for, with and without the
+`http://` prefix. The search deliberately stops at the port, so the tab code
+that follows can be compared with the one we expect.
 
 ## Uninstalling
 
@@ -180,8 +235,14 @@ Both checks run before anything moves, and either aborts the whole thing:
 
 | Check | Abort reason |
 | --- | --- |
+| The library check passes | the game is not in a state we recognise |
 | Every file the tab installed is in the game folder | the tab does not look installed |
 | Every one of them has its `OG` backup | restoring would leave the game short of files |
+| The library carries a 3rd party URI | no tab appears to be installed |
+| That URI names this very tab | the game is serving a different tab |
+
+The library is restored first and the level files second, undoing the install in
+reverse, and a failure in the second step re-applies the patch.
 
 The files on disk are the authority, not `config.json`: a state file that has
 drifted out of step will not stop a real installation from being undone.
@@ -232,6 +293,7 @@ alone rather than overwriting whatever is in there.
 - [x] Track configuration and per-tab state in `config.json`
 - [x] Remove a downloaded tab
 - [x] Swap level and challenge files (install / uninstall)
+- [x] Patch the main library to redirect server queries
 - [ ] Patch the main library to redirect server queries
 - [ ] Install custom palettes
 - [ ] Swap the savefile

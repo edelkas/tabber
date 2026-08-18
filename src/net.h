@@ -27,4 +27,11 @@
  */
 int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t errsz);
 
+/*
+ * Whether a host name resolves. Used to decide if the built-in server name is
+ * still alive before patching it into the game. An address literal always
+ * "resolves", and a machine with no network at all reports failure.
+ */
+int net_host_resolves(const char *host);
+
 #endif /* TABBER_NET_H */

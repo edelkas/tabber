@@ -32,6 +32,8 @@
 
 /* Keys of the state file. */
 #define CJK_TABS             "tabs"
+#define CJK_STATE            "state"     /* what the game files look like */
+#define CJK_LIBRARY          "library"   /* did the library check pass?   */
 #define CJK_ID               "id"
 #define CJK_CODE             "code"
 #define CJK_DOWNLOADED       "downloaded"
@@ -63,6 +65,12 @@ void config_free(config *cfg);
 
 /* The entry for `code`, or NULL when the tab has no history yet. */
 json_value *config_find_tab(config *cfg, const char *code);
+
+/*
+ * Records whether the game's library still matches what we believe is
+ * installed, under "state" -> "library". Refreshed on every check.
+ */
+void config_set_state_library(config *cfg, int ok);
 
 /*
  * The entry for `code`, created with all fields at their defaults (not

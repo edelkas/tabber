@@ -115,6 +115,17 @@ json_value *config_find_tab(config *cfg, const char *code)
     return NULL;
 }
 
+void config_set_state_library(config *cfg, int ok)
+{
+    json_value *state = (json_value *)json_get(cfg->root, CJK_STATE);
+
+    if (!state || state->type != JSON_OBJECT) {
+        state = json_new_object();
+        json_object_set(cfg->root, CJK_STATE, state);
+    }
+    json_object_set(state, CJK_LIBRARY, json_new_bool(ok));
+}
+
 json_value *config_tab_entry(config *cfg, int id, const char *code)
 {
     json_value *tabs = (json_value *)json_get(cfg->root, CJK_TABS);

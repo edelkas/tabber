@@ -49,6 +49,19 @@
 
 #define NPP_DEFAULT_INSTALLDIR  "N++"     /* fallback for AppState->installdir */
 #define NPP_ASSETS_SUBDIR       "NPP"     /* assets folder, marks a real install */
+
+/*
+ * The main library, holding the game's core code. It sits in the installation
+ * root, except on macOS where it lives inside the application bundle.
+ */
+#ifdef _WIN32
+#  define NPP_MAIN_LIBRARY      "npp.dll"
+#elif defined(__APPLE__)
+#  define NPP_MAIN_LIBRARY      "libnpp.dylib"
+#  define NPP_BUNDLE_SUBDIR     "N++.app/Contents/Frameworks"
+#else
+#  define NPP_MAIN_LIBRARY      "libnpp.so"
+#endif
 #define NPP_PERSONAL_VENDOR     "Metanet" /* personal folder: <base>/Metanet/N++ */
 #define NPP_PERSONAL_GAME       "N++"
 

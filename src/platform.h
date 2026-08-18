@@ -73,6 +73,12 @@ char *plat_read_file(const char *path, size_t *len_out);
 /* Writes `len` bytes to `path`, truncating it. Returns 0 on success. */
 int plat_write_file(const char *path, const void *data, size_t len);
 
+/*
+ * Overwrites `len` bytes at `offset` inside an existing file, leaving the rest
+ * of it alone. Returns 0 on success.
+ */
+int plat_write_at(const char *path, size_t offset, const void *data, size_t len);
+
 /* Renames `src` over `dst`, replacing it atomically. Returns 0 on success. */
 int plat_replace_file(const char *src, const char *dst);
 

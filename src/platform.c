@@ -685,6 +685,23 @@ int plat_mkdir_p(const char *path)
     return rc;
 }
 
+int plat_write_at(const char *path, size_t offset, const void *data, size_t len)
+{
+    FILE *f = plat_fopen(path, "r+b");   /* update in place, never truncate */
+    size_t written;
+
+    if (!f)
+        return -1;
+    if (fseek(f, (long)offset, SEEK_SET) != 0) {
+        fclose(f);
+        return -1;
+    }
+    written = fwrite(data, 1, len, f);
+    if (fclose(f) != 0 || written != len)
+        return -1;
+    return 0;
+}
+
 char *path_dirname(const char *path)
 {
     const char *slash = NULL, *p;
