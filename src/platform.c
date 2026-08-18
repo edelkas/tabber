@@ -685,6 +685,20 @@ int plat_mkdir_p(const char *path)
     return rc;
 }
 
+char *plat_app_root(void)
+{
+    char *override = plat_getenv(TABBER_ENV_HOME);
+    char *dir;
+
+    if (override) {
+        if (plat_is_dir(override))
+            return override;
+        free(override);   /* names nothing usable: fall back to the executable */
+    }
+    dir = plat_exe_dir();
+    return dir ? dir : str_dup(".");
+}
+
 int plat_write_at(const char *path, size_t offset, const void *data, size_t len)
 {
     FILE *f = plat_fopen(path, "r+b");   /* update in place, never truncate */

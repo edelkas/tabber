@@ -80,6 +80,12 @@
 #define PROTON_PERSONAL_SUFFIX  "Steam/steamapps/compatdata/" NPP_STEAM_APPID \
                                 "/pfx/drive_c/users/steamuser/My Documents"
 
+/*
+ * Overrides the whole Steam lookup with a ready-made installation directory.
+ * Meant for tests and for copies of the game Steam does not know about.
+ */
+#define TABBER_ENV_GAME_DIR "TABBER_GAME_DIR"
+
 /* ---- Discovery results ------------------------------------------------- */
 
 typedef struct {

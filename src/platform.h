@@ -50,6 +50,16 @@ char *plat_documents_dir(void);
 /* Directory holding the running executable, or NULL if it cannot be found. */
 char *plat_exe_dir(void);
 
+/* Overrides the tool's root directory; mainly for tests and portable setups. */
+#define TABBER_ENV_HOME "TABBER_HOME"
+
+/*
+ * The tool's root: where config.json, the cached digest and the tab store
+ * live. That is the executable's own directory, unless TABBER_ENV_HOME names
+ * an existing directory. Caller frees.
+ */
+char *plat_app_root(void);
+
 /* ---- Filesystem -------------------------------------------------------- */
 
 int plat_is_dir(const char *path);

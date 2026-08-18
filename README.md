@@ -41,6 +41,46 @@ Exit status is `0` on success, `1` when a directory could not be found, `2` when
 an operation failed (network, corrupt digest) and `3` on a usage error. Errors
 and warnings go to stderr, so stdout stays parseable.
 
+## Tests
+
+```
+build.bat test          Windows: build and run the offline suite
+build.bat test online   ...including the tests that need the network
+build.bat test full     ...including the sweep over every published tab
+make test / test-online / test-full     Linux and macOS
+```
+
+The suite lives in `test/` and links the same objects as the tool, so it
+exercises the real code rather than a copy of it. It runs in three tiers:
+
+| Tier | Needs | Covers |
+| --- | --- | --- |
+| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP/DEFLATE, state file, server resolution, install/uninstall/patching against a stand-in game |
+| `--online` | the network | downloading the live digest, fetching a tab and verifying it |
+| `--full` | the network | downloading and verifying **every** published tab |
+
+Nothing in the suite touches a real N++ installation or the tool's own state.
+Each test builds a scratch world: a temporary tool root (via `TABBER_HOME`) and
+a stand-in game (via `TABBER_GAME_DIR`) with the game's level files and a
+library carrying the official URI. The scratch area is deleted when the run
+ends.
+
+Some things are worth knowing about how the tests check what they check:
+
+- **Decompression** is judged by CRC-32, computed over the bytes the
+  decompressor produced and compared with what the archive recorded. In the
+  full tier that is an independent verdict on every file of every tab.
+- **Corruption** is swept byte by byte through the compressed data of the
+  embedded fixture: every single-byte flip must be caught.
+- **Refusals** assert not just the error but that nothing moved: files, backups
+  and the library are all re-checked afterwards.
+- The embedded ZIP fixture (`test/fixture_zip.c`) deliberately mixes a stored
+  directory entry, a deflated file, and a deflate *stored block*, so all three
+  paths through the decompressor are used without any network.
+
+When a feature lands, its tests land with it in the same tier as the code they
+cover.
+
 ## Layout
 
 | File | Purpose |
@@ -62,6 +102,17 @@ and warnings go to stderr, so stdout stays parseable.
 | `src/platform.c/.h` | OS abstraction: filesystem, environment, Windows registry, UTF-8 paths |
 | `src/util.c/.h`  | Allocation, string, buffer and error helpers |
 | `src/version.h`  | Program name and version |
+| `test/`          | The test suite (see above) |
+
+## Environment
+
+| Variable | Effect |
+| --- | --- |
+| `TABBER_HOME` | Use this directory as the tool's root instead of the executable's, for `config.json`, the cached digest and `tabs/` |
+| `TABBER_GAME_DIR` | Use this N++ installation directory instead of asking Steam |
+
+Both are meant for tests and for unusual setups (a portable copy, a game Steam
+does not know about); neither is needed in normal use.
 
 ## How the directories are found
 

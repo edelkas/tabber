@@ -256,6 +256,23 @@ int npp_find_game_dirs(npp_paths *paths, char *err, size_t errsz)
     char *installdir, *candidate;
     int ok;
 
+    /* An explicit installation directory short-circuits the Steam lookup. */
+    {
+        char *override = plat_getenv(TABBER_ENV_GAME_DIR);
+        if (override) {
+            path_to_native(override);
+            ok = install_dir_ok(override);
+            if (ok)
+                paths->install_dir = finalize_dir(override);
+            else
+                err_set(err, errsz, "%s points at '%s', which is not an N++ installation "
+                                    "(no '%s' folder)",
+                        TABBER_ENV_GAME_DIR, override, NPP_ASSETS_SUBDIR);
+            free(override);
+            return ok ? 0 : -1;
+        }
+    }
+
     paths->steam_dir = find_steam_dir(err, errsz);
     if (!paths->steam_dir)
         return -1;

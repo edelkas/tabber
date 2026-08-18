@@ -13,7 +13,7 @@ static int g_refreshed_this_session = 0;
 
 char *digest_cache_path(void)
 {
-    char *dir = plat_exe_dir();
+    char *dir = plat_app_root();
     char *path;
 
     /* Falling back to the working directory keeps the tool usable even if the

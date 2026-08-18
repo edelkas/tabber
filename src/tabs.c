@@ -19,7 +19,7 @@ typedef struct {
 
 char *tabs_root_dir(void)
 {
-    char *dir = plat_exe_dir();
+    char *dir = plat_app_root();
     char *root = path_join(dir ? dir : ".", TABS_DIR_NAME);
 
     free(dir);

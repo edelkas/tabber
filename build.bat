@@ -1,11 +1,17 @@
 @echo off
 rem Builds tabber with MSVC. Imports the compiler environment via vswhere when
 rem cl.exe is not already on PATH.
+rem
+rem   build.bat            build the tool
+rem   build.bat test       build and run the test suite (offline tiers)
+rem   build.bat test full  build and run everything, network included
 setlocal
 cd /d "%~dp0"
 
 set "OUTDIR=build"
-set "SOURCES=src\main.c src\util.c src\platform.c src\kv.c src\json.c src\net.c src\md5.c src\inflate.c src\zip.c src\paths.c src\digest.c src\config.c src\tabs.c src\server.c src\patch.c src\install.c"
+set "LIBSRC=src\util.c src\platform.c src\kv.c src\json.c src\net.c src\md5.c src\inflate.c src\zip.c src\paths.c src\digest.c src\config.c src\tabs.c src\server.c src\patch.c src\install.c"
+set "SOURCES=src\main.c %LIBSRC%"
+set "TESTSRC=test\test_main.c test\test_core.c test\test_archive.c test\test_state.c test\test_game.c test\test_online.c test\fixture_zip.c"
 set "CFLAGS=/nologo /W4 /O2 /std:c11 /D_CRT_SECURE_NO_WARNINGS"
 
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"
@@ -16,9 +22,23 @@ if errorlevel 1 exit /b 1
 
 cl %CFLAGS% /Fe%OUTDIR%\tabber.exe /Fo%OUTDIR%\ %SOURCES%
 if errorlevel 1 exit /b 1
-
 echo Built %OUTDIR%\tabber.exe
-exit /b 0
+
+if /i not "%1"=="test" exit /b 0
+
+if not exist "%OUTDIR%\test" mkdir "%OUTDIR%\test"
+cl %CFLAGS% /I src /Fe%OUTDIR%\test\test_tabber.exe /Fo%OUTDIR%\test\ %TESTSRC% %LIBSRC%
+if errorlevel 1 exit /b 1
+echo Built %OUTDIR%\test\test_tabber.exe
+
+if /i "%2"=="full" (
+    "%OUTDIR%\test\test_tabber.exe" --full
+) else if /i "%2"=="online" (
+    "%OUTDIR%\test\test_tabber.exe" --online
+) else (
+    "%OUTDIR%\test\test_tabber.exe"
+)
+exit /b %errorlevel%
 
 rem ---------------------------------------------------------------------------
 :setup_msvc

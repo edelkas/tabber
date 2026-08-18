@@ -8,7 +8,7 @@
 
 char *config_path(void)
 {
-    char *dir = plat_exe_dir();
+    char *dir = plat_app_root();
     char *path = path_join(dir ? dir : ".", CONFIG_FILENAME);
 
     free(dir);

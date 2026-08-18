@@ -1,0 +1,321 @@
+/*
+ * test_core.c - Strings, paths, JSON, KeyValues and MD5.
+ *
+ * These cover the pieces every other suite leans on, including the cases that
+ * bit us for real: UTF-8 column widths, Steam's lowercase registry paths, and
+ * JSON round trips that must not lose keys.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "json.h"
+#include "kv.h"
+#include "md5.h"
+#include "platform.h"
+#include "test.h"
+#include "util.h"
+
+/* The two Steam files the tool actually parses, as they appear on disk. */
+static const char *VDF_SAMPLE =
+"\"libraryfolders\"\n"
+"{\n"
+"\t\"0\"\n"
+"\t{\n"
+"\t\t\"path\"\t\t\"C:\\\\Program Files (x86)\\\\Steam\"\n"
+"\t\t\"label\"\t\t\"\"\n"
+"\t\t\"apps\"\n"
+"\t\t{\n"
+"\t\t\t\"228980\"\t\t\"58639359\"\n"
+"\t\t\t\"230270\"\t\t\"1025481560\"\n"
+"\t\t}\n"
+"\t}\n"
+"\t\"1\"\n"
+"\t{\n"
+"\t\t\"path\"\t\t\"D:\\\\Games\\\\SteamLibrary\"\n"
+"\t\t\"apps\" { }\n"
+"\t}\n"
+"}\n";
+
+static const char *ACF_SAMPLE =
+"\"AppState\"\n"
+"{\n"
+"\t\"appid\"\t\t\"230270\"\n"
+"\t\"name\"\t\t\"N++\"\n"
+"\t// a comment the parser must ignore\n"
+"\t\"installdir\"\t\t\"N++\"\n"
+"\t\"UserConfig\"\n"
+"\t{\n"
+"\t\t\"language\"\t\t\"english\"\n"
+"\t}\n"
+"}\n";
+
+static void test_strings(void)
+{
+    char *lower;
+
+    test_case("string helpers");
+    CHECK(str_ieq("MET", "met"), "str_ieq is case-insensitive");
+    CHECK(!str_ieq("met", "meta"), "str_ieq rejects a prefix");
+    CHECK(str_ieq(NULL, NULL), "str_ieq treats two nulls as equal");
+    CHECK(!str_ieq("a", NULL), "str_ieq rejects one null");
+
+    lower = str_dup_lower("MeT99");
+    CHECK_STR(lower, "met99", "str_dup_lower");
+    free(lower);
+
+    /* Column alignment counts characters, not bytes: this is the author name
+     * that first exposed the difference. */
+    CHECK_NUM(str_display_width("Filip"), 5, "width of plain ASCII");
+    CHECK_NUM(str_display_width("Filip\xE2\x9C\x9D"), 6, "width counts U+271D once");
+    CHECK_NUM(strlen("Filip\xE2\x9C\x9D"), 8, "...though it is 8 bytes");
+}
+
+static void test_buffers(void)
+{
+    byte_buf buf = {0};
+    str_list list = {0};
+    char *out;
+    size_t len = 0;
+
+    test_case("buffers and lists");
+    buf_append(&buf, "abc", 3);
+    buf_append(&buf, "", 0);
+    buf_append(&buf, "de", 2);
+    out = buf_finish(&buf, &len);
+    CHECK_STR(out, "abcde", "buf_append then buf_finish");
+    CHECK_NUM(len, 5, "buf_finish reports the length");
+    free(out);
+
+    str_list_push(&list, str_dup("beta"));
+    str_list_push(&list, str_dup("alpha"));
+    str_list_push(&list, NULL);            /* ignored, so failed lookups are safe */
+    CHECK_NUM(list.count, 2, "str_list_push skips nulls");
+    str_list_sort(&list);
+    CHECK_STR(list.items[0], "alpha", "str_list_sort orders entries");
+    CHECK(str_list_contains(&list, "ALPHA"), "str_list_contains ignores case");
+    CHECK(!str_list_contains(&list, "gamma"), "str_list_contains rejects absent");
+    str_list_free(&list);
+    CHECK_NUM(list.count, 0, "str_list_free empties the list");
+}
+
+static void test_paths(void)
+{
+    char *joined, *dir;
+    char native[64];
+
+    test_case("path helpers");
+    joined = path_join("a", "b");
+    CHECK_STR(joined, "a" PATH_SEP_STR "b", "path_join");
+    free(joined);
+
+    joined = path_join("a" PATH_SEP_STR, PATH_SEP_STR "b");
+    CHECK_STR(joined, "a" PATH_SEP_STR "b", "path_join never doubles separators");
+    free(joined);
+
+    dir = path_dirname("a" PATH_SEP_STR "b" PATH_SEP_STR "c.txt");
+    CHECK_STR(dir, "a" PATH_SEP_STR "b", "path_dirname");
+    free(dir);
+
+    dir = path_dirname("plain.txt");
+    CHECK_STR(dir, ".", "path_dirname of a bare name");
+    free(dir);
+
+    snprintf(native, sizeof native, "%s", "one/two/");
+    path_to_native(native);
+#ifdef _WIN32
+    CHECK_STR(native, "one\\two", "path_to_native rewrites and trims separators");
+    CHECK(path_is_absolute("C:\\x"), "drive letters are absolute");
+    CHECK(path_is_absolute("\\\\server\\share"), "UNC paths are absolute");
+    CHECK(!path_is_absolute("x\\y"), "relative paths are not");
+#else
+    CHECK_STR(native, "one/two", "path_to_native trims trailing separators");
+    CHECK(path_is_absolute("/x"), "rooted paths are absolute");
+    CHECK(!path_is_absolute("x/y"), "relative paths are not");
+#endif
+}
+
+/*
+ * Steam's HKCU key stores a lowercase, forward-slash path. Canonicalisation is
+ * what turns that back into the spelling on disk.
+ */
+static void test_canonical(void)
+{
+    char *base = test_dir("canon");
+    char *mixed = path_join(base, "MiXeD_Case");
+    char *lowered, *canonical;
+
+    test_case("canonical paths");
+    plat_mkdir_p(mixed);
+
+    lowered = str_dup_lower(mixed);
+    canonical = plat_canonical_path(lowered);
+    CHECK(canonical != NULL, "an existing directory canonicalises");
+#ifdef _WIN32
+    if (canonical)
+        CHECK(strstr(canonical, "MiXeD_Case") != NULL,
+              "canonical path restores the on-disk case (got '%s')", canonical);
+#endif
+    free(canonical);
+
+    canonical = plat_canonical_path("no/such/path/anywhere");
+    CHECK(canonical == NULL, "a missing path does not canonicalise");
+    free(canonical);
+
+    free(lowered);
+    free(mixed);
+    free(base);
+}
+
+static void test_json_parsing(void)
+{
+    char err[TB_ERR_LEN];
+    json_value *root;
+    const json_value *tabs, *first;
+
+    test_case("json parsing");
+    root = json_parse(TEST_DIGEST_JSON, err, sizeof err);
+    CHECK(root != NULL, "the digest fixture parses (%s)", root ? "" : err);
+    if (!root)
+        return;
+
+    tabs = json_get(root, "tabs");
+    CHECK_NUM(json_count(tabs), 2, "tab count");
+    first = json_at(tabs, 0);
+    CHECK_STR(json_get_string(json_get(first, "attributes"), "code", "?"), "tst",
+              "nested lookup");
+    CHECK_NUM(json_get_int(json_get(first, "attributes"), "id", -1), 0, "integer member");
+    CHECK(json_get_bool(json_get(first, "attributes"), "enabled", 0), "boolean member");
+    CHECK(json_get(root, "Tabs") == NULL, "member lookup is case-sensitive");
+    json_free(root);
+
+    /* Escapes, including a surrogate pair, must decode to UTF-8. */
+    root = json_parse("{\"s\":\"q\\\"b\\\\s\\tt\\u271d\\ud83d\\ude00\"}", err, sizeof err);
+    CHECK(root != NULL, "escapes parse (%s)", root ? "" : err);
+    if (root) {
+        CHECK_STR(json_get_string(root, "s", ""),
+                  "q\"b\\s\tt\xE2\x9C\x9D\xF0\x9F\x98\x80", "escapes decode to UTF-8");
+        json_free(root);
+    }
+
+    /* Malformed input must be rejected, not half-accepted. */
+    CHECK(json_parse("{\"a\":1} trailing", err, sizeof err) == NULL, "trailing data rejected");
+    CHECK(json_parse("{\"a\":", err, sizeof err) == NULL, "truncated object rejected");
+    CHECK(json_parse("{\"a\":\"unterminated}", err, sizeof err) == NULL, "unterminated string rejected");
+    CHECK(json_parse("[1,2,]", err, sizeof err) == NULL, "trailing comma rejected");
+    CHECK(json_parse("nope", err, sizeof err) == NULL, "bare word rejected");
+}
+
+static void test_json_writing(void)
+{
+    char err[TB_ERR_LEN];
+    json_value *root = json_new_object();
+    json_value *arr = json_new_array();
+    json_value *again;
+    char *text;
+
+    test_case("json writing");
+    json_object_set(root, "first", json_new_string("one"));
+    json_object_set(root, "flag", json_new_bool(1));
+    json_object_set(root, "count", json_new_number(42));
+    json_object_set(root, "nothing", json_new_null());
+    json_array_append(arr, json_new_number(1));
+    json_array_append(arr, json_new_string("two"));
+    json_object_set(root, "list", arr);
+
+    /* Replacing a member keeps its position, so files hold their shape. */
+    json_object_set(root, "first", json_new_string("replaced"));
+
+    text = json_serialize(root, 1);
+    CHECK(strstr(text, "\"count\": 42") != NULL, "whole numbers write without a point");
+    CHECK(strstr(text, "\"nothing\": null") != NULL, "nulls survive");
+
+    again = json_parse(text, err, sizeof err);
+    CHECK(again != NULL, "serialized output parses back (%s)", again ? "" : err);
+    if (again) {
+        const json_value *members = again->children;
+        CHECK_STR(json_get_string(again, "first", ""), "replaced", "member replaced in place");
+        CHECK_STR(members ? members->key : NULL, "first", "replacement kept its position");
+        CHECK_NUM(json_get_int(again, "count", 0), 42, "number round trip");
+        CHECK_NUM(json_count(json_get(again, "list")), 2, "array round trip");
+        json_free(again);
+    }
+    free(text);
+
+    /* Text with quotes, backslashes, control characters and UTF-8. */
+    json_object_set(root, "tricky", json_new_string("a\"b\\c\td\ne\xE2\x9C\x9D"));
+    text = json_serialize(root, 0);
+    again = json_parse(text, err, sizeof err);
+    CHECK(again != NULL, "escaped text re-parses");
+    if (again) {
+        CHECK_STR(json_get_string(again, "tricky", ""), "a\"b\\c\td\ne\xE2\x9C\x9D",
+                  "escaping round trips byte for byte");
+        json_free(again);
+    }
+    free(text);
+    json_free(root);
+}
+
+static void test_kv(void)
+{
+    char err[TB_ERR_LEN];
+    kv_node *root;
+    const kv_node *libs, *zero, *apps;
+
+    test_case("keyvalues parsing");
+    root = kv_parse_string(VDF_SAMPLE, err, sizeof err);
+    CHECK(root != NULL, "libraryfolders.vdf parses (%s)", root ? "" : err);
+    if (root) {
+        libs = kv_child(root, "LIBRARYFOLDERS");   /* lookups ignore case */
+        CHECK(libs != NULL, "top-level key found case-insensitively");
+        zero = kv_child(libs, "0");
+        CHECK_STR(kv_value(zero, "path"), "C:\\Program Files (x86)\\Steam",
+                  "backslash escapes decode");
+        apps = kv_child(zero, "apps");
+        CHECK(kv_child(apps, "230270") != NULL, "app id found in the apps block");
+        CHECK(kv_child(apps, "999999") == NULL, "absent app id not found");
+        CHECK(kv_child(libs, "1") != NULL, "second library parsed");
+        kv_free(root);
+    }
+
+    root = kv_parse_string(ACF_SAMPLE, err, sizeof err);
+    CHECK(root != NULL, "appmanifest parses (%s)", root ? "" : err);
+    if (root) {
+        CHECK_STR(kv_value(kv_child(root, "AppState"), "installdir"), "N++",
+                  "installdir read past a comment");
+        kv_free(root);
+    }
+
+    CHECK(kv_parse_string("\"a\" {", err, sizeof err) == NULL, "unclosed block rejected");
+    CHECK(kv_parse_string("\"a\"", err, sizeof err) == NULL, "key without a value rejected");
+}
+
+static void test_md5(void)
+{
+    char hex[MD5_HEX_LEN + 1];
+
+    /* The vectors from RFC 1321, plus a block-boundary case. */
+    test_case("md5");
+    md5_hex("", 0, hex);
+    CHECK_STR(hex, "d41d8cd98f00b204e9800998ecf8427e", "md5 of the empty string");
+    md5_hex("abc", 3, hex);
+    CHECK_STR(hex, "900150983cd24fb0d6963f7d28e17f72", "md5 of 'abc'");
+    md5_hex("message digest", 14, hex);
+    CHECK_STR(hex, "f96b697d7cb7938d525a2f31aaf161d0", "md5 of 'message digest'");
+    md5_hex("12345678901234567890123456789012345678901234567890"
+            "123456789012345678901234567890", 80, hex);
+    CHECK_STR(hex, "57edf4a22be3c955ac49da2e2107b67a", "md5 across block boundaries");
+}
+
+void suite_core(void)
+{
+    test_suite("core");
+    test_strings();
+    test_buffers();
+    test_paths();
+    test_canonical();
+    test_json_parsing();
+    test_json_writing();
+    test_kv();
+    test_md5();
+}
