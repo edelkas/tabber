@@ -13,6 +13,7 @@
 #include "digest.h"
 #include "json.h"
 #include "platform.h"
+#include "server.h"
 #include "tabs.h"
 #include "test.h"
 #include "util.h"
@@ -170,9 +171,37 @@ static void test_full_sweep(void)
     free(root);
 }
 
+/*
+ * The 3rd party server itself. Nothing names one here, so this is the built-in
+ * address: the one a fresh install would be pointed at. Any answer is a pass;
+ * today the endpoint does not exist yet and 404 is what comes back.
+ */
+static void test_server_health_live(void)
+{
+    char err[TB_ERR_LEN];
+    char *root = test_dir("online_server");
+    config *cfg;
+    server_health health;
+
+    test_case("the live 3rd party server");
+    test_use_root(root);
+
+    cfg = config_load(err, sizeof err);
+    if (!cfg) { CHECK(0, "config: %s", err); free(root); return; }
+
+    CHECK(server_check(cfg, NULL, &health) == 1, "%s answers (%s)", health.url, health.detail);
+    CHECK(health.status > 0, "it replies with a status (HTTP %d)", health.status);
+    CHECK_NUM(health.source, SERVER_FROM_DEFAULT, "the built-in host was used");
+    printf("      %s -> HTTP %d\n", health.url, health.status);
+
+    config_free(cfg);
+    free(root);
+}
+
 void suite_online(int full)
 {
     test_suite("online");
+    test_server_health_live();
     test_digest_download();
     test_single_fetch();
     if (full)

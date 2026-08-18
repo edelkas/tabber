@@ -28,7 +28,7 @@
 #define TAB_EXTRA_FILE    "README.txt"      /* not a file the game reads */
 #define TAB_LEVEL_BODY    "custom level data"
 #define TAB_CHALLENGE_BODY "AGNT AGNO"
-#define EXPECTED_PATCH    "http://test.local:9999/" TAB_CODE
+#define EXPECTED_PATCH    "http://" TEST_DEAD_HOST ":9/" TAB_CODE
 
 /* A whole world for one test: tool root, tab store, fake game. */
 typedef struct {
@@ -168,6 +168,13 @@ static void test_install_uninstall(void)
     if (installed.skipped.count)
         CHECK_STR(installed.skipped.items[0], TAB_EXTRA_FILE, "and it is named");
 
+    /* The health check ran and failed — the fixture server is a dead port —
+     * and that is a warning, not a reason to refuse the install. */
+    CHECK_STR(installed.health.url, "http://" TEST_DEAD_HOST ":9/health",
+              "the server was asked whether it is up");
+    CHECK_NUM(installed.health.reachable, 0, "it is not");
+    CHECK(installed.health.detail[0] != '\0', "and the reason is reported");
+
     /* The game now holds the tab's files... */
     text = game_file(&w, TAB_LEVEL_FILE);
     CHECK_STR(text, TAB_LEVEL_BODY, "the level file is the tab's");
@@ -294,7 +301,7 @@ static void test_install_refusals(void)
 
         server_known_uris(cfg, w.dig, &known);
         CHECK(lib_open(&w.paths, &known, &img, err, sizeof err) == 0, "the library opens");
-        CHECK(lib_write_uri(&img, "http://test.local:9999/oth", err, sizeof err) == 0,
+        CHECK(lib_write_uri(&img, "http://" TEST_DEAD_HOST ":9/oth", err, sizeof err) == 0,
               "the library can be patched by hand");
         lib_close(&img);
         str_list_free(&known);

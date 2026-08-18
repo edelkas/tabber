@@ -275,6 +275,11 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     if (!patch_uri)
         goto done;
 
+    /* Is that server actually up? Purely diagnostic: a server down for a few
+     * minutes of maintenance is no reason to refuse an install, so the verdict
+     * is only reported. This is the last look outwards before we write. */
+    server_probe(&addr, source, &report->health);
+
     /* Read everything up front, so the writing phase is as short as possible. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].source, &files[i].len);

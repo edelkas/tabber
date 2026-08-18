@@ -36,6 +36,14 @@ int check_long_eq(long got, long want, const char *file, int line, const char *w
 #define CHECK_STR(got, want, what)  check_str_eq((got), (want), __FILE__, __LINE__, (what))
 #define CHECK_NUM(got, want, what)  check_long_eq((long)(got), (long)(want), __FILE__, __LINE__, (what))
 
+/*
+ * A host and port the suite can point a server at without leaving the machine:
+ * loopback, on a port nothing listens on. Connecting is refused at once, which
+ * is what the health-check tests want, and no DNS or traffic is involved.
+ */
+#define TEST_DEAD_HOST  "127.0.0.1"
+#define TEST_DEAD_PORT  9
+
 /* ---- Scratch space ----------------------------------------------------- */
 
 /*

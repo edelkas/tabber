@@ -12,6 +12,10 @@
  *
  * Every check runs before the first rename, and any failure mid-way is rolled
  * back, so an aborted install leaves the game folder as it was.
+ *
+ * Installing also asks the 3rd party server whether it is up, just before the
+ * library is patched. That one is diagnostic only: the verdict is reported in
+ * the install report, and a server that does not answer does not stop anything.
  */
 #ifndef TABBER_INSTALL_H
 #define TABBER_INSTALL_H
@@ -21,6 +25,7 @@
 #include "config.h"
 #include "digest.h"
 #include "paths.h"
+#include "server.h"
 #include "util.h"
 
 /* Appended to an original game file while a tab is installed. */
@@ -39,6 +44,7 @@ typedef struct {
     str_list skipped;           /* tab files the game does not support     */
     char server_uri[128];       /* what the library now points at          */
     char server_source[32];     /* where that address came from            */
+    server_health health;       /* whether that server answered            */
     char state_path[512];       /* state file updated, empty if none       */
     char warning[TB_ERR_LEN];   /* non-fatal problem, empty if none        */
 } install_report;

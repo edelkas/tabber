@@ -11,9 +11,9 @@ Run it with `build.bat test` (Windows) or `make test` (Linux, macOS). Add
 | `test_main.c` | The harness, the scratch-world helpers and the shared fixtures |
 | `test_core.c` | Strings, buffers, path handling, canonical paths, JSON, KeyValues, MD5 |
 | `test_archive.c` | ZIP parsing, DEFLATE, CRC verification, corruption, unsafe entry names |
-| `test_state.c` | `config.json` round trips and lifecycle, server resolution, URI budget |
-| `test_game.c` | Install, uninstall, library patching and the health check |
-| `test_online.c` | The live digest, fetching a tab, the full catalogue sweep |
+| `test_state.c` | `config.json` round trips and lifecycle, server resolution, URI budget, the server health check |
+| `test_game.c` | Install, uninstall, library patching, and both health checks |
+| `test_online.c` | The live server, the live digest, fetching a tab, the full catalogue sweep |
 | `fixture_zip.c` | A 462-byte ZIP embedded as bytes |
 
 ## Adding tests
@@ -28,7 +28,8 @@ Two rules keep the suite trustworthy:
 
 - **Never touch anything real.** Build a scratch world with `test_dir()`,
   `test_use_root()` and `test_fake_game()`. If a test needs the network, it
-  belongs in `test_online.c`.
+  belongs in `test_online.c`; a test that needs a server to be *down* can use
+  `TEST_DEAD_HOST:TEST_DEAD_PORT`, which never leaves the machine.
 - **Assert the absence of damage, not just the error.** When something is
   supposed to be refused, check afterwards that the files, the backups and the
   library are all still as they were.

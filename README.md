@@ -29,6 +29,7 @@ tabber [options] [command]
   install CODE     Install the custom tab CODE into the game (fetching it if needed)
   uninstall CODE   Restore the game's original files, undoing an install
   check            Verify the game library matches the recorded state
+  server           Check that the 3rd party server is up
 
   -b, --bare       Machine-readable output: paths or tab-separated fields only
   -v, --verbose    Print extra detail
@@ -74,6 +75,9 @@ Some things are worth knowing about how the tests check what they check:
   embedded fixture: every single-byte flip must be caught.
 - **Refusals** assert not just the error but that nothing moved: files, backups
   and the library are all re-checked afterwards.
+- **The server** the offline tier probes is `127.0.0.1:9`, a port nothing
+  listens on, so the health check is exercised for real — a refused connection
+  — without leaving the machine. The live server is only asked in `--online`.
 - The embedded ZIP fixture (`test/fixture_zip.c`) deliberately mixes a stored
   directory entry, a deflated file, and a deflate *stored block*, so all three
   paths through the decompressor are used without any network.
@@ -274,6 +278,30 @@ written: every URI from all four sources is searched for, with and without the
 `http://` prefix. The search deliberately stops at the port, so the tab code
 that follows can be compared with the one we expect.
 
+## The server check
+
+`tabber server` asks the 3rd party server — resolved exactly as above — whether
+it is up, by requesting `/health` with a 5-second timeout:
+
+```
+  address   http://outte.ovh:8126/health (from the built-in host)
+  reply     HTTP 404
+Server check passed: outte.ovh is listening.
+```
+
+Any reply is a pass. The endpoint is not implemented yet and answers 404, which
+is still worth having: it proves something is listening on that host and port.
+Only a connection that never gets an answer at all — refused, timed out, name
+not resolved — is a failure. When the endpoint arrives it will answer 200 with
+diagnostics, and that will pass on the same terms.
+
+The check also runs automatically during an install, once the library has been
+found to carry the official URI and just before it is patched. It is purely
+diagnostic there: a server that is briefly down for maintenance is no reason to
+refuse an install, so a failure is only reported as a warning and the install
+goes ahead. Uninstalling does not check, since it points the game back at the
+official servers.
+
 ## Uninstalling
 
 `tabber uninstall CODE` puts the game back: it deletes the tab's files and
@@ -345,7 +373,7 @@ alone rather than overwriting whatever is in there.
 - [x] Remove a downloaded tab
 - [x] Swap level and challenge files (install / uninstall)
 - [x] Patch the main library to redirect server queries
-- [ ] Patch the main library to redirect server queries
+- [x] Check that the 3rd party server is up
 - [ ] Install custom palettes
 - [ ] Swap the savefile
 - [ ] Replace in-game texts

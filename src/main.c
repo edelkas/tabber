@@ -16,6 +16,7 @@
 #include "patch.h"
 #include "paths.h"
 #include "platform.h"
+#include "server.h"
 #include "tabs.h"
 #include "util.h"
 #include "version.h"
@@ -65,6 +66,7 @@ static void print_usage(FILE *out)
         "  install CODE     Install the custom tab CODE into the game (fetching it if needed)\n"
         "  uninstall CODE   Restore the game's original files, undoing an install\n"
         "  check            Verify the game library matches the recorded state\n"
+        "  server           Check that the 3rd party server is up\n"
         "\n"
         "Options:\n"
         "  -b, --bare       Machine-readable output: paths or tab-separated fields only\n"
@@ -483,6 +485,13 @@ static int cmd_install(const options *opts, const char *code)
     log_step("originals", "kept alongside with the '%s' suffix", INSTALL_BACKUP_SUFFIX);
     log_step("library", "queries redirected to %s (from %s)",
              report.server_uri, report.server_source);
+    if (report.health.reachable)
+        log_step("server", "%s answered HTTP %d", report.health.url, report.health.status);
+    else
+        fprintf(stderr, TABBER_NAME ": warning: the 3rd party server does not seem to be up "
+                        "(%s: %s); the tab is installed all the same, but its scores will "
+                        "not work until the server is back\n",
+                report.health.url, report.health.detail);
     if (report.state_path[0])
         log_step("recorded", "install in %s", report.state_path);
     if (report.warning[0])
@@ -558,6 +567,55 @@ done:
     config_free(state);
     digest_free(dig);
     return rc;
+}
+
+/* ---- server ------------------------------------------------------------ */
+
+/*
+ * Asks the 3rd party server whether it is listening. The endpoint does not
+ * exist yet, so a 404 is the expected answer and counts as a pass: it still
+ * proves something is answering on that host and port.
+ */
+static int cmd_server(const options *opts)
+{
+    char err[TB_ERR_LEN];
+    digest *dig;
+    config *state;
+    server_health health;
+    int up;
+
+    if (opts->offline) {
+        fprintf(stderr, TABBER_NAME ": --offline cannot be combined with 'server'\n");
+        return EXIT_USAGE;
+    }
+
+    /* Both files only matter here for a "server" key; neither has to be there. */
+    dig = digest_load(err, sizeof err);
+    state = config_load(err, sizeof err);
+    if (!state) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        digest_free(dig);
+        return EXIT_FAILED;
+    }
+
+    up = server_check(state, dig, &health);
+    config_free(state);
+    digest_free(dig);
+
+    if (opts->bare) {
+        printf("%s\t%d\t%s\n", up ? "up" : "down", health.status, health.url);
+        return up ? EXIT_OK : EXIT_FAILED;
+    }
+
+    log_step("address", "%s (from %s)", health.url, server_source_name(health.source));
+    if (up) {
+        log_step("reply", "HTTP %d", health.status);
+        printf("Server check passed: %s is listening.\n", health.addr.host);
+        return EXIT_OK;
+    }
+
+    fprintf(stderr, TABBER_NAME ": server check FAILED: %s\n", health.detail);
+    return EXIT_FAILED;
 }
 
 /* ---- uninstall --------------------------------------------------------- */
@@ -757,6 +815,8 @@ int main(int argc, char **argv)
         return cmd_uninstall(&opts, argument);
     if (!strcmp(command, "check"))
         return cmd_check(&opts);
+    if (!strcmp(command, "server"))
+        return cmd_server(&opts);
 
     fprintf(stderr, TABBER_NAME ": unknown command '%s'\n", command);
     print_usage(stderr);

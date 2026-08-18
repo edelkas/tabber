@@ -352,6 +352,61 @@ static void test_uri_budget(void)
     free(uri);
 }
 
+/*
+ * The health check. Everything here talks to the loopback address on a port
+ * nothing listens on, so it stays inside this machine: a refused connection is
+ * exactly the failure the check has to report.
+ */
+static void test_server_health(void)
+{
+    char err[TB_ERR_LEN];
+    char *root_dir = test_dir("server_health");
+    server_addr addr;
+    server_health health;
+    config *cfg;
+
+    test_case("the server health check");
+
+    memset(&addr, 0, sizeof addr);
+    snprintf(addr.host, sizeof addr.host, "%s", TEST_DEAD_HOST);
+    addr.port = TEST_DEAD_PORT;
+
+    CHECK(server_probe(&addr, SERVER_FROM_DIGEST, &health) == 0,
+          "a port nothing listens on fails the check");
+    CHECK_STR(health.url, "http://" TEST_DEAD_HOST ":9/health",
+              "the health endpoint is asked for");
+    CHECK_NUM(health.reachable, 0, "nothing answered");
+    CHECK_NUM(health.status, 0, "so there is no status");
+    CHECK(health.detail[0] != '\0', "and the reason is reported");
+    CHECK_NUM(health.source, SERVER_FROM_DIGEST, "the source is carried through");
+    CHECK_STR(health.addr.host, TEST_DEAD_HOST, "so is the address");
+
+    /* The probe is an HTTP request of ours, so it always carries a scheme. */
+    snprintf(addr.scheme, sizeof addr.scheme, "%s", SCHEME_HTTPS);
+    server_probe(&addr, SERVER_FROM_CONFIG, &health);
+    CHECK_STR(health.url, "https://" TEST_DEAD_HOST ":9/health",
+              "an https server is asked over https");
+
+    /* server_check picks the address the same way an install would. */
+    test_use_root(root_dir);
+    cfg = config_load(err, sizeof err);
+    CHECK(cfg != NULL, "state file ready (%s)", cfg ? "" : err);
+    if (cfg) {
+        json_value *node = json_new_object();
+        json_object_set(node, SJK_HOST, json_new_string(TEST_DEAD_HOST));
+        json_object_set(node, SJK_PORT, json_new_number(TEST_DEAD_PORT));
+        json_object_set(cfg->root, SJK_SERVER, node);
+
+        CHECK(server_check(cfg, NULL, &health) == 0, "the check resolves and fails");
+        CHECK_NUM(health.source, SERVER_FROM_CONFIG, "it used the configured server");
+        CHECK_STR(health.url, "http://" TEST_DEAD_HOST ":9/health",
+                  "and asked that one");
+        config_free(cfg);
+    }
+
+    free(root_dir);
+}
+
 void suite_state(void)
 {
     test_suite("state");
@@ -362,4 +417,5 @@ void suite_state(void)
     test_server_parsing();
     test_server_precedence();
     test_uri_budget();
+    test_server_health();
 }

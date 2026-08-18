@@ -80,18 +80,36 @@ static wchar_t *net_wide_dup(const wchar_t *start, DWORD len)
     return out;
 }
 
-int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t errsz)
+/* An open WinHTTP conversation, torn down in one go by net_win_close. */
+typedef struct {
+    HINTERNET session;
+    HINTERNET connection;
+    HINTERNET request;
+} win_request;
+
+static void net_win_close(win_request *req)
+{
+    if (req->request)    WinHttpCloseHandle(req->request);
+    if (req->connection) WinHttpCloseHandle(req->connection);
+    if (req->session)    WinHttpCloseHandle(req->session);
+    memset(req, 0, sizeof(*req));
+}
+
+/*
+ * Sends a GET and reads the response status. On success the response is left
+ * open so the body can be read; on failure the handles are already closed,
+ * though closing them again is harmless.
+ */
+static int net_win_send(const char *url, int timeout_secs, win_request *req,
+                        DWORD *status, char *err, size_t errsz)
 {
     wchar_t *wurl = NULL, *whost = NULL, *wpath = NULL, *wagent = NULL;
-    HINTERNET session = NULL, connection = NULL, request = NULL;
     URL_COMPONENTS parts;
-    DWORD status = 0, status_size = sizeof(status);
-    byte_buf body = {0};
+    DWORD status_size = sizeof(*status);
     int rc = -1;
 
-    *data = NULL;
-    if (len_out)
-        *len_out = 0;
+    memset(req, 0, sizeof(*req));
+    *status = 0;
 
     wurl = net_wide(url);
     if (!wurl) {
@@ -113,44 +131,70 @@ int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t e
     wpath = net_wide_dup(parts.lpszUrlPath, parts.dwUrlPathLength + parts.dwExtraInfoLength);
 
     wagent = net_wide(NET_USER_AGENT);   /* WinHTTP is a wide-character API */
-    session = WinHttpOpen(wagent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!session) {
+    req->session = WinHttpOpen(wagent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                               WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!req->session) {
         net_win_fail(err, errsz, "cannot initialise WinHTTP", GetLastError());
         goto done;
     }
     {
-        int ms = NET_TIMEOUT_SECS * 1000;
-        WinHttpSetTimeouts(session, ms, ms, ms, ms);
+        int ms = timeout_secs * 1000;
+        WinHttpSetTimeouts(req->session, ms, ms, ms, ms);
     }
 
-    connection = WinHttpConnect(session, whost, parts.nPort, 0);
-    if (!connection) {
+    req->connection = WinHttpConnect(req->session, whost, parts.nPort, 0);
+    if (!req->connection) {
         net_win_fail(err, errsz, "cannot connect to the server", GetLastError());
         goto done;
     }
 
-    request = WinHttpOpenRequest(connection, L"GET", wpath, NULL, WINHTTP_NO_REFERER,
-                                 WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                 parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
-    if (!request) {
+    req->request = WinHttpOpenRequest(req->connection, L"GET", wpath, NULL, WINHTTP_NO_REFERER,
+                                      WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                      parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
+    if (!req->request) {
         net_win_fail(err, errsz, "cannot create the request", GetLastError());
         goto done;
     }
 
-    if (!WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+    if (!WinHttpSendRequest(req->request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-        !WinHttpReceiveResponse(request, NULL)) {
+        !WinHttpReceiveResponse(req->request, NULL)) {
         net_win_fail(err, errsz, "request failed", GetLastError());
         goto done;
     }
 
-    if (!WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size,
+    if (!WinHttpQueryHeaders(req->request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, status, &status_size,
                              WINHTTP_NO_HEADER_INDEX)) {
         net_win_fail(err, errsz, "cannot read the response status", GetLastError());
         goto done;
     }
+    rc = 0;
+
+done:
+    if (rc != 0)
+        net_win_close(req);
+    free(wurl);
+    free(whost);
+    free(wpath);
+    free(wagent);
+    return rc;
+}
+
+int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t errsz)
+{
+    win_request req;
+    DWORD status = 0;
+    byte_buf body = {0};
+    int rc = -1;
+
+    *data = NULL;
+    if (len_out)
+        *len_out = 0;
+
+    if (net_win_send(url, NET_TIMEOUT_SECS, &req, &status, err, errsz) != 0)
+        return -1;
+
     if (status != 200) {
         err_set(err, errsz, "server replied with HTTP %lu", (unsigned long)status);
         goto done;
@@ -160,7 +204,7 @@ int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t e
         char chunk[WIN_READ_CHUNK];
         DWORD got = 0;
 
-        if (!WinHttpReadData(request, chunk, sizeof(chunk), &got)) {
+        if (!WinHttpReadData(req.request, chunk, sizeof(chunk), &got)) {
             net_win_fail(err, errsz, "download interrupted", GetLastError());
             goto done;
         }
@@ -178,14 +222,25 @@ int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t e
 
 done:
     buf_free(&body);
-    if (request)    WinHttpCloseHandle(request);
-    if (connection) WinHttpCloseHandle(connection);
-    if (session)    WinHttpCloseHandle(session);
-    free(wurl);
-    free(whost);
-    free(wpath);
-    free(wagent);
+    net_win_close(&req);
     return rc;
+}
+
+int net_probe(const char *url, int timeout_secs, int *status, char *err, size_t errsz)
+{
+    win_request req;
+    DWORD code = 0;
+
+    if (status)
+        *status = 0;
+    if (net_win_send(url, timeout_secs, &req, &code, err, errsz) != 0)
+        return -1;
+
+    /* The body is of no interest: an answer of any kind is the whole point. */
+    net_win_close(&req);
+    if (status)
+        *status = (int)code;
+    return 0;
 }
 
 int net_host_resolves(const char *host)
@@ -249,9 +304,38 @@ static size_t net_sink(char *ptr, size_t size, size_t nmemb, void *userdata)
     return len;
 }
 
-int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t errsz)
+/* Throws the body away: a probe only cares about the status line. */
+static size_t net_drain(char *ptr, size_t size, size_t nmemb, void *userdata)
+{
+    (void)ptr;
+    (void)userdata;
+    return size * nmemb;
+}
+
+/* A handle with the options both requests share. NULL when libcurl says no. */
+static CURL *net_curl_open(const char *url, int timeout_secs)
 {
     static int global_ready = 0;
+    CURL *curl;
+
+    if (!global_ready) {
+        curl_global_init(CURL_GLOBAL_DEFAULT);
+        global_ready = 1;
+    }
+
+    curl = curl_easy_init();
+    if (!curl)
+        return NULL;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)timeout_secs);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, NET_USER_AGENT);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    return curl;
+}
+
+int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t errsz)
+{
     CURL *curl;
     CURLcode res;
     long status = 0;
@@ -261,26 +345,17 @@ int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t e
     if (len_out)
         *len_out = 0;
 
-    if (!global_ready) {
-        curl_global_init(CURL_GLOBAL_DEFAULT);
-        global_ready = 1;
-    }
-
-    curl = curl_easy_init();
+    curl = net_curl_open(url, NET_TIMEOUT_SECS);
     if (!curl) {
         err_set(err, errsz, "cannot initialise libcurl");
         return -1;
     }
 
-    curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, net_sink);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long)NET_TIMEOUT_SECS);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, NET_USER_AGENT);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");   /* allow compression */
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
     res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
@@ -299,6 +374,44 @@ int net_fetch(const char *url, char **data, size_t *len_out, char *err, size_t e
     }
 
     *data = buf_finish(&body, len_out);
+    return 0;
+}
+
+int net_probe(const char *url, int timeout_secs, int *status, char *err, size_t errsz)
+{
+    CURL *curl;
+    CURLcode res;
+    long code = 0;
+
+    if (status)
+        *status = 0;
+
+    curl = net_curl_open(url, timeout_secs);
+    if (!curl) {
+        err_set(err, errsz, "cannot initialise libcurl");
+        return -1;
+    }
+
+    /* No redirect following: a redirect is itself an answer, and chasing it
+     * would end up asking a different server whether this one is up. */
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, net_drain);
+
+    res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        err_set(err, errsz, "%s", curl_easy_strerror(res));
+        curl_easy_cleanup(curl);
+        return -1;
+    }
+
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &code);
+    curl_easy_cleanup(curl);
+    if (code == 0) {
+        err_set(err, errsz, "the server did not reply with a status");
+        return -1;
+    }
+
+    if (status)
+        *status = (int)code;
     return 0;
 }
 

@@ -273,7 +273,7 @@ const char *TEST_DIGEST_JSON =
 "      \"properties\": {}, \"stats\": {}\n"
 "    }\n"
 "  ],\n"
-"  \"server\": { \"host\": \"test.local\", \"port\": 9999 },\n"
+"  \"server\": { \"host\": \"" TEST_DEAD_HOST "\", \"port\": 9 },\n"
 "  \"signature\": { \"md5\": \"deadbeef\", \"date\": \"2026-01-01T00:00:00Z\" }\n"
 "}\n";
 

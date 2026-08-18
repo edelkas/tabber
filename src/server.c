@@ -123,3 +123,38 @@ void server_known_uris(config *cfg, const digest *dig, str_list *out)
     server_set(&addr, NULL, SERVER_FALLBACK_HOST, SERVER_FALLBACK_PORT);
     push_forms(out, &addr);
 }
+
+/* ---- Health check ------------------------------------------------------ */
+
+int server_check(config *cfg, const digest *dig, server_health *out)
+{
+    server_addr addr;
+    server_source source;
+
+    server_resolve(cfg, dig, 1, &addr, &source);
+    return server_probe(&addr, source, out);
+}
+
+int server_probe(const server_addr *addr, server_source source, server_health *out)
+{
+    char err[TB_ERR_LEN];
+    char *base;
+
+    memset(out, 0, sizeof(*out));
+    out->addr = *addr;
+    out->source = source;
+
+    /* The probe is an HTTP request of our own, so it always needs a scheme,
+     * even when the URI written into the library goes without one. */
+    base = server_uri(&out->addr, 1);
+    snprintf(out->url, sizeof out->url, "%s%s", base, SERVER_HEALTH_PATH);
+    free(base);
+
+    if (net_probe(out->url, SERVER_HEALTH_TIMEOUT, &out->status, err, sizeof err) != 0) {
+        snprintf(out->detail, sizeof out->detail, "%s", err);
+        return 0;
+    }
+
+    out->reachable = 1;
+    return 1;
+}

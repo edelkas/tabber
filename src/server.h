@@ -1,4 +1,4 @@
-/*
+﻿/*
  * server.h - Which 3rd party server the game should be pointed at.
  *
  * The address is looked up in four places, in order:
@@ -18,6 +18,7 @@
 #include "config.h"
 #include "digest.h"
 #include "json.h"
+#include "net.h"
 #include "util.h"
 
 /* The 3rd party server, and the address to fall back on if its name expires. */
@@ -38,6 +39,13 @@
 
 #define SERVER_SCHEME_MAX       8
 #define SERVER_HOST_MAX         128
+
+/* Endpoint asked whether the server is alive, and how long we wait for it. */
+#define SERVER_HEALTH_PATH      "/health"
+#define SERVER_HEALTH_TIMEOUT   NET_PROBE_TIMEOUT_SECS
+
+/* Room for "scheme://host:port/health". */
+#define SERVER_URL_MAX          (SERVER_HOST_MAX + 64)
 
 typedef struct {
     char scheme[SERVER_SCHEME_MAX];   /* empty means "unspecified", i.e. HTTP */
@@ -75,5 +83,28 @@ char *server_uri(const server_addr *addr, int with_scheme);
  * patched library without knowing which form was written.
  */
 void server_known_uris(config *cfg, const digest *dig, str_list *out);
+
+/* ---- Health check ------------------------------------------------------ */
+
+typedef struct {
+    server_addr addr;               /* who was asked                        */
+    server_source source;           /* where that address came from         */
+    char url[SERVER_URL_MAX];       /* the exact URL queried                */
+    int reachable;                  /* the server answered                  */
+    int status;                     /* the HTTP status it answered with     */
+    char detail[TB_ERR_LEN];        /* why it did not answer, if it did not */
+} server_health;
+
+/*
+ * Asks the 3rd party server whether it is up. Any reply is a pass: the
+ * endpoint is not implemented yet and answers 404, which still proves
+ * something is listening on that host and port. Only a connection that never
+ * gets an answer is a failure. Returns 1 on a pass, 0 on a failure, with the
+ * details in `out` either way; it never fails hard, since this is diagnostic.
+ */
+int server_check(config *cfg, const digest *dig, server_health *out);
+
+/* The same probe against an address that has already been resolved. */
+int server_probe(const server_addr *addr, server_source source, server_health *out);
 
 #endif /* TABBER_SERVER_H */
