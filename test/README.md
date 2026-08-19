@@ -10,8 +10,9 @@ Run it with `build.bat test` (Windows) or `make test` (Linux, macOS). Add
 | --- | --- |
 | `test_main.c` | The harness, the scratch-world helpers and the shared fixtures |
 | `test_core.c` | Strings, buffers, path handling, canonical paths, JSON, KeyValues, MD5 |
-| `test_archive.c` | ZIP parsing, DEFLATE, CRC verification, corruption, unsafe entry names |
+| `test_archive.c` | ZIP reading and writing, DEFLATE, gzip, CRC verification, corruption, unsafe entry names |
 | `test_state.c` | `config.json` round trips and lifecycle, server resolution, URI budget, the server health check |
+| `test_save.c` | Archiving and swapping the savefile, in both its compressed and uncompressed forms |
 | `test_game.c` | Install, uninstall, library patching, and both health checks |
 | `test_online.c` | The live server, the live digest, fetching a tab, the full catalogue sweep |
 | `fixture_zip.c` | A 462-byte ZIP embedded as bytes |
@@ -32,7 +33,8 @@ Two rules keep the suite trustworthy:
   `TEST_DEAD_HOST:TEST_DEAD_PORT`, which never leaves the machine.
 - **Assert the absence of damage, not just the error.** When something is
   supposed to be refused, check afterwards that the files, the backups and the
-  library are all still as they were.
+  library are all still as they were. The savefile tests take this furthest:
+  every refusal is followed by a byte-for-byte check that the save survived.
 
 To confirm the suite still bites, break something on purpose and watch it fail
 before fixing it back.

@@ -1,9 +1,10 @@
 /*
  * tabber - custom tab installer for N++.
  *
- * Current scope: locate the game's directories, and keep the catalogue of
- * available custom tabs (the digest) up to date. Later stages (level/challenge
- * swapping, library patching, palettes, savefile, texts) build on both.
+ * Current scope: locating the game's directories, keeping the catalogue of
+ * available custom tabs (the digest) up to date, and installing a tab: its
+ * level and challenge files, the library patch that redirects the game's
+ * queries, and the savefile. Palettes and in-game texts are still to come.
  */
 #include <stdarg.h>
 #include <stdio.h>
@@ -16,6 +17,7 @@
 #include "patch.h"
 #include "paths.h"
 #include "platform.h"
+#include "save.h"
 #include "server.h"
 #include "tabs.h"
 #include "util.h"
@@ -379,6 +381,20 @@ static int cmd_fetch(const options *opts, const char *code)
 
 /* ---- install ----------------------------------------------------------- */
 
+/* What became of the savefile: what was archived, and what took its place. */
+static void print_save_step(const save_report *save)
+{
+    if (save->backed_up)
+        log_step("savefile", "archived as %s (%lu bytes)",
+                 save->backup_path, (unsigned long)save->backup_bytes);
+    else
+        log_step("savefile", "there was none to archive");
+    log_step("", "%s written from %s%s", save->save_path, save->source_path,
+             save->used_fresh ? " (the fresh save tabber ships)" : "");
+    if (save->removed_path[0])
+        log_step("", "%s removed, so the game reads the new one", save->removed_path);
+}
+
 /* Downloads the tab first if its files are not in the local store. */
 static int ensure_downloaded(const digest *dig, const npp_tab *tab, const char *upper)
 {
@@ -438,8 +454,10 @@ static int cmd_install(const options *opts, const char *code)
     }
     code_upper(upper, sizeof upper, tab->code);
 
-    /* The game's own folders. */
-    if (npp_find_game_dirs(&paths, err, sizeof err) != 0) {
+    /* The game's own folders, installation and personal: the savefile swap
+     * needs the second one, so a missing one stops the install here. */
+    if (npp_find_game_dirs(&paths, err, sizeof err) != 0 ||
+        npp_find_personal_dir(&paths, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": %s\n", err);
         goto done;
     }
@@ -492,6 +510,7 @@ static int cmd_install(const options *opts, const char *code)
                         "(%s: %s); the tab is installed all the same, but its scores will "
                         "not work until the server is back\n",
                 report.health.url, report.health.detail);
+    print_save_step(&report.save);
     if (report.state_path[0])
         log_step("recorded", "install in %s", report.state_path);
     if (report.warning[0])
@@ -654,7 +673,9 @@ static int cmd_uninstall(const options *opts, const char *code)
     }
     code_upper(upper, sizeof upper, tab->code);
 
-    if (npp_find_game_dirs(&paths, err, sizeof err) != 0) {
+    /* Both folders again: the savefile has to be swapped back too. */
+    if (npp_find_game_dirs(&paths, err, sizeof err) != 0 ||
+        npp_find_personal_dir(&paths, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": %s\n", err);
         goto done;
     }
@@ -680,6 +701,7 @@ static int cmd_uninstall(const options *opts, const char *code)
     log_step("target", "%s", report.game_levels_dir);
     log_step("restored", "%lu original file(s)", (unsigned long)report.restored_count);
     log_step("library", "queries point back at %s", report.server_uri);
+    print_save_step(&report.save);
     if (report.state_path[0])
         log_step("recorded", "uninstall in %s", report.state_path);
     if (report.warning[0])

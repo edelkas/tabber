@@ -7,6 +7,7 @@
 #include "json.h"
 #include "patch.h"
 #include "platform.h"
+#include "save.h"
 #include "server.h"
 #include "tabs.h"
 #include "util.h"
@@ -136,7 +137,8 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     lib_health health;
     server_addr addr;
     server_source source;
-    int lib_loaded = 0, rc = -1;
+    save_plan save = {0};
+    int lib_loaded = 0, save_planned = 0, rc = -1;
 
     memset(report, 0, sizeof(*report));
 
@@ -280,6 +282,11 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
      * is only reported. This is the last look outwards before we write. */
     server_probe(&addr, source, &report->health);
 
+    /* --- The savefile swap, worked out in full before anything is written --- */
+    if (save_plan_build(paths, tab->code, 1, &save, err, errsz) != 0)
+        goto done;
+    save_planned = 1;
+
     /* Read everything up front, so the writing phase is as short as possible. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].source, &files[i].len);
@@ -313,6 +320,13 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     }
 
+    /* --- And the savefile: the vanilla one filed away, the tab's put in --- */
+    if (save_plan_apply(&save, &report->save, err, errsz) != 0) {
+        lib_write_uri(&img, LIB_OFFICIAL_URI, cfg_err, sizeof cfg_err);
+        rollback(files, done);
+        goto done;
+    }
+
     report->installed_count = done;
     report->game_levels_dir = game_dir;
     report->tab_levels_dir = tab_dir;
@@ -334,6 +348,8 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
 done:
     if (lib_loaded)
         lib_close(&img);
+    if (save_planned)
+        save_plan_free(&save);
     if (state)
         config_free(state);
     install_files_free(files, count);
@@ -432,7 +448,8 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     config *state = NULL;
     lib_image img;
     lib_health health;
-    int lib_loaded = 0, rc = -1;
+    save_plan save = {0};
+    int lib_loaded = 0, save_planned = 0, rc = -1;
 
     memset(report, 0, sizeof(*report));
     patched_uri[0] = '\0';
@@ -540,6 +557,11 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     }
     snprintf(patched_uri, sizeof patched_uri, "%s", img.uri);
 
+    /* --- The savefile swap, worked out before anything is written --- */
+    if (save_plan_build(paths, tab->code, 0, &save, err, errsz) != 0)
+        goto done;
+    save_planned = 1;
+
     /* Keep the tab's copies in memory, so a failure part-way can be undone. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].target, &files[i].len);
@@ -550,11 +572,16 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     }
 
     /*
-     * --- Apply, undoing the install in reverse order: the library first,
-     * then the level files ---
+     * --- Apply, undoing the install in reverse order: the savefile first,
+     * then the library, then the level files ---
      */
-    if (lib_write_uri(&img, LIB_OFFICIAL_URI, err, errsz) != 0)
+    if (save_plan_apply(&save, &report->save, err, errsz) != 0)
         goto done;
+
+    if (lib_write_uri(&img, LIB_OFFICIAL_URI, err, errsz) != 0) {
+        save_plan_undo(&save);
+        goto done;
+    }
 
     for (i = 0; i < count; i++) {
         if (plat_replace_file(files[i].backup, files[i].target) != 0) {
@@ -568,6 +595,7 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
                                 files[restored].len);
             }
             lib_write_uri(&img, patched_uri, cfg_err, sizeof cfg_err);
+            save_plan_undo(&save);
             goto done;
         }
         restored++;
@@ -592,6 +620,8 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
 done:
     if (lib_loaded)
         lib_close(&img);
+    if (save_planned)
+        save_plan_free(&save);
     if (state)
         config_free(state);
     install_files_free(files, count);

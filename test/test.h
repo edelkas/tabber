@@ -67,6 +67,29 @@ int test_write(const char *path, const char *text);
 /* Whole file contents, or NULL. Caller frees. */
 char *test_read(const char *path);
 
+/* Writes `len` bytes to `path`, creating parent directories. */
+int test_write_bytes(const char *path, const void *data, size_t len);
+
+/* Whole file contents plus its length, or NULL. Caller frees. */
+unsigned char *test_read_bytes(const char *path, size_t *len_out);
+
+/*
+ * A stand-in for N++'s personal folder, holding `save` under `save_name`
+ * ("nprofile" or "nprofile.gz"), or no savefile at all when `save_name` is
+ * NULL. Points the tool at it through TABBER_PERSONAL_DIR. Caller frees.
+ */
+char *test_fake_personal(const char *dir, const char *save_name,
+                         const void *save, size_t len);
+
+/* Writes a one-entry archive holding `data` under `entry`. */
+int test_write_zip(const char *path, const char *entry, const void *data, size_t len);
+
+/* Wraps `data` in a gzip stream, uncompressed inside. Caller frees. */
+unsigned char *test_gzip(const void *data, size_t len, size_t *len_out);
+
+/* Points TABBER_FRESH_SAVE at `path`, or clears it when `path` is NULL. */
+void test_use_fresh_save(const char *path);
+
 /* Whether two files hold exactly the same bytes. */
 int test_files_equal(const char *a, const char *b);
 
@@ -88,6 +111,7 @@ extern const char *TEST_DIGEST_JSON;
 void suite_core(void);      /* strings, buffers, paths, json, kv, md5 */
 void suite_archive(void);   /* inflate, zip, integrity, unsafe paths   */
 void suite_state(void);     /* config.json and server resolution       */
+void suite_save(void);      /* archiving and swapping the savefile     */
 void suite_game(void);      /* install, uninstall, library patching    */
 void suite_online(int full);/* live digest, downloads, full sweep      */
 

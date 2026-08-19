@@ -212,3 +212,37 @@ void buf_free(byte_buf *buf)
     buf->data = NULL;
     buf->len = buf->cap = 0;
 }
+
+/* ---- CRC-32 (IEEE 802.3, as used by ZIP and gzip) ---------------------- */
+
+#define CRC32_POLY 0xEDB88320UL
+
+static unsigned long crc32_table[256];
+static int crc32_ready = 0;
+
+static void crc32_init(void)
+{
+    unsigned long c;
+    int i, bit;
+
+    for (i = 0; i < 256; i++) {
+        c = (unsigned long)i;
+        for (bit = 0; bit < 8; bit++)
+            c = (c & 1) ? (CRC32_POLY ^ (c >> 1)) : (c >> 1);
+        crc32_table[i] = c;
+    }
+    crc32_ready = 1;
+}
+
+unsigned long crc32_bytes(const void *data, size_t len)
+{
+    const unsigned char *p = data;
+    unsigned long crc = 0xFFFFFFFFUL;
+    size_t i;
+
+    if (!crc32_ready)
+        crc32_init();
+    for (i = 0; i < len; i++)
+        crc = crc32_table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+    return crc ^ 0xFFFFFFFFUL;
+}

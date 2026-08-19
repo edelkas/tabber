@@ -7,11 +7,14 @@
 #include <string.h>
 
 #include "digest.h"
+#include "gzip.h"
 #include "patch.h"
 #include "paths.h"
 #include "platform.h"
+#include "save.h"
 #include "test.h"
 #include "util.h"
+#include "zip.h"
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -152,6 +155,89 @@ char *test_read(const char *path)
     return plat_read_file(path, NULL);
 }
 
+int test_write_bytes(const char *path, const void *data, size_t len)
+{
+    char *parent = path_dirname(path);
+    int rc;
+
+    plat_mkdir_p(parent);
+    free(parent);
+    rc = plat_write_file(path, data, len);
+    return rc;
+}
+
+unsigned char *test_read_bytes(const char *path, size_t *len_out)
+{
+    return (unsigned char *)plat_read_file(path, len_out);
+}
+
+int test_write_zip(const char *path, const char *entry, const void *data, size_t len)
+{
+    size_t zip_len = 0;
+    unsigned char *image = zip_create_stored(entry, data, len, &zip_len);
+    int rc = test_write_bytes(path, image, zip_len);
+
+    free(image);
+    return rc;
+}
+
+/*
+ * A gzip stream whose DEFLATE payload is a single stored block. That keeps the
+ * fixture honest — a real header, a real trailer, a real deflate stream — with
+ * no compressor in the suite.
+ */
+unsigned char *test_gzip(const void *data, size_t len, size_t *len_out)
+{
+    static const unsigned char header[GZ_HEADER_SIZE] = {
+        GZ_MAGIC_0, GZ_MAGIC_1, GZ_METHOD_DEFLATE, 0, 0, 0, 0, 0, 0, 0xFF
+    };
+    byte_buf out = {0};
+    unsigned long crc = crc32_bytes(data, len);
+    unsigned char block[5], trailer[8];
+
+    buf_append(&out, header, sizeof header);
+
+    block[0] = 0x01;                                  /* final, stored     */
+    block[1] = (unsigned char)(len & 0xFF);           /* LEN               */
+    block[2] = (unsigned char)((len >> 8) & 0xFF);
+    block[3] = (unsigned char)(~block[1]);            /* NLEN, its inverse */
+    block[4] = (unsigned char)(~block[2]);
+    buf_append(&out, block, sizeof block);
+    buf_append(&out, data, len);
+
+    trailer[0] = (unsigned char)(crc & 0xFF);
+    trailer[1] = (unsigned char)((crc >> 8) & 0xFF);
+    trailer[2] = (unsigned char)((crc >> 16) & 0xFF);
+    trailer[3] = (unsigned char)((crc >> 24) & 0xFF);
+    trailer[4] = (unsigned char)(len & 0xFF);
+    trailer[5] = (unsigned char)((len >> 8) & 0xFF);
+    trailer[6] = (unsigned char)((len >> 16) & 0xFF);
+    trailer[7] = (unsigned char)((len >> 24) & 0xFF);
+    buf_append(&out, trailer, sizeof trailer);
+
+    return (unsigned char *)buf_finish(&out, len_out);
+}
+
+char *test_fake_personal(const char *dir, const char *save_name,
+                         const void *save, size_t len)
+{
+    char *personal = path_join(dir, "personal");
+
+    plat_mkdir_p(personal);
+    if (save_name) {
+        char *path = path_join(personal, save_name);
+        test_write_bytes(path, save, len);
+        free(path);
+    }
+    test_setenv(TABBER_ENV_PERSONAL_DIR, personal);
+    return personal;
+}
+
+void test_use_fresh_save(const char *path)
+{
+    test_setenv(TABBER_ENV_FRESH_SAVE, path);
+}
+
 int test_files_equal(const char *a, const char *b)
 {
     size_t alen = 0, blen = 0;
@@ -285,6 +371,16 @@ int main(int argc, char **argv)
 
     plat_init();
 
+    /*
+     * Point the personal folder at scratch space before anything runs: no
+     * lookup can then reach the real one, whatever a test forgets to set.
+     */
+    {
+        char *guard = test_dir("no_personal_folder");
+        test_setenv(TABBER_ENV_PERSONAL_DIR, guard);
+        free(guard);
+    }
+
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--online")) {
             online = 1;
@@ -304,6 +400,7 @@ int main(int argc, char **argv)
     suite_core();
     suite_archive();
     suite_state();
+    suite_save();
     suite_game();
     if (online)
         suite_online(full);
@@ -313,6 +410,8 @@ int main(int argc, char **argv)
     /* Leave no environment behind for whatever runs next. */
     test_setenv(TABBER_ENV_HOME, NULL);
     test_setenv(TABBER_ENV_GAME_DIR, NULL);
+    test_setenv(TABBER_ENV_PERSONAL_DIR, NULL);
+    test_setenv(TABBER_ENV_FRESH_SAVE, NULL);
     test_cleanup();
 
     printf("\n%d checks, %d failure(s): %s\n",

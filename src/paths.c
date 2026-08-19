@@ -345,7 +345,22 @@ static void collect_personal_candidates(str_list *out)
 int npp_find_personal_dir(npp_paths *paths, char *err, size_t errsz)
 {
     str_list candidates = {0};
+    char *override = plat_getenv(TABBER_ENV_PERSONAL_DIR);
     size_t i;
+
+    /* An explicit personal folder short-circuits the search. */
+    if (override) {
+        path_to_native(override);
+        if (plat_is_dir(override)) {
+            paths->personal_dir = finalize_dir(override);
+            free(override);
+            return 0;
+        }
+        err_set(err, errsz, "%s points at '%s', which is not a directory",
+                TABBER_ENV_PERSONAL_DIR, override);
+        free(override);
+        return -1;
+    }
 
     collect_personal_candidates(&candidates);
     for (i = 0; i < candidates.count && !paths->personal_dir; i++) {

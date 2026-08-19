@@ -9,9 +9,9 @@ setlocal
 cd /d "%~dp0"
 
 set "OUTDIR=build"
-set "LIBSRC=src\util.c src\platform.c src\kv.c src\json.c src\net.c src\md5.c src\inflate.c src\zip.c src\paths.c src\digest.c src\config.c src\tabs.c src\server.c src\patch.c src\install.c"
+set "LIBSRC=src\util.c src\platform.c src\kv.c src\json.c src\net.c src\md5.c src\inflate.c src\zip.c src\gzip.c src\paths.c src\digest.c src\config.c src\tabs.c src\server.c src\patch.c src\save.c src\install.c"
 set "SOURCES=src\main.c %LIBSRC%"
-set "TESTSRC=test\test_main.c test\test_core.c test\test_archive.c test\test_state.c test\test_game.c test\test_online.c test\fixture_zip.c"
+set "TESTSRC=test\test_main.c test\test_core.c test\test_archive.c test\test_state.c test\test_save.c test\test_game.c test\test_online.c test\fixture_zip.c"
 set "CFLAGS=/nologo /W4 /O2 /std:c11 /D_CRT_SECURE_NO_WARNINGS"
 
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"
@@ -23,6 +23,12 @@ if errorlevel 1 exit /b 1
 cl %CFLAGS% /Fe%OUTDIR%\tabber.exe /Fo%OUTDIR%\ %SOURCES%
 if errorlevel 1 exit /b 1
 echo Built %OUTDIR%\tabber.exe
+
+rem The fresh savefile ships beside the executable, as it will when packaged.
+if exist "res\nprofile.zip" (
+    if not exist "%OUTDIR%\res" mkdir "%OUTDIR%\res"
+    copy /y "res\nprofile.zip" "%OUTDIR%\res\nprofile.zip" >nul
+)
 
 if /i not "%1"=="test" exit /b 0
 

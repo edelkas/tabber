@@ -32,10 +32,15 @@ else
   LDLIBS += -lcurl
 endif
 
-all: $(TARGET)
+all: $(TARGET) $(OBJDIR)/res/nprofile.zip
 
 $(TARGET): $(MAINOBJ) $(LIBOBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+# The fresh savefile ships beside the executable, as it will when packaged.
+$(OBJDIR)/res/nprofile.zip: res/nprofile.zip | $(OBJDIR)
+	mkdir -p $(OBJDIR)/res
+	cp $< $@
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<

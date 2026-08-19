@@ -56,7 +56,7 @@ exercises the real code rather than a copy of it. It runs in three tiers:
 
 | Tier | Needs | Covers |
 | --- | --- | --- |
-| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP/DEFLATE, state file, server resolution, install/uninstall/patching against a stand-in game |
+| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP/DEFLATE/gzip, state file, server resolution, savefile swapping, install/uninstall/patching against a stand-in game |
 | `--online` | the network | downloading the live digest, fetching a tab and verifying it |
 | `--full` | the network | downloading and verifying **every** published tab |
 
@@ -95,11 +95,13 @@ cover.
 | `src/tabs.c/.h`  | Downloading, verifying and unpacking a custom tab |
 | `src/install.c/.h` | Installing a custom tab into the game |
 | `src/patch.c/.h` | Redirecting the game's server queries, and the library health check |
+| `src/save.c/.h`  | Archiving and swapping the savefile |
+| `src/gzip.c/.h`  | Reading gzip streams (RFC 1952), for gzipped savefiles |
 | `src/server.c/.h` | Which 3rd party server to point the game at |
 | `src/config.c/.h`| The tool's own configuration and state (`config.json`) |
 | `src/kv.c/.h`    | Parser for Valve's KeyValues format (`.vdf`, `.acf`) |
 | `src/json.c/.h`  | Minimal JSON parser (RFC 8259) |
-| `src/zip.c/.h`   | In-memory ZIP reader with CRC-32 verification |
+| `src/zip.c/.h`   | In-memory ZIP reader with CRC-32 verification, and a stored-entry writer |
 | `src/inflate.c/.h` | DEFLATE decompressor (RFC 1951) |
 | `src/md5.c/.h`   | MD5 digest (RFC 1321), for download integrity |
 | `src/net.c/.h`   | HTTPS client: WinHTTP on Windows, libcurl elsewhere |
@@ -107,6 +109,7 @@ cover.
 | `src/util.c/.h`  | Allocation, string, buffer and error helpers |
 | `src/version.h`  | Program name and version |
 | `test/`          | The test suite (see above) |
+| `res/`           | Files that ship with the tool: the fresh savefile |
 
 ## Environment
 
@@ -114,6 +117,8 @@ cover.
 | --- | --- |
 | `TABBER_HOME` | Use this directory as the tool's root instead of the executable's, for `config.json`, the cached digest and `tabs/` |
 | `TABBER_GAME_DIR` | Use this N++ installation directory instead of asking Steam |
+| `TABBER_PERSONAL_DIR` | Use this N++ personal directory instead of the usual per-platform one |
+| `TABBER_FRESH_SAVE` | Use this archive as the fresh savefile instead of the shipped one |
 
 Both are meant for tests and for unusual setups (a portable copy, a game Steam
 does not know about); neither is needed in normal use.
@@ -302,6 +307,67 @@ refuse an install, so a failure is only reported as a warning and the install
 goes ahead. Uninstalling does not check, since it points the game back at the
 official servers.
 
+## The savefile
+
+Installing a tab swaps N++'s savefile too, and this is the one thing tabber
+touches that Steam cannot put back, so the whole design is built around never
+overwriting a save that is not already archived somewhere.
+
+Everything lives in N++'s personal folder, in the layout the previous per-tab
+installers used, so both can be used on the same machine:
+
+| File | What it is |
+| --- | --- |
+| `nprofile` / `nprofile.gz` | the live savefile |
+| `nprofile_original.zip` | the vanilla save, archived when a tab is installed |
+| `nprofile_<code>.zip` | that tab's save, archived when it is uninstalled |
+
+Installing archives the live save as `nprofile_original.zip` and puts the tab's
+own `nprofile_<code>.zip` in its place — or, the first time a tab is played,
+the fresh save tabber ships (`res/nprofile.zip`, beside the executable, with
+a gzipped save inside).
+Uninstalling is the same trade the other way round, and if there is no
+`nprofile_original.zip` to come back to, the shipped save stands in for it. The
+archives are ordinary ZIPs holding one entry named after the file that went in,
+exactly as the old installers wrote them — and the ones those installers
+already left behind are read as they are, ZIP64 fields and all (rubyzip writes
+those even for small entries).
+
+### Compressed or not
+
+Since TEN++ the game keeps the save gzipped, falling back to the uncompressed
+file when there is no gzipped one, and older builds know only the uncompressed
+form. Since we cannot tell which build is installed, tabber reads whichever is
+there — preferring `nprofile.gz`, since that is what the game reads first — and
+never *creates* a gzipped save:
+
+| Save on disk | Save going in | Written as |
+| --- | --- | --- |
+| `nprofile.gz` | gzipped | `nprofile.gz`, as it is |
+| `nprofile.gz` | uncompressed | `nprofile` |
+| `nprofile` (or none) | gzipped | `nprofile`, unwrapped first |
+| `nprofile` (or none) | uncompressed | `nprofile` |
+
+A save is only left gzipped when it already was *and* the game has shown it
+reads that form by having one. An old build is therefore never handed a file it
+cannot open, and a new build simply falls back to the uncompressed one and
+re-compresses it on its next save. Whichever form is written, the other is
+deleted: leaving it behind would have the game read the file we did not mean it
+to.
+
+### What makes it safe
+
+- Everything — reading the archive, unwrapping it, building the new archive —
+  happens in memory first. A failure at any point means nothing was written.
+- The archive of the live save is written, then **read back and checked against
+  its own CRC-32**, before the savefile it holds is overwritten.
+- The savefile itself goes to a temporary file, is read back and compared, and
+  only then renamed into place.
+- An empty savefile stops the whole thing: something is wrong, and it is not
+  for tabber to decide what.
+- If a later step of an install or uninstall fails, the swap is undone from the
+  archive that was just made.
+
 ## Uninstalling
 
 `tabber uninstall CODE` puts the game back: it deletes the tab's files and
@@ -374,8 +440,8 @@ alone rather than overwriting whatever is in there.
 - [x] Swap level and challenge files (install / uninstall)
 - [x] Patch the main library to redirect server queries
 - [x] Check that the 3rd party server is up
+- [x] Back up and swap the savefile
 - [ ] Install custom palettes
-- [ ] Swap the savefile
 - [ ] Replace in-game texts
 - [ ] Optional extras (controls, …)
 - [ ] DearImGui front-end

@@ -17,6 +17,7 @@
 #include "patch.h"
 #include "paths.h"
 #include "platform.h"
+#include "save.h"
 #include "tabs.h"
 #include "test.h"
 #include "util.h"
@@ -30,12 +31,18 @@
 #define TAB_CHALLENGE_BODY "AGNT AGNO"
 #define EXPECTED_PATCH    "http://" TEST_DEAD_HOST ":9/" TAB_CODE
 
+/* The savefile the fake game starts with, and the one tabber "ships". */
+#define GAME_SAVE         "the player's own save"
+#define FRESH_SAVE        "the fresh save tabber ships"
+
 /* A whole world for one test: tool root, tab store, fake game. */
 typedef struct {
     char *root;        /* the tool's root, holding config.json and tabs/ */
     char *install;     /* the fake installation directory                */
     char *levels;      /* the game's levels folder                       */
     char *library;     /* the fake main library                          */
+    char *personal;    /* the fake personal folder, holding the savefile */
+    char *fresh;       /* the fresh savefile tabber would ship           */
     digest *dig;
     npp_paths paths;
 } world;
@@ -77,21 +84,52 @@ static void world_build(world *w, const char *name)
     free(path);
     free(tab_levels);
 
+    /* The personal folder, with a savefile in it, and the shipped fresh one. */
+    w->personal = test_fake_personal(w->root, SAVE_NAME, GAME_SAVE, strlen(GAME_SAVE));
+    w->fresh = path_join(w->root, "fresh_nprofile.zip");
+    test_write_zip(w->fresh, SAVE_NAME, FRESH_SAVE, strlen(FRESH_SAVE));
+    test_use_fresh_save(w->fresh);
+
     w->dig = digest_load(err, sizeof err);
     CHECK(w->dig != NULL, "the digest fixture loads (%s)", w->dig ? "" : err);
     CHECK(npp_find_game_dirs(&w->paths, err, sizeof err) == 0,
           "the fake game is found (%s)", err);
+    CHECK(npp_find_personal_dir(&w->paths, err, sizeof err) == 0,
+          "so is its personal folder (%s)", err);
     w->library = lib_path(&w->paths);
 }
 
 static void world_free(world *w)
 {
+    test_use_fresh_save(NULL);
     digest_free(w->dig);
     npp_paths_free(&w->paths);
     free(w->root);
     free(w->install);
     free(w->levels);
     free(w->library);
+    free(w->personal);
+    free(w->fresh);
+}
+
+/* Contents of a file in the personal folder. Caller frees. */
+static char *personal_file(world *w, const char *name)
+{
+    char *path = path_join(w->personal, name);
+    char *text = test_read(path);
+
+    free(path);
+    return text;
+}
+
+/* Whether a file is in the personal folder. */
+static int personal_has(world *w, const char *name)
+{
+    char *path = path_join(w->personal, name);
+    int there = plat_is_file(path);
+
+    free(path);
+    return there;
 }
 
 static const npp_tab *world_tab(world *w, const char *code)
@@ -200,6 +238,14 @@ static void test_install_uninstall(void)
 
     check_library(&w, EXPECTED_PATCH, "the library points at the 3rd party server");
 
+    /* The savefile was swapped as part of the same install. */
+    text = personal_file(&w, SAVE_NAME);
+    CHECK_STR(text, FRESH_SAVE, "the tab's savefile is in place");
+    free(text);
+    CHECK(personal_has(&w, SAVE_BACKUP_ORIGINAL), "the player's own save was archived");
+    CHECK(installed.save.backed_up, "and the report says so");
+    CHECK(installed.save.used_fresh, "this tab had no save of its own yet");
+
     cfg = config_load(err, sizeof err);
     entry = config_find_tab(cfg, TAB_CODE);
     CHECK(entry && json_get_bool(entry, CJK_INSTALLED, 0), "the state records the install");
@@ -237,6 +283,12 @@ static void test_install_uninstall(void)
     free(backup);
 
     check_library(&w, LIB_OFFICIAL_URI, "the library points at the official server again");
+
+    text = personal_file(&w, SAVE_NAME);
+    CHECK_STR(text, GAME_SAVE, "the player's savefile is back, byte for byte");
+    free(text);
+    CHECK(personal_has(&w, "nprofile_" TAB_CODE ".zip"),
+          "and the tab's save was kept for next time");
 
     cfg = config_load(err, sizeof err);
     entry = config_find_tab(cfg, TAB_CODE);
@@ -315,6 +367,14 @@ static void test_install_refusals(void)
         char *text = game_file(&w, TAB_LEVEL_FILE);
         CHECK_STR(text, "original " TAB_LEVEL_FILE, "no level file was touched");
         free(text);
+    }
+
+    /* Nothing that was refused above may have gone near the savefile. */
+    {
+        char *text = personal_file(&w, SAVE_NAME);
+        CHECK_STR(text, GAME_SAVE, "the savefile came through every refusal intact");
+        free(text);
+        CHECK(!personal_has(&w, SAVE_BACKUP_ORIGINAL), "and nothing was archived");
     }
 
     world_free(&w);

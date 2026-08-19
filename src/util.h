@@ -38,6 +38,12 @@ size_t str_display_width(const char *s);
 /* Writes a formatted message into `err` if it is non-NULL. */
 void err_set(char *err, size_t errsz, const char *fmt, ...);
 
+/*
+ * CRC-32 (IEEE 802.3), the checksum both ZIP and gzip carry. Used to judge
+ * whether the bytes that came out of a decompressor are the ones that went in.
+ */
+unsigned long crc32_bytes(const void *data, size_t len);
+
 /* Length of an ISO 8601 UTC timestamp, "YYYY-MM-DDTHH:MM:SSZ". */
 #define TB_TIMESTAMP_LEN 20
 

@@ -86,6 +86,9 @@
  */
 #define TABBER_ENV_GAME_DIR "TABBER_GAME_DIR"
 
+/* The same for the personal folder, which holds the savefile. */
+#define TABBER_ENV_PERSONAL_DIR "TABBER_PERSONAL_DIR"
+
 /* ---- Discovery results ------------------------------------------------- */
 
 typedef struct {

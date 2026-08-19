@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "inflate.h"
 #include "util.h"
@@ -38,6 +39,8 @@
 #define ZIP_MAX_ENTRIES     100000       /* sanity cap for hostile archives    */
 #define ZIP64_MARKER        0xFFFFFFFFUL /* "look in the zip64 extra field"    */
 #define ZIP64_COUNT_MARKER  0xFFFF
+#define ZIP64_EXTRA_ID      0x0001       /* extra field holding the real sizes */
+#define ZIP64_EXTRA_HEAD    4            /* its id and length fields           */
 #define ZIP_FLAG_ENCRYPTED  0x0001
 
 /* ---- Little-endian readers --------------------------------------------- */
@@ -53,40 +56,76 @@ static unsigned long rd32(const unsigned char *p)
            ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24);
 }
 
-/* ---- CRC-32 (IEEE 802.3, as used by ZIP) -------------------------------- */
-
-#define CRC32_POLY 0xEDB88320UL
-
-static unsigned long crc32_table[256];
-static int crc32_ready = 0;
-
-static void crc32_init(void)
+/* ZIP64 stores its sizes and offsets as 64-bit little-endian values. */
+static unsigned long long rd64(const unsigned char *p)
 {
-    unsigned long c;
-    int i, bit;
+    unsigned long long value = 0;
+    int i;
 
-    for (i = 0; i < 256; i++) {
-        c = (unsigned long)i;
-        for (bit = 0; bit < 8; bit++)
-            c = (c & 1) ? (CRC32_POLY ^ (c >> 1)) : (c >> 1);
-        crc32_table[i] = c;
-    }
-    crc32_ready = 1;
+    for (i = 7; i >= 0; i--)
+        value = (value << 8) | p[i];
+    return value;
 }
 
-static unsigned long crc32_bytes(const unsigned char *data, size_t len)
+/* Whether a 64-bit value can be held on this build at all. */
+static int fits_size(unsigned long long value)
 {
-    unsigned long crc = 0xFFFFFFFFUL;
-    size_t i;
-
-    if (!crc32_ready)
-        crc32_init();
-    for (i = 0; i < len; i++)
-        crc = crc32_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
-    return crc ^ 0xFFFFFFFFUL;
+    return value <= (unsigned long long)(size_t)-1;
 }
 
 /* ---- Archive parsing ---------------------------------------------------- */
+
+/*
+ * Fills in the fields a ZIP64 entry leaves marked. The extra field is a run of
+ * (id, size, payload) blocks; block 0x0001 carries the real values, in a fixed
+ * order, and only for the fields that were marked in the first place.
+ */
+static int zip64_fields(zip_entry *entry, const unsigned char *extra, size_t len,
+                        int want_uncomp, int want_comp, int want_offset,
+                        char *err, size_t errsz)
+{
+    size_t at = 0;
+
+    while (at + ZIP64_EXTRA_HEAD <= len) {
+        unsigned id = rd16(extra + at);
+        size_t size = rd16(extra + at + 2);
+        const unsigned char *value = extra + at + ZIP64_EXTRA_HEAD;
+        size_t left = size;
+
+        if (at + ZIP64_EXTRA_HEAD + size > len)
+            break;
+        if (id != ZIP64_EXTRA_ID) {
+            at += ZIP64_EXTRA_HEAD + size;
+            continue;
+        }
+
+        /* The order is fixed: uncompressed size, compressed size, offset. */
+        if (want_uncomp) {
+            if (left < 8 || !fits_size(rd64(value)))
+                goto bad;
+            entry->uncomp_size = (size_t)rd64(value);
+            value += 8;
+            left -= 8;
+        }
+        if (want_comp) {
+            if (left < 8 || !fits_size(rd64(value)))
+                goto bad;
+            entry->comp_size = (size_t)rd64(value);
+            value += 8;
+            left -= 8;
+        }
+        if (want_offset) {
+            if (left < 8 || !fits_size(rd64(value)))
+                goto bad;
+            entry->local_offset = (size_t)rd64(value);
+        }
+        return 0;
+    }
+
+bad:
+    err_set(err, errsz, "'%s': the ZIP64 header is missing or unusable", entry->name);
+    return -1;
+}
 
 /* Scans backwards for the end of central directory record. */
 static const unsigned char *zip_find_eocd(const unsigned char *data, size_t size)
@@ -168,14 +207,6 @@ int zip_open(zip_archive *zip, const void *data, size_t size, char *err, size_t 
             zip_close(zip);
             return -1;
         }
-        if (rd32(p + CD_COMP_SIZE) == ZIP64_MARKER ||
-            rd32(p + CD_UNCOMP_SIZE) == ZIP64_MARKER ||
-            rd32(p + CD_LOCAL_OFFSET) == ZIP64_MARKER) {
-            err_set(err, errsz, "ZIP64 entries are not supported");
-            zip_close(zip);
-            return -1;
-        }
-
         entry = &zip->entries[zip->count];
         entry->name = str_fmt("%.*s", (int)name_len, (const char *)(p + CD_SIZE));
         entry->method = rd16(p + CD_METHOD);
@@ -185,6 +216,22 @@ int zip_open(zip_archive *zip, const void *data, size_t size, char *err, size_t 
         entry->local_offset = (size_t)rd32(p + CD_LOCAL_OFFSET);
         entry->is_dir = name_len > 0 && entry->name[name_len - 1] == '/';
         zip->count++;
+
+        /* Whatever is marked 0xFFFFFFFF really lives in the ZIP64 extra field.
+         * Some writers (rubyzip, which made the savefile archives the previous
+         * installers left behind) do this even for tiny entries. */
+        if (rd32(p + CD_COMP_SIZE) == ZIP64_MARKER ||
+            rd32(p + CD_UNCOMP_SIZE) == ZIP64_MARKER ||
+            rd32(p + CD_LOCAL_OFFSET) == ZIP64_MARKER) {
+            if (zip64_fields(entry, p + CD_SIZE + name_len, extra_len,
+                             rd32(p + CD_UNCOMP_SIZE) == ZIP64_MARKER,
+                             rd32(p + CD_COMP_SIZE) == ZIP64_MARKER,
+                             rd32(p + CD_LOCAL_OFFSET) == ZIP64_MARKER,
+                             err, errsz) != 0) {
+                zip_close(zip);
+                return -1;
+            }
+        }
 
         p += header_len;
     }
@@ -209,6 +256,31 @@ const zip_entry *zip_find(const zip_archive *zip, const char *name)
     for (i = 0; i < zip->count; i++) {
         if (str_ieq(zip->entries[i].name, name))
             return &zip->entries[i];
+    }
+    return NULL;
+}
+
+const zip_entry *zip_find_prefix(const zip_archive *zip, const char *prefix)
+{
+    size_t i, len = strlen(prefix);
+
+    for (i = 0; i < zip->count; i++) {
+        const zip_entry *entry = &zip->entries[i];
+        size_t j;
+
+        if (entry->is_dir || strchr(entry->name, '/'))
+            continue;              /* only files at the archive's root */
+        if (strlen(entry->name) < len)
+            continue;
+        for (j = 0; j < len; j++) {
+            char a = entry->name[j], b = prefix[j];
+            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+            if (a != b)
+                break;
+        }
+        if (j == len)
+            return entry;
     }
     return NULL;
 }
@@ -316,4 +388,107 @@ int zip_name_is_safe(const char *name)
             p++;
     }
     return 1;
+}
+
+/* ---- Writing ----------------------------------------------------------- */
+
+/* Version fields: 2.0, MS-DOS. Stored entries need nothing newer. */
+#define ZIP_VERSION         20
+#define DOS_EPOCH_YEAR      1980
+
+static void wr16(byte_buf *out, unsigned value)
+{
+    unsigned char b[2];
+
+    b[0] = (unsigned char)(value & 0xFF);
+    b[1] = (unsigned char)((value >> 8) & 0xFF);
+    buf_append(out, b, sizeof b);
+}
+
+static void wr32(byte_buf *out, unsigned long value)
+{
+    unsigned char b[4];
+
+    b[0] = (unsigned char)(value & 0xFF);
+    b[1] = (unsigned char)((value >> 8) & 0xFF);
+    b[2] = (unsigned char)((value >> 16) & 0xFF);
+    b[3] = (unsigned char)((value >> 24) & 0xFF);
+    buf_append(out, b, sizeof b);
+}
+
+/* Now, as the packed MS-DOS date and time ZIP records timestamps in. */
+static void dos_now(unsigned *date, unsigned *time_out)
+{
+    time_t now = time(NULL);
+    struct tm *tm = localtime(&now);
+
+    if (!tm || tm->tm_year + 1900 < DOS_EPOCH_YEAR) {
+        *date = (1u << 5) | 1u;        /* the epoch itself: 1980-01-01 */
+        *time_out = 0;
+        return;
+    }
+    *date = ((unsigned)(tm->tm_year + 1900 - DOS_EPOCH_YEAR) << 9) |
+            ((unsigned)(tm->tm_mon + 1) << 5) | (unsigned)tm->tm_mday;
+    *time_out = ((unsigned)tm->tm_hour << 11) | ((unsigned)tm->tm_min << 5) |
+                ((unsigned)tm->tm_sec / 2);
+}
+
+unsigned char *zip_create_stored(const char *name, const void *data, size_t len,
+                                 size_t *out_len)
+{
+    byte_buf out = {0};
+    unsigned long crc = crc32_bytes(data, len);
+    size_t name_len = strlen(name);
+    size_t cd_offset;
+    unsigned date, time_of_day;
+
+    dos_now(&date, &time_of_day);
+
+    /* Local file header, then the bytes themselves. */
+    wr32(&out, SIG_LOCAL);
+    wr16(&out, ZIP_VERSION);            /* version needed          */
+    wr16(&out, 0);                      /* flags                   */
+    wr16(&out, ZIP_METHOD_STORE);
+    wr16(&out, time_of_day);
+    wr16(&out, date);
+    wr32(&out, crc);
+    wr32(&out, (unsigned long)len);     /* compressed size         */
+    wr32(&out, (unsigned long)len);     /* uncompressed size       */
+    wr16(&out, (unsigned)name_len);
+    wr16(&out, 0);                      /* extra field length      */
+    buf_append(&out, name, name_len);
+    buf_append(&out, data, len);
+
+    /* Central directory: one header describing that entry. */
+    cd_offset = out.len;
+    wr32(&out, SIG_CENTRAL);
+    wr16(&out, ZIP_VERSION);            /* version made by         */
+    wr16(&out, ZIP_VERSION);            /* version needed          */
+    wr16(&out, 0);
+    wr16(&out, ZIP_METHOD_STORE);
+    wr16(&out, time_of_day);
+    wr16(&out, date);
+    wr32(&out, crc);
+    wr32(&out, (unsigned long)len);
+    wr32(&out, (unsigned long)len);
+    wr16(&out, (unsigned)name_len);
+    wr16(&out, 0);                      /* extra field length      */
+    wr16(&out, 0);                      /* comment length          */
+    wr16(&out, 0);                      /* disk number             */
+    wr16(&out, 0);                      /* internal attributes     */
+    wr32(&out, 0);                      /* external attributes     */
+    wr32(&out, 0);                      /* offset of local header  */
+    buf_append(&out, name, name_len);
+
+    /* End of central directory. */
+    wr32(&out, SIG_EOCD);
+    wr16(&out, 0);                      /* this disk               */
+    wr16(&out, 0);                      /* disk with the directory */
+    wr16(&out, 1);                      /* entries on this disk    */
+    wr16(&out, 1);                      /* entries in total        */
+    wr32(&out, (unsigned long)(out.len - cd_offset));
+    wr32(&out, (unsigned long)cd_offset);
+    wr16(&out, 0);                      /* comment length          */
+
+    return (unsigned char *)buf_finish(&out, out_len);
 }

@@ -13,6 +13,9 @@
  * Every check runs before the first rename, and any failure mid-way is rolled
  * back, so an aborted install leaves the game folder as it was.
  *
+ * The savefile is swapped too (see save.h): the one in place is archived and
+ * the tab's own — or the fresh one tabber ships — is put in its stead.
+ *
  * Installing also asks the 3rd party server whether it is up, just before the
  * library is patched. That one is diagnostic only: the verdict is reported in
  * the install report, and a server that does not answer does not stop anything.
@@ -25,6 +28,7 @@
 #include "config.h"
 #include "digest.h"
 #include "paths.h"
+#include "save.h"
 #include "server.h"
 #include "util.h"
 
@@ -45,6 +49,7 @@ typedef struct {
     char server_uri[128];       /* what the library now points at          */
     char server_source[32];     /* where that address came from            */
     server_health health;       /* whether that server answered            */
+    save_report save;           /* what happened to the savefile           */
     char state_path[512];       /* state file updated, empty if none       */
     char warning[TB_ERR_LEN];   /* non-fatal problem, empty if none        */
 } install_report;
@@ -74,6 +79,7 @@ typedef struct {
     str_list skipped;           /* shipped files the game does not support */
     str_list leftovers;         /* other backups still in the game folder  */
     char server_uri[128];       /* the URI the library points at again     */
+    save_report save;           /* what happened to the savefile           */
     char state_path[512];       /* state file updated, empty if none       */
     char warning[TB_ERR_LEN];   /* non-fatal problem, empty if none        */
 } uninstall_report;

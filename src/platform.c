@@ -4,8 +4,12 @@
 #include "platform.h"
 #include "util.h"
 
-/* Cap for the buffer growth of plat_read_file: no game file we read is bigger. */
-#define PLAT_MAX_FILE_SIZE (64u * 1024u * 1024u)
+/*
+ * Cap for plat_read_file. The savefile is the big one — around 70 MB
+ * uncompressed — so the limit sits well above it, and a file that exceeds it
+ * is refused rather than handed back short.
+ */
+#define PLAT_MAX_FILE_SIZE (128u * 1024u * 1024u)
 
 /* ====================================================================== */
 /*  Windows                                                               */
@@ -607,8 +611,19 @@ char *plat_read_file(const char *path, size_t *len_out)
     if (!f)
         return NULL;
 
-    /* Read incrementally: file sizes reported by stat can lie (e.g. on procfs). */
+    /*
+     * The reported size is only a hint for the first allocation: sizes can lie
+     * (procfs) and the file can grow under us, so the reading itself is
+     * incremental and stops at what actually comes out.
+     */
     cap = 8192;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long size = ftell(f);
+        if (size > 0 && (size_t)size < PLAT_MAX_FILE_SIZE)
+            cap = (size_t)size + 1;
+    }
+    rewind(f);
+
     buf = xmalloc(cap);
     for (;;) {
         size_t got = fread(buf + len, 1, cap - len - 1, f);
@@ -616,8 +631,17 @@ char *plat_read_file(const char *path, size_t *len_out)
         if (got == 0)
             break;
         if (len + 1 >= cap) {
-            if (cap >= PLAT_MAX_FILE_SIZE)
+            if (cap >= PLAT_MAX_FILE_SIZE) {
+                char extra;
+                /* Only refuse if there really is more: a file of exactly this
+                 * size is fine, a bigger one must not come back truncated. */
+                if (fread(&extra, 1, 1, f) != 0) {
+                    fclose(f);
+                    free(buf);
+                    return NULL;
+                }
                 break;
+            }
             cap *= 2;
             buf = xrealloc(buf, cap);
         }
