@@ -28,6 +28,12 @@
  * simply falls back to the uncompressed one and re-compresses it on its next
  * save. Whichever form is written, the other is removed, so the game cannot
  * end up reading the one we did not mean it to.
+ *
+ * SAVE_FORCE_COMPRESS relaxes only that last part: when the game has proven it
+ * reads gzip, an uncompressed save is compressed on the way in rather than
+ * left for the game to fall back to. Anything compressed here is unpacked
+ * again and compared before it is written, so a save the game could not read
+ * is caught here rather than at its next launch.
  */
 #ifndef TABBER_SAVE_H
 #define TABBER_SAVE_H
@@ -56,6 +62,14 @@
 /* Written and deleted to confirm the personal folder accepts changes. */
 #define SAVE_PROBE_FILE      ".tabber-save-test"
 
+/*
+ * Options for a swap. By default a save is only written gzipped when it
+ * already was; SAVE_FORCE_COMPRESS also compresses one that is not, provided
+ * the game has shown it reads gzip by having a gzipped save of its own. It
+ * costs the compression to save the game a fallback it handles anyway.
+ */
+#define SAVE_FORCE_COMPRESS  0x01u
+
 /* Points at a ready-made fresh save instead of the shipped one, for tests. */
 #define TABBER_ENV_FRESH_SAVE "TABBER_FRESH_SAVE"
 
@@ -77,6 +91,7 @@ typedef struct {
     int backed_up;           /* a save was archived                                    */
     int used_fresh;          /* the new save came from the shipped archive             */
     int gzipped;             /* the save was written gzipped                           */
+    int compressed;          /* ...and tabber was the one that compressed it           */
 } save_report;
 
 /*
@@ -98,6 +113,7 @@ typedef struct {
     size_t save_len;
     char *save_path;           /* where it goes                            */
     char *other_path;          /* the form to delete once it is in place   */
+    int compressed;            /* the new save was gzipped by us           */
     int applied;               /* the new save is on disk                  */
 } save_plan;
 
@@ -112,7 +128,7 @@ char *save_fresh_path(void);
  * Returns 0 on success, -1 with a reason in `err` and nothing changed.
  */
 int save_plan_build(const npp_paths *paths, const char *code, int installing,
-                    save_plan *plan, char *err, size_t errsz);
+                    unsigned flags, save_plan *plan, char *err, size_t errsz);
 
 /*
  * Writes the plan: the archive first, verified by reading it back, and only

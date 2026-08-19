@@ -71,6 +71,23 @@ static int archive_extract_save(const char *path, unsigned char **out, size_t *l
     return save ? 0 : -1;
 }
 
+/*
+ * Whether a gzip stream really unpacks to the bytes it was made from. The
+ * compressor is ours, so this is the only thing standing between a mistake in
+ * it and a savefile the game cannot read.
+ */
+static int unpacks_to(const unsigned char *packed, size_t packed_len,
+                      const unsigned char *original, size_t len)
+{
+    char err[TB_ERR_LEN];
+    size_t back_len = 0;
+    unsigned char *back = gz_extract(packed, packed_len, &back_len, err, sizeof err);
+    int same = back && back_len == len && memcmp(back, original, len) == 0;
+
+    free(back);
+    return same ? 0 : -1;
+}
+
 /* Writes `data` to `path` by way of a temporary file, then reads it back. */
 static int write_verified(const char *path, const unsigned char *data, size_t len,
                           char *err, size_t errsz)
@@ -157,7 +174,7 @@ char *save_fresh_path(void)
 /* ---- Planning ---------------------------------------------------------- */
 
 int save_plan_build(const npp_paths *paths, const char *code, int installing,
-                    save_plan *plan, char *err, size_t errsz)
+                    unsigned flags, save_plan *plan, char *err, size_t errsz)
 {
     char sub[TB_ERR_LEN];
     char *gz_path = NULL, *raw_path = NULL, *tab_archive = NULL, *lower = NULL;
@@ -235,9 +252,11 @@ int save_plan_build(const npp_paths *paths, const char *code, int installing,
     /*
      * Which form to write it in. A gzipped save is only kept gzipped when the
      * game has shown it understands that (by having one on disk); otherwise it
-     * is unwrapped. We never compress a save that is not already compressed:
-     * every build reads the uncompressed file, and TEN++ and later re-compress
-     * it themselves on their next save.
+     * is unwrapped. A save that is not compressed is normally left that way,
+     * since every build reads the uncompressed file and TEN++ and later
+     * re-compress it themselves on their next save — unless the caller asks
+     * for it to be compressed anyway, which is only allowed on the same
+     * evidence that the game reads gzip at all.
      */
     if (gz_is_gzip(data, data_len) && plan->form == SAVE_GZIPPED) {
         plan->save = data;
@@ -245,6 +264,24 @@ int save_plan_build(const npp_paths *paths, const char *code, int installing,
         data = NULL;
         plan->save_path = str_dup(gz_path);
         plan->other_path = str_dup(raw_path);
+    } else if (!gz_is_gzip(data, data_len) && plan->form == SAVE_GZIPPED &&
+               (flags & SAVE_FORCE_COMPRESS)) {
+        /* Asked for, and allowed: the game reads gzip, so hand it a gzipped
+         * save instead of one it would have to fall back to. */
+        plan->save = gz_compress(data, data_len, SAVE_NAME, &plan->save_len);
+        plan->compressed = 1;
+        plan->save_path = str_dup(gz_path);
+        plan->other_path = str_dup(raw_path);
+
+        /* Read our own work back before trusting it to the game: a savefile
+         * the game cannot open would only show up at its next launch, by
+         * which time the copy this came from may be gone. */
+        if (unpacks_to(plan->save, plan->save_len, data, data_len) != 0) {
+            err_set(err, errsz, "the savefile did not survive being compressed; "
+                                "nothing was changed. Install without "
+                                "--force-compress to put it in place as it is");
+            goto done;
+        }
     } else if (gz_is_gzip(data, data_len)) {
         plan->save = gz_extract(data, data_len, &plan->save_len, sub, sizeof sub);
         if (!plan->save) {
@@ -362,6 +399,7 @@ int save_plan_apply(save_plan *plan, save_report *report, char *err, size_t errs
     report->save_bytes = plan->save_len;
     report->used_fresh = plan->used_fresh;
     report->gzipped = gz_is_gzip(plan->save, plan->save_len);
+    report->compressed = plan->compressed;
     return 0;
 }
 

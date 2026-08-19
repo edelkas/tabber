@@ -10,7 +10,7 @@ Run it with `build.bat test` (Windows) or `make test` (Linux, macOS). Add
 | --- | --- |
 | `test_main.c` | The harness, the scratch-world helpers and the shared fixtures |
 | `test_core.c` | Strings, buffers, path handling, canonical paths, JSON, KeyValues, MD5 |
-| `test_archive.c` | ZIP reading and writing, DEFLATE, gzip, CRC verification, corruption, unsafe entry names |
+| `test_archive.c` | ZIP reading and writing, DEFLATE both ways, gzip, CRC verification, corruption, unsafe entry names |
 | `test_state.c` | `config.json` round trips and lifecycle, server resolution, URI budget, the server health check |
 | `test_save.c` | Archiving and swapping the savefile, in both its compressed and uncompressed forms |
 | `test_game.c` | Install, uninstall, library patching, and both health checks |

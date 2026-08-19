@@ -149,13 +149,13 @@ static char *archived_entry_name(world *w, const char *name)
 }
 
 /* Runs a whole swap, reporting what went wrong if it did. */
-static int swap(world *w, int installing, save_report *report)
+static int swap_with(world *w, int installing, unsigned flags, save_report *report)
 {
     char err[TB_ERR_LEN];
     save_plan plan;
     int rc;
 
-    if (save_plan_build(&w->paths, TAB_CODE, installing, &plan, err, sizeof err) != 0) {
+    if (save_plan_build(&w->paths, TAB_CODE, installing, flags, &plan, err, sizeof err) != 0) {
         CHECK(0, "the swap could not be planned: %s", err);
         return -1;
     }
@@ -163,6 +163,11 @@ static int swap(world *w, int installing, save_report *report)
     CHECK(rc == 0, "the swap applied (%s)", err);
     save_plan_free(&plan);
     return rc;
+}
+
+static int swap(world *w, int installing, save_report *report)
+{
+    return swap_with(w, installing, 0, report);
 }
 
 /* ---- The forms the savefile comes in ----------------------------------- */
@@ -360,6 +365,71 @@ static void test_fresh_save_gzipped(void)
     world_free(&w);
 }
 
+/*
+ * With --force-compress the uncompressed save is gzipped on the way in rather
+ * than left for the game to fall back to — but only where the default rule
+ * would have allowed a gzipped save at all, which is to say where the game has
+ * one of its own.
+ */
+static void test_force_compress(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    save_report report;
+    unsigned char *gz, *written, *plain;
+    size_t gz_len = 0, written_len = 0, plain_len = 0;
+
+    test_case("compressing the save on the way in");
+    gz = test_gzip(VANILLA_SAVE, strlen(VANILLA_SAVE), &gz_len);
+    world_build(&w, "save_force", SAVE_GZ_NAME, gz, gz_len);
+
+    if (swap_with(&w, 1, SAVE_FORCE_COMPRESS, &report) == 0) {
+        CHECK_NUM(report.gzipped, 1, "the save went in gzipped");
+        CHECK_NUM(report.compressed, 1, "and tabber was the one that did it");
+        CHECK(!exists(&w, SAVE_NAME), "no uncompressed copy was left behind");
+
+        /* What landed has to be a gzip stream holding the save itself. */
+        written = slurp(&w, SAVE_GZ_NAME, &written_len);
+        CHECK(written && gz_is_gzip(written, written_len), "the file really is gzip");
+        plain = written ? gz_extract(written, written_len, &plain_len, err, sizeof err) : NULL;
+        CHECK(plain != NULL, "which unwraps (%s)", err);
+        CHECK(plain && plain_len == strlen(FRESH_SAVE) &&
+              memcmp(plain, FRESH_SAVE, plain_len) == 0,
+              "to exactly the save that was meant to go in");
+        free(plain);
+        free(written);
+    }
+    world_free(&w);
+
+    /* An old build has shown nothing, so the flag must not tempt us. */
+    world_build(&w, "save_force_raw", SAVE_NAME, VANILLA_SAVE, strlen(VANILLA_SAVE));
+    if (swap_with(&w, 1, SAVE_FORCE_COMPRESS, &report) == 0) {
+        CHECK_NUM(report.gzipped, 0, "an uncompressed save stays uncompressed");
+        CHECK_NUM(report.compressed, 0, "nothing was compressed");
+        CHECK(holds(&w, SAVE_NAME, FRESH_SAVE, strlen(FRESH_SAVE)), "and it is in place");
+        CHECK(!exists(&w, SAVE_GZ_NAME), "with no gzipped file invented");
+    }
+    world_free(&w);
+
+    /* Neither must it re-compress what is already compressed. */
+    world_build(&w, "save_force_gz", SAVE_GZ_NAME, gz, gz_len);
+    {
+        char *archive = at(&w, TAB_ARCHIVE);
+        unsigned char *tab = test_gzip(TAB_SAVE, strlen(TAB_SAVE), &plain_len);
+
+        test_write_zip(archive, SAVE_GZ_NAME, tab, plain_len);
+        free(archive);
+        if (swap_with(&w, 1, SAVE_FORCE_COMPRESS, &report) == 0) {
+            CHECK_NUM(report.compressed, 0, "a gzipped save is passed through as it is");
+            CHECK(holds(&w, SAVE_GZ_NAME, tab, plain_len), "byte for byte");
+        }
+        free(tab);
+    }
+    world_free(&w);
+
+    free(gz);
+}
+
 /* ---- Round trips ------------------------------------------------------- */
 
 /*
@@ -444,7 +514,7 @@ static void test_refusals(void)
     /* An archive that is not an archive. */
     archive = at(&w, TAB_ARCHIVE);
     test_write(archive, "this is not a zip file, it is a lie");
-    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, &plan, err, sizeof err) != 0,
+    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, 0, &plan, err, sizeof err) != 0,
           "a corrupt archive is refused");
     CHECK(holds(&w, SAVE_NAME, VANILLA_SAVE, strlen(VANILLA_SAVE)),
           "and the savefile is untouched");
@@ -455,7 +525,7 @@ static void test_refusals(void)
     /* An archive holding something else entirely. */
     archive = at(&w, TAB_ARCHIVE);
     test_write_zip(archive, "readme.txt", "not a save", 10);
-    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, &plan, err, sizeof err) != 0,
+    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, 0, &plan, err, sizeof err) != 0,
           "an archive with no savefile in it is refused");
     CHECK(strstr(err, SAVE_ENTRY_PREFIX) != NULL, "and says what it looked for");
     CHECK(holds(&w, SAVE_NAME, VANILLA_SAVE, strlen(VANILLA_SAVE)),
@@ -466,7 +536,7 @@ static void test_refusals(void)
     /* A savefile of zero bytes: something is wrong, so nothing is touched. */
     path = at(&w, SAVE_NAME);
     test_write_bytes(path, "", 0);
-    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, &plan, err, sizeof err) != 0,
+    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, 0, &plan, err, sizeof err) != 0,
           "an empty savefile stops the swap");
     CHECK(!exists(&w, SAVE_BACKUP_ORIGINAL), "nothing was archived");
     test_write_bytes(path, VANILLA_SAVE, strlen(VANILLA_SAVE));
@@ -474,7 +544,7 @@ static void test_refusals(void)
 
     /* No shipped save and no archive for this direction: nothing to install. */
     test_use_fresh_save(NULL);
-    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, &plan, err, sizeof err) != 0,
+    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, 0, &plan, err, sizeof err) != 0,
           "with no save to put in place, the swap is refused");
     CHECK(holds(&w, SAVE_NAME, VANILLA_SAVE, strlen(VANILLA_SAVE)),
           "the savefile survived all of that");
@@ -486,7 +556,7 @@ static void test_refusals(void)
         char *missing = path_join(w.root, "not-a-folder");
 
         nowhere.personal_dir = missing;
-        CHECK(save_plan_build(&nowhere, TAB_CODE, 1, &plan, err, sizeof err) != 0,
+        CHECK(save_plan_build(&nowhere, TAB_CODE, 1, 0, &plan, err, sizeof err) != 0,
               "a missing personal folder is refused");
         free(missing);
     }
@@ -505,7 +575,7 @@ static void test_undo(void)
     test_case("undoing a swap");
     world_build(&w, "save_undo", SAVE_NAME, VANILLA_SAVE, strlen(VANILLA_SAVE));
 
-    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, &plan, err, sizeof err) == 0,
+    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, 0, &plan, err, sizeof err) == 0,
           "the swap plans (%s)", err);
     CHECK(save_plan_apply(&plan, &report, err, sizeof err) == 0, "and applies (%s)", err);
     CHECK(holds(&w, SAVE_NAME, FRESH_SAVE, strlen(FRESH_SAVE)), "the new save is in place");
@@ -518,7 +588,7 @@ static void test_undo(void)
     /* Undoing a swap that put a save where there was none leaves none. */
     world_free(&w);
     world_build(&w, "save_undo_none", NULL, NULL, 0);
-    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, &plan, err, sizeof err) == 0,
+    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, 0, &plan, err, sizeof err) == 0,
           "the swap plans with no save in place");
     CHECK(save_plan_apply(&plan, &report, err, sizeof err) == 0, "and applies");
     CHECK(save_plan_undo(&plan) == 0, "and is undone");
@@ -617,6 +687,26 @@ static void test_shipped_save(void)
                 }
             }
 
+            /* And back into gzip with our own compressor: a real savefile is
+             * the input that matters, and the game's own copy of it is the
+             * yardstick for what the result should cost. */
+            if (save) {
+                char err2[TB_ERR_LEN];
+                unsigned char *packed, *back;
+                size_t packed_len = 0, back_len = 0;
+
+                packed = gz_compress(save, save_len, SAVE_NAME, &packed_len);
+                CHECK(packed_len < save_len / 100,
+                      "it compresses to under a hundredth (%lu bytes)",
+                      (unsigned long)packed_len);
+                back = gz_extract(packed, packed_len, &back_len, err2, sizeof err2);
+                CHECK(back != NULL, "and unwraps again (%s)", err2);
+                CHECK(back && back_len == save_len && memcmp(back, save, save_len) == 0,
+                      "to the same savefile, byte for byte");
+                free(back);
+                free(packed);
+            }
+
             /*
              * A whole savefile through the same write-and-read-back the swap
              * uses. A real one is tens of megabytes, which is exactly the size
@@ -656,6 +746,7 @@ void suite_save(void)
     test_both_forms_present();
     test_no_save_at_all();
     test_fresh_save_gzipped();
+    test_force_compress();
     test_round_trip();
     test_uninstall_without_original();
     test_refusals();

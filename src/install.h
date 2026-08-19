@@ -14,7 +14,8 @@
  * back, so an aborted install leaves the game folder as it was.
  *
  * The savefile is swapped too (see save.h): the one in place is archived and
- * the tab's own — or the fresh one tabber ships — is put in its stead.
+ * the tab's own — or the fresh one tabber ships — is put in its stead. The
+ * `flags` both functions take are that module's (SAVE_FORCE_COMPRESS today).
  *
  * Installing also asks the 3rd party server whether it is up, just before the
  * library is patched. That one is diagnostic only: the verdict is reported in
@@ -69,7 +70,7 @@ int install_detect(config *cfg, const npp_paths *paths, char *code_out, size_t c
  * untouched.
  */
 int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
-                install_report *report, char *err, size_t errsz);
+                unsigned flags, install_report *report, char *err, size_t errsz);
 
 void install_report_free(install_report *report);
 
@@ -91,7 +92,7 @@ typedef struct {
  * Returns 0 on success, or -1 with a reason in `err` and nothing changed.
  */
 int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
-                  uninstall_report *report, char *err, size_t errsz);
+                  unsigned flags, uninstall_report *report, char *err, size_t errsz);
 
 void uninstall_report_free(uninstall_report *report);
 

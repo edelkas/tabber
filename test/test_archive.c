@@ -11,6 +11,7 @@
 
 #include "gzip.h"
 #include "md5.h"
+#include "save.h"
 #include "test.h"
 #include "util.h"
 #include "zip.h"
@@ -434,6 +435,237 @@ static void test_zip64_entries(void)
     free(plain);
 }
 
+/* ---- Compressing ------------------------------------------------------- */
+
+/* A cheap deterministic pseudo-random stream, for data that will not compress. */
+static void fill_noise(unsigned char *out, size_t len, unsigned seed)
+{
+    size_t i;
+
+    for (i = 0; i < len; i++) {
+        seed = seed * 1103515245u + 12345u;
+        out[i] = (unsigned char)(seed >> 16);
+    }
+}
+
+/*
+ * Compresses, decompresses, and insists on getting the same bytes back. The
+ * decompressor is the tool's own, which already answers to the CRC-32 in the
+ * gzip trailer, so a round trip is a real verdict on the compressor.
+ */
+static int round_trip(const unsigned char *data, size_t len, const char *what,
+                      size_t *packed_len)
+{
+    char err[TB_ERR_LEN];
+    unsigned char *packed, *back;
+    size_t packed_size = 0, back_len = 0;
+    int ok;
+
+    packed = gz_compress(data, len, SAVE_NAME, &packed_size);
+    if (packed_len)
+        *packed_len = packed_size;
+
+    ok = CHECK(gz_is_gzip(packed, packed_size), "%s: the result is a gzip stream", what);
+    back = gz_extract(packed, packed_size, &back_len, err, sizeof err);
+    ok &= CHECK(back != NULL, "%s: it unwraps again (%s)", what, err);
+    ok &= CHECK(back_len == len, "%s: to the same length (got %lu, wanted %lu)",
+                what, (unsigned long)back_len, (unsigned long)len);
+    ok &= CHECK(back && memcmp(back, data, len) == 0, "%s: byte for byte", what);
+
+    free(back);
+    free(packed);
+    return ok;
+}
+
+static void test_compress_shapes(void)
+{
+    unsigned char *buf;
+    size_t i, packed = 0;
+
+    test_case("compressing every shape of input");
+
+    round_trip((const unsigned char *)"", 0, "nothing at all", NULL);
+    round_trip((const unsigned char *)"x", 1, "a single byte", NULL);
+    round_trip((const unsigned char *)"hello hello hello hello", 23, "a short repeat", NULL);
+
+    /* Every byte value, so the whole literal alphabet is used. */
+    buf = xmalloc(256);
+    for (i = 0; i < 256; i++)
+        buf[i] = (unsigned char)i;
+    round_trip(buf, 256, "all 256 byte values", NULL);
+    free(buf);
+
+    /* One long run: matches of the longest kind, back to back. */
+    buf = xmalloc(200000);
+    memset(buf, 0, 200000);
+    round_trip(buf, 200000, "200 kB of zeros", &packed);
+    CHECK(packed < 2000, "which packs down to almost nothing (%lu bytes)",
+          (unsigned long)packed);
+    free(buf);
+
+    /* Noise: nothing to find, so the output must not run away either. */
+    buf = xmalloc(100000);
+    fill_noise(buf, 100000, 1);
+    round_trip(buf, 100000, "100 kB of noise", &packed);
+    CHECK(packed < 100000 + 1024, "which barely grows (%lu bytes)", (unsigned long)packed);
+    free(buf);
+
+    /* A match further back than a single block, to use the whole window. */
+    buf = xmalloc(70000);
+    fill_noise(buf, 70000, 7);
+    memcpy(buf + 69000, buf + 100, 900);          /* a repeat 68 kB later */
+    round_trip(buf, 70000, "a distant repeat", NULL);
+    free(buf);
+
+    /* Text-shaped data, the case the Huffman codes actually pay off on. */
+    buf = xmalloc(120000);
+    for (i = 0; i < 120000; i++)
+        buf[i] = (unsigned char)("the quick brown fox jumps over the lazy dog. "[i % 45]);
+    round_trip(buf, 120000, "repeating text", &packed);
+    CHECK(packed < 120000 / 20, "which compresses well (%lu bytes)", (unsigned long)packed);
+    free(buf);
+}
+
+/*
+ * Frequencies shaped like the Fibonacci numbers are the worst case for a
+ * Huffman tree: they make it as deep as it can be, past the fifteen bits the
+ * format allows for a code, which is what forces the compressor to flatten
+ * them and build the tree again. The symbols are dealt out in a shuffled bag
+ * so they stay literals instead of turning into one long match.
+ */
+static void test_compress_deep_tree(void)
+{
+    unsigned char *buf;
+    unsigned seed = 12345;
+    size_t len = 0, at = 0, i;
+    int steps = 19, j;
+    unsigned weight[24];
+
+    test_case("frequencies that overflow the code length");
+    weight[0] = weight[1] = 1;
+    for (j = 2; j < steps; j++)
+        weight[j] = weight[j - 1] + weight[j - 2];
+    for (j = 0; j < steps; j++)
+        len += weight[j];
+    /* One ladder, so it all lands in a single block and the rarest symbols
+     * really are the rarest ones the block's tree has to code. */
+
+    buf = xmalloc(len);
+    for (j = 0; j < steps; j++) {
+        unsigned k;
+
+        for (k = 0; k < weight[j]; k++)
+            buf[at++] = (unsigned char)j;
+    }
+
+    /* Shuffle, so the runs above do not simply become matches. */
+    for (i = at; i > 1; i--) {
+        size_t pick;
+        unsigned char swap;
+
+        seed = seed * 1103515245u + 12345u;
+        pick = (seed >> 8) % i;
+        swap = buf[i - 1];
+        buf[i - 1] = buf[pick];
+        buf[pick] = swap;
+    }
+
+    round_trip(buf, at, "a Fibonacci-shaped alphabet", NULL);
+    free(buf);
+}
+
+/*
+ * A spread of shapes the compressor might meet, each one round-tripped: runs,
+ * skews, block boundaries, alphabets of every width. Deterministic, so a
+ * failure here is a failure that can be repeated.
+ */
+static void test_compress_many_shapes(void)
+{
+    char err[TB_ERR_LEN];
+    unsigned seed = 987654321u;
+    unsigned char *buf = xmalloc(200000);
+    int round, failures = 0;
+
+    test_case("a spread of inputs, round-tripped");
+
+    for (round = 0; round < 120; round++) {
+        unsigned char *packed, *back;
+        size_t packed_len = 0, back_len = 0, len, i;
+        unsigned alphabet, skew, run_bias;
+
+        seed = seed * 1103515245u + 12345u;
+        len = 1 + (seed >> 9) % 60000;
+        seed = seed * 1103515245u + 12345u;
+        alphabet = 1 + (seed >> 11) % 255;      /* how many byte values      */
+        seed = seed * 1103515245u + 12345u;
+        skew = 1 + (seed >> 13) % 8;            /* how uneven their odds are */
+        seed = seed * 1103515245u + 12345u;
+        run_bias = (seed >> 15) % 16;           /* how often bytes repeat    */
+
+        for (i = 0; i < len; i++) {
+            unsigned pick;
+
+            seed = seed * 1103515245u + 12345u;
+            if (i > 0 && (seed >> 7) % 16 < run_bias) {
+                buf[i] = buf[i - 1];            /* a run, for the matcher */
+                continue;
+            }
+            pick = (seed >> 8) % alphabet;
+            while (--skew > 0 && pick > 0) {    /* bias towards low values */
+                seed = seed * 1103515245u + 12345u;
+                pick = pick * ((seed >> 8) % alphabet + 1) / (alphabet + 1);
+            }
+            skew = 1 + (seed >> 13) % 8;
+            buf[i] = (unsigned char)pick;
+        }
+
+        packed = gz_compress(buf, len, NULL, &packed_len);
+        back = gz_extract(packed, packed_len, &back_len, err, sizeof err);
+        if (!back || back_len != len || memcmp(back, buf, len) != 0) {
+            failures++;
+            if (failures == 1)
+                CHECK(0, "round %d (%lu bytes, %u symbols) did not survive: %s",
+                      round, (unsigned long)len, alphabet, back ? "wrong bytes" : err);
+        }
+        free(back);
+        free(packed);
+    }
+
+    CHECK_NUM(failures, 0, "every input came back as it went in");
+    free(buf);
+}
+
+/* The gzip we write has to be readable as gzip, not just by our own reader. */
+static void test_compress_stream_shape(void)
+{
+    static const char body[] = "a savefile, or something shaped like one";
+    size_t len = sizeof body - 1;
+    unsigned char *packed;
+    size_t packed_len = 0;
+    unsigned long isize, crc;
+
+    test_case("the shape of the gzip we write");
+    packed = gz_compress(body, len, SAVE_NAME, &packed_len);
+
+    CHECK_NUM(packed[2], GZ_METHOD_DEFLATE, "the method is deflate");
+    CHECK_NUM(packed[3], GZ_FLAG_NAME, "the original name is recorded");
+    CHECK_STR((const char *)packed + GZ_HEADER_SIZE, SAVE_NAME, "and it is the one we gave");
+    CHECK_NUM(packed[9], GZ_OS_UNKNOWN, "the filesystem is left unstated");
+
+    crc = (unsigned long)packed[packed_len - 8] |
+          ((unsigned long)packed[packed_len - 7] << 8) |
+          ((unsigned long)packed[packed_len - 6] << 16) |
+          ((unsigned long)packed[packed_len - 5] << 24);
+    isize = (unsigned long)packed[packed_len - 4] |
+            ((unsigned long)packed[packed_len - 3] << 8) |
+            ((unsigned long)packed[packed_len - 2] << 16) |
+            ((unsigned long)packed[packed_len - 1] << 24);
+    CHECK_NUM(isize, len, "the trailer states the original length");
+    CHECK(crc == crc32_bytes(body, len), "and its checksum");
+
+    free(packed);
+}
+
 void suite_archive(void)
 {
     test_suite("archive");
@@ -446,4 +678,8 @@ void suite_archive(void)
     test_gzip_reader();
     test_real_gzip();
     test_zip64_entries();
+    test_compress_shapes();
+    test_compress_deep_tree();
+    test_compress_many_shapes();
+    test_compress_stream_shape();
 }

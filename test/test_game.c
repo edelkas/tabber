@@ -199,7 +199,7 @@ static void test_install_uninstall(void)
     /* Keep a copy of an original the tab is about to replace. */
     before = game_file(&w, TAB_LEVEL_FILE);
 
-    CHECK(tab_install(w.dig, tab, &w.paths, &installed, err, sizeof err) == 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, 0, &installed, err, sizeof err) == 0,
           "install succeeds (%s)", err);
     CHECK_NUM(installed.installed_count, 2, "both supported files are installed");
     CHECK_NUM(installed.skipped.count, 1, "the unsupported file is skipped");
@@ -263,13 +263,13 @@ static void test_install_uninstall(void)
     {
         install_report second;
         const npp_tab *other = world_tab(&w, "oth");
-        CHECK(tab_install(w.dig, other, &w.paths, &second, err, sizeof err) != 0,
+        CHECK(tab_install(w.dig, other, &w.paths, 0, &second, err, sizeof err) != 0,
               "installing a second tab is refused");
         install_report_free(&second);
     }
 
     /* Now put it all back. */
-    CHECK(tab_uninstall(w.dig, tab, &w.paths, &removed, err, sizeof err) == 0,
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, 0, &removed, err, sizeof err) == 0,
           "uninstall succeeds (%s)", err);
     CHECK_NUM(removed.restored_count, 2, "both originals are restored");
 
@@ -324,7 +324,7 @@ static void test_install_refusals(void)
     /* The game is missing a file the tab replaces. */
     path = path_join(w.levels, TAB_LEVEL_FILE);
     plat_remove_file(path);
-    CHECK(tab_install(w.dig, tab, &w.paths, &report, err, sizeof err) != 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
           "install is refused when a target file is missing");
     CHECK(strstr(err, TAB_LEVEL_FILE) != NULL, "the missing file is named");
     install_report_free(&report);
@@ -336,7 +336,7 @@ static void test_install_refusals(void)
      * behind it must not be overwritten. */
     path = str_fmt("%s%c%s%s", w.levels, PATH_SEP, TAB_LEVEL_FILE, INSTALL_BACKUP_SUFFIX);
     test_write(path, "a precious original");
-    CHECK(tab_install(w.dig, tab, &w.paths, &report, err, sizeof err) != 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
           "install is refused when a backup already exists");
     install_report_free(&report);
     before = test_read(path);
@@ -359,7 +359,7 @@ static void test_install_refusals(void)
         str_list_free(&known);
         config_free(cfg);
     }
-    CHECK(tab_install(w.dig, tab, &w.paths, &report, err, sizeof err) != 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
           "install is refused when the library is already patched");
     CHECK(strstr(err, "not in a clean state") != NULL, "the check catches it first");
     install_report_free(&report);
@@ -397,11 +397,11 @@ static void test_uninstall_refusals(void)
     if (!tab || !other || !w.dig) { world_free(&w); return; }
 
     /* Nothing is installed at all. */
-    CHECK(tab_uninstall(w.dig, tab, &w.paths, &report, err, sizeof err) != 0,
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
           "uninstall is refused on a clean game");
     uninstall_report_free(&report);
 
-    CHECK(tab_install(w.dig, tab, &w.paths, &installed, err, sizeof err) == 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, 0, &installed, err, sizeof err) == 0,
           "install for the next checks (%s)", err);
     install_report_free(&installed);
 
@@ -409,7 +409,7 @@ static void test_uninstall_refusals(void)
     path = str_fmt("%s%c%s%s", w.levels, PATH_SEP, TAB_CHALLENGE, INSTALL_BACKUP_SUFFIX);
     text = test_read(path);
     plat_remove_file(path);
-    CHECK(tab_uninstall(w.dig, tab, &w.paths, &report, err, sizeof err) != 0,
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
           "uninstall is refused when a backup is missing");
     CHECK(strstr(err, TAB_CHALLENGE) != NULL, "the file without a backup is named");
     uninstall_report_free(&report);
@@ -431,7 +431,7 @@ static void test_uninstall_refusals(void)
     config_save(cfg, err, sizeof err);
     config_free(cfg);
 
-    CHECK(tab_uninstall(w.dig, other, &w.paths, &report, err, sizeof err) != 0,
+    CHECK(tab_uninstall(w.dig, other, &w.paths, 0, &report, err, sizeof err) != 0,
           "uninstalling the wrong tab is refused");
     CHECK(strstr(err, TAB_CODE) != NULL, "the tab the library names is reported");
     uninstall_report_free(&report);
@@ -468,7 +468,7 @@ static void test_health_mismatches(void)
     config_free(cfg);
 
     /* Patched, but nothing is recorded as installed. */
-    CHECK(tab_install(w.dig, tab, &w.paths, &installed, err, sizeof err) == 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, 0, &installed, err, sizeof err) == 0,
           "install (%s)", err);
     install_report_free(&installed);
     cfg = config_load(err, sizeof err);

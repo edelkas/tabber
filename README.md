@@ -34,6 +34,8 @@ tabber [options] [command]
   -b, --bare       Machine-readable output: paths or tab-separated fields only
   -v, --verbose    Print extra detail
   -o, --offline    Skip the automatic digest refresh, use the cached copy
+  -c, --force-compress
+                   Gzip the savefile put in place, when the game reads gzip
   -h, --help       Show help
   -V, --version    Show version
 ```
@@ -56,7 +58,7 @@ exercises the real code rather than a copy of it. It runs in three tiers:
 
 | Tier | Needs | Covers |
 | --- | --- | --- |
-| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP/DEFLATE/gzip, state file, server resolution, savefile swapping, install/uninstall/patching against a stand-in game |
+| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, install/uninstall/patching against a stand-in game |
 | `--online` | the network | downloading the live digest, fetching a tab and verifying it |
 | `--full` | the network | downloading and verifying **every** published tab |
 
@@ -73,6 +75,10 @@ Some things are worth knowing about how the tests check what they check:
   full tier that is an independent verdict on every file of every tab.
 - **Corruption** is swept byte by byte through the compressed data of the
   embedded fixture: every single-byte flip must be caught.
+- **Compression** is judged by decompressing it again: a spread of 120
+  generated inputs — runs, skews, alphabets of every width, sizes across the
+  block boundaries — has to come back byte for byte, as does the real
+  savefile tabber ships.
 - **Refusals** assert not just the error but that nothing moved: files, backups
   and the library are all re-checked afterwards.
 - **The server** the offline tier probes is `127.0.0.1:9`, a port nothing
@@ -96,13 +102,14 @@ cover.
 | `src/install.c/.h` | Installing a custom tab into the game |
 | `src/patch.c/.h` | Redirecting the game's server queries, and the library health check |
 | `src/save.c/.h`  | Archiving and swapping the savefile |
-| `src/gzip.c/.h`  | Reading gzip streams (RFC 1952), for gzipped savefiles |
+| `src/gzip.c/.h`  | Reading and writing gzip streams (RFC 1952), for gzipped savefiles |
 | `src/server.c/.h` | Which 3rd party server to point the game at |
 | `src/config.c/.h`| The tool's own configuration and state (`config.json`) |
 | `src/kv.c/.h`    | Parser for Valve's KeyValues format (`.vdf`, `.acf`) |
 | `src/json.c/.h`  | Minimal JSON parser (RFC 8259) |
 | `src/zip.c/.h`   | In-memory ZIP reader with CRC-32 verification, and a stored-entry writer |
 | `src/inflate.c/.h` | DEFLATE decompressor (RFC 1951) |
+| `src/deflate.c/.h` | DEFLATE compressor (RFC 1951) |
 | `src/md5.c/.h`   | MD5 digest (RFC 1321), for download integrity |
 | `src/net.c/.h`   | HTTPS client: WinHTTP on Windows, libcurl elsewhere |
 | `src/platform.c/.h` | OS abstraction: filesystem, environment, Windows registry, UTF-8 paths |
@@ -349,7 +356,13 @@ never *creates* a gzipped save:
 | `nprofile` (or none) | uncompressed | `nprofile` |
 
 A save is only left gzipped when it already was *and* the game has shown it
-reads that form by having one. An old build is therefore never handed a file it
+reads that form by having one. `--force-compress` changes one line of that
+table: with it, an uncompressed save going into a game that keeps a gzipped one
+is compressed on the way in rather than left for the game to fall back to. It
+costs a second or so on a full savefile and saves the game a fallback it
+handles anyway, so it is not the default. What tabber compresses it unpacks
+again and compares before writing, so a save the game could not read is caught
+here rather than at its next launch. An old build is therefore never handed a file it
 cannot open, and a new build simply falls back to the uncompressed one and
 re-compresses it on its next save. Whichever form is written, the other is
 deleted: leaving it behind would have the game read the file we did not mean it

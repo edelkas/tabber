@@ -52,7 +52,14 @@ typedef struct {
     int bare;      /* machine-readable output, no headers or labels */
     int verbose;   /* extra detail */
     int offline;   /* never touch the network */
+    int compress;  /* gzip the savefile we hand the game, when it reads gzip */
 } options;
+
+/* Turns the options into the flags install and uninstall take. */
+static unsigned save_flags(const options *opts)
+{
+    return opts->compress ? SAVE_FORCE_COMPRESS : 0u;
+}
 
 static void print_usage(FILE *out)
 {
@@ -74,6 +81,8 @@ static void print_usage(FILE *out)
         "  -b, --bare       Machine-readable output: paths or tab-separated fields only\n"
         "  -v, --verbose    Print extra detail\n"
         "  -o, --offline    Skip the automatic digest refresh, use the cached copy\n"
+        "  -c, --force-compress\n"
+        "                   Gzip the savefile put in place, when the game reads gzip\n"
         "  -h, --help       Show this help and exit\n"
         "  -V, --version    Show the version and exit\n");
 }
@@ -391,6 +400,8 @@ static void print_save_step(const save_report *save)
         log_step("savefile", "there was none to archive");
     log_step("", "%s written from %s%s", save->save_path, save->source_path,
              save->used_fresh ? " (the fresh save tabber ships)" : "");
+    if (save->compressed)
+        log_step("", "gzipped on the way in, %lu bytes", (unsigned long)save->save_bytes);
     if (save->removed_path[0])
         log_step("", "%s removed, so the game reads the new one", save->removed_path);
 }
@@ -486,7 +497,7 @@ static int cmd_install(const options *opts, const char *code)
 
     printf("Installing %s (%s)...\n", upper, tab->name);
 
-    if (tab_install(dig, tab, &paths, &report, err, sizeof err) != 0) {
+    if (tab_install(dig, tab, &paths, save_flags(opts), &report, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": %s could not be installed: %s\n", upper, err);
         install_report_free(&report);
         goto done;
@@ -684,7 +695,7 @@ static int cmd_uninstall(const options *opts, const char *code)
 
     /* The files on disk decide, not the state file: a config that drifted out
      * of step must not stop a real installation from being undone. */
-    if (tab_uninstall(dig, tab, &paths, &report, err, sizeof err) != 0) {
+    if (tab_uninstall(dig, tab, &paths, save_flags(opts), &report, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": %s could not be uninstalled: %s\n", upper, err);
         uninstall_report_free(&report);
         goto done;
@@ -807,6 +818,8 @@ int main(int argc, char **argv)
             opts.verbose = 1;
         } else if (!strcmp(arg, "-o") || !strcmp(arg, "--offline")) {
             opts.offline = 1;
+        } else if (!strcmp(arg, "-c") || !strcmp(arg, "--force-compress")) {
+            opts.compress = 1;
         } else if (arg[0] == '-') {
             fprintf(stderr, TABBER_NAME ": unknown option '%s'\n", arg);
             print_usage(stderr);

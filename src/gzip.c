@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "deflate.h"
 #include "gzip.h"
 #include "inflate.h"
 #include "util.h"
@@ -88,4 +89,44 @@ unsigned char *gz_extract(const void *data, size_t len, size_t *out_len,
 truncated:
     err_set(err, errsz, "gzip stream is truncated");
     return NULL;
+}
+
+/* Writes a 32-bit value the way both gzip's trailer fields are stored. */
+static void gz_put32(byte_buf *out, unsigned long value)
+{
+    unsigned char b[4];
+
+    b[0] = (unsigned char)(value & 0xFF);
+    b[1] = (unsigned char)((value >> 8) & 0xFF);
+    b[2] = (unsigned char)((value >> 16) & 0xFF);
+    b[3] = (unsigned char)((value >> 24) & 0xFF);
+    buf_append(out, b, sizeof b);
+}
+
+unsigned char *gz_compress(const void *data, size_t len, const char *name,
+                           size_t *out_len)
+{
+    unsigned char header[GZ_HEADER_SIZE] = {
+        GZ_MAGIC_0, GZ_MAGIC_1, GZ_METHOD_DEFLATE, 0,
+        0, 0, 0, 0,          /* no modification time: the save has its own */
+        0, GZ_OS_UNKNOWN
+    };
+    byte_buf out = {0};
+    unsigned char *body;
+    size_t body_len = 0;
+
+    if (name && *name)
+        header[3] = GZ_FLAG_NAME;
+    buf_append(&out, header, sizeof header);
+    if (name && *name)
+        buf_append(&out, name, strlen(name) + 1);   /* NUL terminated */
+
+    body = deflate_raw(data, len, &body_len);
+    buf_append(&out, body, body_len);
+    free(body);
+
+    gz_put32(&out, crc32_bytes(data, len));
+    gz_put32(&out, (unsigned long)(len & 0xFFFFFFFFu));   /* size, modulo 2^32 */
+
+    return (unsigned char *)buf_finish(&out, out_len);
 }

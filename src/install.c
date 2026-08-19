@@ -122,7 +122,7 @@ static void rollback(install_file *files, size_t done)
 /* ---- Install ----------------------------------------------------------- */
 
 int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
-                install_report *report, char *err, size_t errsz)
+                unsigned flags, install_report *report, char *err, size_t errsz)
 {
     const char *levels_name = digest_levels_dir(dig);
     const json_value *cfg_node = digest_config(dig);
@@ -283,7 +283,7 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     server_probe(&addr, source, &report->health);
 
     /* --- The savefile swap, worked out in full before anything is written --- */
-    if (save_plan_build(paths, tab->code, 1, &save, err, errsz) != 0)
+    if (save_plan_build(paths, tab->code, 1, flags, &save, err, errsz) != 0)
         goto done;
     save_planned = 1;
 
@@ -436,7 +436,7 @@ static void collect_leftover_backups(const char *game_dir, const str_list *handl
 }
 
 int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
-                  uninstall_report *report, char *err, size_t errsz)
+                  unsigned flags, uninstall_report *report, char *err, size_t errsz)
 {
     const char *levels_name = digest_levels_dir(dig);
     str_list wanted = {0}, missing = {0}, no_backup = {0}, known = {0};
@@ -558,7 +558,7 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     snprintf(patched_uri, sizeof patched_uri, "%s", img.uri);
 
     /* --- The savefile swap, worked out before anything is written --- */
-    if (save_plan_build(paths, tab->code, 0, &save, err, errsz) != 0)
+    if (save_plan_build(paths, tab->code, 0, flags, &save, err, errsz) != 0)
         goto done;
     save_planned = 1;
 
