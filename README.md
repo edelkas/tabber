@@ -36,6 +36,9 @@ tabber [options] [command]
   -o, --offline    Skip the automatic digest refresh, use the cached copy
   -c, --force-compress
                    Gzip the savefile put in place, when the game reads gzip
+      --cloud-mode MODE
+                   What to do with Steam Cloud's copy of the savefile:
+                   replace (default), remove, or keep it untouched
   -h, --help       Show help
   -V, --version    Show version
 ```
@@ -58,15 +61,16 @@ exercises the real code rather than a copy of it. It runs in three tiers:
 
 | Tier | Needs | Covers |
 | --- | --- | --- |
-| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, install/uninstall/patching against a stand-in game |
+| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, Steam Cloud, install/uninstall/patching against a stand-in game |
 | `--online` | the network | downloading the live digest, fetching a tab and verifying it |
 | `--full` | the network | downloading and verifying **every** published tab |
 
-Nothing in the suite touches a real N++ installation or the tool's own state.
-Each test builds a scratch world: a temporary tool root (via `TABBER_HOME`) and
-a stand-in game (via `TABBER_GAME_DIR`) with the game's level files and a
-library carrying the official URI. The scratch area is deleted when the run
-ends.
+Nothing in the suite touches a real N++ installation, a real savefile or the
+tool's own state. Each test builds a scratch world: a temporary tool root (via
+`TABBER_HOME`), a stand-in game (via `TABBER_GAME_DIR`) with the game's level
+files and a library carrying the official URI, a personal folder (via
+`TABBER_PERSONAL_DIR`) and a Steam folder with invented accounts in it (via
+`TABBER_STEAM_DIR`). The scratch area is deleted when the run ends.
 
 Some things are worth knowing about how the tests check what they check:
 
@@ -102,6 +106,7 @@ cover.
 | `src/install.c/.h` | Installing a custom tab into the game |
 | `src/patch.c/.h` | Redirecting the game's server queries, and the library health check |
 | `src/save.c/.h`  | Archiving and swapping the savefile |
+| `src/cloud.c/.h` | The savefile's copies in Steam Cloud, per Steam account |
 | `src/gzip.c/.h`  | Reading and writing gzip streams (RFC 1952), for gzipped savefiles |
 | `src/server.c/.h` | Which 3rd party server to point the game at |
 | `src/config.c/.h`| The tool's own configuration and state (`config.json`) |
@@ -125,6 +130,7 @@ cover.
 | `TABBER_HOME` | Use this directory as the tool's root instead of the executable's, for `config.json`, the cached digest and `tabs/` |
 | `TABBER_GAME_DIR` | Use this N++ installation directory instead of asking Steam |
 | `TABBER_PERSONAL_DIR` | Use this N++ personal directory instead of the usual per-platform one |
+| `TABBER_STEAM_DIR` | Use this Steam directory instead of the one found in the registry (this is where the cloud saves are) |
 | `TABBER_FRESH_SAVE` | Use this archive as the fresh savefile instead of the shipped one |
 
 Both are meant for tests and for unusual setups (a portable copy, a game Steam
@@ -381,6 +387,44 @@ to.
 - If a later step of an install or uninstall fails, the swap is undone from the
   archive that was just made.
 
+## Steam Cloud
+
+N++ syncs its savefile through Steam Cloud, and **the cloud copy wins**: swap
+the local save without touching it and Steam puts the old one back before the
+game ever reads it. So installing and uninstalling deal with it too.
+
+The copies live in `<Steam folder>/userdata/<Steam32ID>/230270/remote/`, one
+folder per Steam account on the machine. There is no way to tell which account
+is playing, so every account that has an N++ folder is treated the same way and
+reported by its ID. An account with no cloud save is reported and left alone —
+there is no reason to put one there.
+
+`--cloud-mode` picks what happens to a cloud save that *is* there:
+
+| Mode | Effect |
+| --- | --- |
+| `replace` (default) | overwrite it with the save that just went into the game |
+| `remove` | delete it, and let the game upload a fresh one |
+| `keep` | touch nothing; only report what is there |
+
+Two rules are not up to the mode:
+
+- **An uncompressed cloud save is always deleted, never replaced.** Steam Cloud
+  was switched off in 2023 over corruption problems and only came back with
+  TEN++, which gzips. Anything uncompressed up there predates that, is in a
+  different format that was shrunk to fit the quota, and is of no use to any
+  current build. Nothing is put in its place. (`keep` still keeps it.)
+- **A replacement is always gzipped**, whatever form the local save is in: the
+  quota is 3 MB and 8 files, and the uncompressed savefile is 70 MB. This is
+  the one place where the fallback the game offers is no help, so the save is
+  compressed here even without `--force-compress`, and unpacked again to check
+  it before it is written.
+
+Nothing is archived here: these are copies of the savefile, and the savefile
+itself is archived in the personal folder as described above. If the sweep
+cannot reach an account's folder, that account is reported as a warning and the
+install still stands.
+
 ## Uninstalling
 
 `tabber uninstall CODE` puts the game back: it deletes the tab's files and
@@ -454,6 +498,7 @@ alone rather than overwriting whatever is in there.
 - [x] Patch the main library to redirect server queries
 - [x] Check that the 3rd party server is up
 - [x] Back up and swap the savefile
+- [x] Handle Steam Cloud's copy of the savefile
 - [ ] Install custom palettes
 - [ ] Replace in-game texts
 - [ ] Optional extras (controls, …)

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cloud.h"
 #include "config.h"
 #include "install.h"
 #include "json.h"
@@ -21,6 +22,42 @@ typedef struct {
     char *data;     /* contents, read before any change     */
     size_t len;
 } install_file;
+
+void install_options_init(install_options *opts)
+{
+    memset(opts, 0, sizeof(*opts));
+    opts->save_flags = 0;         /* leave a save in the form it came in */
+    opts->cloud = CLOUD_REPLACE;  /* keep Steam's copy in step with it   */
+}
+
+/* The options a caller that passed none would have meant. */
+static install_options options_or_default(const install_options *opts)
+{
+    install_options out;
+
+    install_options_init(&out);
+    if (opts)
+        out = *opts;
+    return out;
+}
+
+/*
+ * Puts the Steam Cloud copies in step with the savefile that was just written.
+ * Never fatal: a cloud copy we could not reach is a warning on the report, not
+ * a reason to undo an install that is otherwise done.
+ */
+static void apply_cloud(const npp_paths *paths, const install_options *opts,
+                        const save_plan *save, cloud_report *report, char *warning,
+                        size_t warnsz)
+{
+    char err[TB_ERR_LEN];
+
+    if (!save->save || !save->save_len)
+        return;
+    if (cloud_apply(paths, opts->cloud, save->save, save->save_len,
+                    report, err, sizeof err) != 0)
+        err_set(warning, warnsz, "the Steam Cloud copies were left as they were: %s", err);
+}
 
 /* ---- Detection --------------------------------------------------------- */
 
@@ -122,8 +159,10 @@ static void rollback(install_file *files, size_t done)
 /* ---- Install ----------------------------------------------------------- */
 
 int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
-                unsigned flags, install_report *report, char *err, size_t errsz)
+                const install_options *opts_in, install_report *report,
+                char *err, size_t errsz)
 {
+    install_options opts = options_or_default(opts_in);
     const char *levels_name = digest_levels_dir(dig);
     const json_value *cfg_node = digest_config(dig);
     str_list supported = {0}, entries = {0}, missing = {0}, conflicts = {0};
@@ -283,7 +322,7 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     server_probe(&addr, source, &report->health);
 
     /* --- The savefile swap, worked out in full before anything is written --- */
-    if (save_plan_build(paths, tab->code, 1, flags, &save, err, errsz) != 0)
+    if (save_plan_build(paths, tab->code, 1, opts.save_flags, &save, err, errsz) != 0)
         goto done;
     save_planned = 1;
 
@@ -327,6 +366,11 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     }
 
+    /* Steam keeps its own copy of the savefile and prefers it to the local
+     * one, so it has to be dealt with or it would undo the swap above. */
+    apply_cloud(paths, &opts, &save, &report->cloud, report->warning,
+                sizeof report->warning);
+
     report->installed_count = done;
     report->game_levels_dir = game_dir;
     report->tab_levels_dir = tab_dir;
@@ -367,6 +411,7 @@ done:
 
 void install_report_free(install_report *report)
 {
+    cloud_report_free(&report->cloud);
     free(report->game_levels_dir);
     free(report->tab_levels_dir);
     str_list_free(&report->skipped);
@@ -436,8 +481,10 @@ static void collect_leftover_backups(const char *game_dir, const str_list *handl
 }
 
 int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
-                  unsigned flags, uninstall_report *report, char *err, size_t errsz)
+                  const install_options *opts_in, uninstall_report *report,
+                  char *err, size_t errsz)
 {
+    install_options opts = options_or_default(opts_in);
     const char *levels_name = digest_levels_dir(dig);
     str_list wanted = {0}, missing = {0}, no_backup = {0}, known = {0};
     install_file *files = NULL;
@@ -558,7 +605,7 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     snprintf(patched_uri, sizeof patched_uri, "%s", img.uri);
 
     /* --- The savefile swap, worked out before anything is written --- */
-    if (save_plan_build(paths, tab->code, 0, flags, &save, err, errsz) != 0)
+    if (save_plan_build(paths, tab->code, 0, opts.save_flags, &save, err, errsz) != 0)
         goto done;
     save_planned = 1;
 
@@ -577,6 +624,9 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
      */
     if (save_plan_apply(&save, &report->save, err, errsz) != 0)
         goto done;
+
+    apply_cloud(paths, &opts, &save, &report->cloud, report->warning,
+                sizeof report->warning);
 
     if (lib_write_uri(&img, LIB_OFFICIAL_URI, err, errsz) != 0) {
         save_plan_undo(&save);
@@ -635,6 +685,7 @@ done:
 
 void uninstall_report_free(uninstall_report *report)
 {
+    cloud_report_free(&report->cloud);
     free(report->game_levels_dir);
     str_list_free(&report->skipped);
     str_list_free(&report->leftovers);

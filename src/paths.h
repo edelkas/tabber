@@ -89,6 +89,9 @@
 /* The same for the personal folder, which holds the savefile. */
 #define TABBER_ENV_PERSONAL_DIR "TABBER_PERSONAL_DIR"
 
+/* ...and for Steam's own folder, which holds the cloud saves. */
+#define TABBER_ENV_STEAM_DIR "TABBER_STEAM_DIR"
+
 /* ---- Discovery results ------------------------------------------------- */
 
 typedef struct {

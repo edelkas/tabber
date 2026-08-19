@@ -10,8 +10,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cloud.h"
 #include "config.h"
 #include "digest.h"
+#include "gzip.h"
 #include "install.h"
 #include "json.h"
 #include "patch.h"
@@ -35,6 +37,10 @@
 #define GAME_SAVE         "the player's own save"
 #define FRESH_SAVE        "the fresh save tabber ships"
 
+/* Steam's own copy of it, and the account that holds it. */
+#define CLOUD_SAVE        "what Steam has been keeping"
+#define CLOUD_ACCOUNT     "76561198000000042"
+
 /* A whole world for one test: tool root, tab store, fake game. */
 typedef struct {
     char *root;        /* the tool's root, holding config.json and tabs/ */
@@ -43,6 +49,7 @@ typedef struct {
     char *library;     /* the fake main library                          */
     char *personal;    /* the fake personal folder, holding the savefile */
     char *fresh;       /* the fresh savefile tabber would ship           */
+    char *cloud;       /* the fake Steam Cloud folder of one account     */
     digest *dig;
     npp_paths paths;
 } world;
@@ -90,6 +97,30 @@ static void world_build(world *w, const char *name)
     test_write_zip(w->fresh, SAVE_NAME, FRESH_SAVE, strlen(FRESH_SAVE));
     test_use_fresh_save(w->fresh);
 
+    /* A Steam folder with one account that has a cloud save of its own. */
+    {
+        char *steam = path_join(w->root, "Steam");
+        char *userdata = path_join(steam, CLOUD_USERDATA_DIR);
+        char *account = path_join(userdata, CLOUD_ACCOUNT);
+        char *app = path_join(account, NPP_STEAM_APPID);
+        unsigned char *gz;
+        size_t gz_len = 0;
+
+        w->cloud = path_join(app, CLOUD_REMOTE_DIR);
+        plat_mkdir_p(w->cloud);
+        gz = test_gzip(CLOUD_SAVE, strlen(CLOUD_SAVE), &gz_len);
+        path = path_join(w->cloud, SAVE_GZ_NAME);
+        test_write_bytes(path, gz, gz_len);
+        free(path);
+        free(gz);
+
+        test_setenv(TABBER_ENV_STEAM_DIR, steam);
+        free(steam);
+        free(userdata);
+        free(account);
+        free(app);
+    }
+
     w->dig = digest_load(err, sizeof err);
     CHECK(w->dig != NULL, "the digest fixture loads (%s)", w->dig ? "" : err);
     CHECK(npp_find_game_dirs(&w->paths, err, sizeof err) == 0,
@@ -102,6 +133,7 @@ static void world_build(world *w, const char *name)
 static void world_free(world *w)
 {
     test_use_fresh_save(NULL);
+    test_setenv(TABBER_ENV_STEAM_DIR, NULL);
     digest_free(w->dig);
     npp_paths_free(&w->paths);
     free(w->root);
@@ -110,6 +142,23 @@ static void world_free(world *w)
     free(w->library);
     free(w->personal);
     free(w->fresh);
+    free(w->cloud);
+}
+
+/* The savefile Steam is holding, unwrapped. Caller frees. */
+static unsigned char *cloud_save(world *w, size_t *len_out)
+{
+    char err[TB_ERR_LEN];
+    char *path = path_join(w->cloud, SAVE_GZ_NAME);
+    size_t raw_len = 0;
+    unsigned char *raw = test_read_bytes(path, &raw_len);
+    unsigned char *plain = NULL;
+
+    free(path);
+    if (raw && gz_is_gzip(raw, raw_len))
+        plain = gz_extract(raw, raw_len, len_out, err, sizeof err);
+    free(raw);
+    return plain;
 }
 
 /* Contents of a file in the personal folder. Caller frees. */
@@ -199,7 +248,7 @@ static void test_install_uninstall(void)
     /* Keep a copy of an original the tab is about to replace. */
     before = game_file(&w, TAB_LEVEL_FILE);
 
-    CHECK(tab_install(w.dig, tab, &w.paths, 0, &installed, err, sizeof err) == 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
           "install succeeds (%s)", err);
     CHECK_NUM(installed.installed_count, 2, "both supported files are installed");
     CHECK_NUM(installed.skipped.count, 1, "the unsupported file is skipped");
@@ -246,6 +295,21 @@ static void test_install_uninstall(void)
     CHECK(installed.save.backed_up, "and the report says so");
     CHECK(installed.save.used_fresh, "this tab had no save of its own yet");
 
+    /* Steam's copy takes precedence over the local one, so it has to have been
+     * brought in step with it — gzipped, which is all the cloud takes. */
+    CHECK_NUM(installed.cloud.count, 1, "the one Steam account was found");
+    CHECK(installed.cloud.users && installed.cloud.users[0].replaced,
+          "and its cloud save was replaced");
+    {
+        size_t cloud_len = 0;
+        unsigned char *cloud = cloud_save(&w, &cloud_len);
+
+        CHECK(cloud && cloud_len == strlen(FRESH_SAVE) &&
+              memcmp(cloud, FRESH_SAVE, cloud_len) == 0,
+              "with the save that went into the game");
+        free(cloud);
+    }
+
     cfg = config_load(err, sizeof err);
     entry = config_find_tab(cfg, TAB_CODE);
     CHECK(entry && json_get_bool(entry, CJK_INSTALLED, 0), "the state records the install");
@@ -263,13 +327,13 @@ static void test_install_uninstall(void)
     {
         install_report second;
         const npp_tab *other = world_tab(&w, "oth");
-        CHECK(tab_install(w.dig, other, &w.paths, 0, &second, err, sizeof err) != 0,
+        CHECK(tab_install(w.dig, other, &w.paths, NULL, &second, err, sizeof err) != 0,
               "installing a second tab is refused");
         install_report_free(&second);
     }
 
     /* Now put it all back. */
-    CHECK(tab_uninstall(w.dig, tab, &w.paths, 0, &removed, err, sizeof err) == 0,
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &removed, err, sizeof err) == 0,
           "uninstall succeeds (%s)", err);
     CHECK_NUM(removed.restored_count, 2, "both originals are restored");
 
@@ -289,6 +353,15 @@ static void test_install_uninstall(void)
     free(text);
     CHECK(personal_has(&w, "nprofile_" TAB_CODE ".zip"),
           "and the tab's save was kept for next time");
+    {
+        size_t cloud_len = 0;
+        unsigned char *cloud = cloud_save(&w, &cloud_len);
+
+        CHECK(cloud && cloud_len == strlen(GAME_SAVE) &&
+              memcmp(cloud, GAME_SAVE, cloud_len) == 0,
+              "and Steam's copy came back with it");
+        free(cloud);
+    }
 
     cfg = config_load(err, sizeof err);
     entry = config_find_tab(cfg, TAB_CODE);
@@ -324,7 +397,7 @@ static void test_install_refusals(void)
     /* The game is missing a file the tab replaces. */
     path = path_join(w.levels, TAB_LEVEL_FILE);
     plat_remove_file(path);
-    CHECK(tab_install(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) != 0,
           "install is refused when a target file is missing");
     CHECK(strstr(err, TAB_LEVEL_FILE) != NULL, "the missing file is named");
     install_report_free(&report);
@@ -336,7 +409,7 @@ static void test_install_refusals(void)
      * behind it must not be overwritten. */
     path = str_fmt("%s%c%s%s", w.levels, PATH_SEP, TAB_LEVEL_FILE, INSTALL_BACKUP_SUFFIX);
     test_write(path, "a precious original");
-    CHECK(tab_install(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) != 0,
           "install is refused when a backup already exists");
     install_report_free(&report);
     before = test_read(path);
@@ -359,7 +432,7 @@ static void test_install_refusals(void)
         str_list_free(&known);
         config_free(cfg);
     }
-    CHECK(tab_install(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) != 0,
           "install is refused when the library is already patched");
     CHECK(strstr(err, "not in a clean state") != NULL, "the check catches it first");
     install_report_free(&report);
@@ -397,11 +470,11 @@ static void test_uninstall_refusals(void)
     if (!tab || !other || !w.dig) { world_free(&w); return; }
 
     /* Nothing is installed at all. */
-    CHECK(tab_uninstall(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) != 0,
           "uninstall is refused on a clean game");
     uninstall_report_free(&report);
 
-    CHECK(tab_install(w.dig, tab, &w.paths, 0, &installed, err, sizeof err) == 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
           "install for the next checks (%s)", err);
     install_report_free(&installed);
 
@@ -409,7 +482,7 @@ static void test_uninstall_refusals(void)
     path = str_fmt("%s%c%s%s", w.levels, PATH_SEP, TAB_CHALLENGE, INSTALL_BACKUP_SUFFIX);
     text = test_read(path);
     plat_remove_file(path);
-    CHECK(tab_uninstall(w.dig, tab, &w.paths, 0, &report, err, sizeof err) != 0,
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) != 0,
           "uninstall is refused when a backup is missing");
     CHECK(strstr(err, TAB_CHALLENGE) != NULL, "the file without a backup is named");
     uninstall_report_free(&report);
@@ -431,7 +504,7 @@ static void test_uninstall_refusals(void)
     config_save(cfg, err, sizeof err);
     config_free(cfg);
 
-    CHECK(tab_uninstall(w.dig, other, &w.paths, 0, &report, err, sizeof err) != 0,
+    CHECK(tab_uninstall(w.dig, other, &w.paths, NULL, &report, err, sizeof err) != 0,
           "uninstalling the wrong tab is refused");
     CHECK(strstr(err, TAB_CODE) != NULL, "the tab the library names is reported");
     uninstall_report_free(&report);
@@ -468,7 +541,7 @@ static void test_health_mismatches(void)
     config_free(cfg);
 
     /* Patched, but nothing is recorded as installed. */
-    CHECK(tab_install(w.dig, tab, &w.paths, 0, &installed, err, sizeof err) == 0,
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
           "install (%s)", err);
     install_report_free(&installed);
     cfg = config_load(err, sizeof err);

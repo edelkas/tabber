@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cloud.h"
 #include "config.h"
 #include "digest.h"
 #include "install.h"
@@ -49,16 +50,22 @@
 #define EXIT_USAGE      3
 
 typedef struct {
-    int bare;      /* machine-readable output, no headers or labels */
-    int verbose;   /* extra detail */
-    int offline;   /* never touch the network */
-    int compress;  /* gzip the savefile we hand the game, when it reads gzip */
+    int bare;          /* machine-readable output, no headers or labels */
+    int verbose;       /* extra detail */
+    int offline;       /* never touch the network */
+    int compress;      /* gzip the savefile we hand the game, when it reads gzip */
+    cloud_mode cloud;  /* what to do with Steam's copies of the savefile */
 } options;
 
-/* Turns the options into the flags install and uninstall take. */
-static unsigned save_flags(const options *opts)
+/* Turns the command line into what install and uninstall take. */
+static install_options install_opts(const options *opts)
 {
-    return opts->compress ? SAVE_FORCE_COMPRESS : 0u;
+    install_options out;
+
+    install_options_init(&out);
+    out.save_flags = opts->compress ? SAVE_FORCE_COMPRESS : 0u;
+    out.cloud = opts->cloud;
+    return out;
 }
 
 static void print_usage(FILE *out)
@@ -83,6 +90,9 @@ static void print_usage(FILE *out)
         "  -o, --offline    Skip the automatic digest refresh, use the cached copy\n"
         "  -c, --force-compress\n"
         "                   Gzip the savefile put in place, when the game reads gzip\n"
+        "      --cloud-mode MODE\n"
+        "                   What to do with Steam Cloud's copy of the savefile:\n"
+        "                   replace (default), remove, or keep it untouched\n"
         "  -h, --help       Show this help and exit\n"
         "  -V, --version    Show the version and exit\n");
 }
@@ -406,6 +416,42 @@ static void print_save_step(const save_report *save)
         log_step("", "%s removed, so the game reads the new one", save->removed_path);
 }
 
+/* One line per Steam account that has N++ cloud data, whatever happened to it. */
+static void print_cloud_step(const cloud_report *cloud, cloud_mode mode)
+{
+    size_t i;
+
+    if (cloud->count == 0) {
+        log_step("cloud", "%s", cloud->searched
+                 ? "no Steam account on this machine has N++ cloud data"
+                 : "Steam's folder was not found, so there is nothing to sync");
+        return;
+    }
+
+    log_step("cloud", "%u account(s) with N++ data, mode '%s'",
+             (unsigned)cloud->count, cloud_mode_name(mode));
+    for (i = 0; i < cloud->count; i++) {
+        const cloud_user *user = &cloud->users[i];
+
+        if (user->detail[0])
+            fprintf(stderr, TABBER_NAME ": warning: Steam account %s: %s\n",
+                    user->id, user->detail);
+        else if (user->replaced)
+            log_step("", "%s: cloud save replaced, %lu bytes%s", user->id,
+                     (unsigned long)user->written,
+                     user->removed_raw ? " (and an outdated uncompressed one removed)" : "");
+        else if (user->removed_gz)
+            log_step("", "%s: cloud save removed%s", user->id,
+                     user->removed_raw ? ", uncompressed one included" : "");
+        else if (user->removed_raw)
+            log_step("", "%s: an outdated uncompressed cloud save was removed", user->id);
+        else if (user->had_gz || user->had_raw)
+            log_step("", "%s: a cloud save is there and was left alone", user->id);
+        else
+            log_step("", "%s: no cloud save", user->id);
+    }
+}
+
 /* Downloads the tab first if its files are not in the local store. */
 static int ensure_downloaded(const digest *dig, const npp_tab *tab, const char *upper)
 {
@@ -497,10 +543,14 @@ static int cmd_install(const options *opts, const char *code)
 
     printf("Installing %s (%s)...\n", upper, tab->name);
 
-    if (tab_install(dig, tab, &paths, save_flags(opts), &report, err, sizeof err) != 0) {
-        fprintf(stderr, TABBER_NAME ": %s could not be installed: %s\n", upper, err);
-        install_report_free(&report);
-        goto done;
+    {
+        install_options run = install_opts(opts);
+
+        if (tab_install(dig, tab, &paths, &run, &report, err, sizeof err) != 0) {
+            fprintf(stderr, TABBER_NAME ": %s could not be installed: %s\n", upper, err);
+            install_report_free(&report);
+            goto done;
+        }
     }
 
     /* Files the tab ships that the game has no use for. */
@@ -522,6 +572,7 @@ static int cmd_install(const options *opts, const char *code)
                         "not work until the server is back\n",
                 report.health.url, report.health.detail);
     print_save_step(&report.save);
+    print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
         log_step("recorded", "install in %s", report.state_path);
     if (report.warning[0])
@@ -695,10 +746,14 @@ static int cmd_uninstall(const options *opts, const char *code)
 
     /* The files on disk decide, not the state file: a config that drifted out
      * of step must not stop a real installation from being undone. */
-    if (tab_uninstall(dig, tab, &paths, save_flags(opts), &report, err, sizeof err) != 0) {
-        fprintf(stderr, TABBER_NAME ": %s could not be uninstalled: %s\n", upper, err);
-        uninstall_report_free(&report);
-        goto done;
+    {
+        install_options run = install_opts(opts);
+
+        if (tab_uninstall(dig, tab, &paths, &run, &report, err, sizeof err) != 0) {
+            fprintf(stderr, TABBER_NAME ": %s could not be uninstalled: %s\n", upper, err);
+            uninstall_report_free(&report);
+            goto done;
+        }
     }
 
     for (i = 0; i < report.skipped.count; i++)
@@ -713,6 +768,7 @@ static int cmd_uninstall(const options *opts, const char *code)
     log_step("restored", "%lu original file(s)", (unsigned long)report.restored_count);
     log_step("library", "queries point back at %s", report.server_uri);
     print_save_step(&report.save);
+    print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
         log_step("recorded", "uninstall in %s", report.state_path);
     if (report.warning[0])
@@ -820,6 +876,16 @@ int main(int argc, char **argv)
             opts.offline = 1;
         } else if (!strcmp(arg, "-c") || !strcmp(arg, "--force-compress")) {
             opts.compress = 1;
+        } else if (!strncmp(arg, "--cloud-mode", 12)) {
+            /* Either "--cloud-mode=MODE" or "--cloud-mode MODE". */
+            const char *value = arg[12] == '=' ? arg + 13
+                              : arg[12] == '\0' && i + 1 < argc ? argv[++i] : NULL;
+
+            if (cloud_mode_parse(value, &opts.cloud) != 0) {
+                fprintf(stderr, TABBER_NAME ": '%s' is not a cloud mode; use replace, "
+                                "remove or keep\n", value ? value : "");
+                return EXIT_USAGE;
+            }
         } else if (arg[0] == '-') {
             fprintf(stderr, TABBER_NAME ": unknown option '%s'\n", arg);
             print_usage(stderr);

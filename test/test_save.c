@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cloud.h"
 #include "gzip.h"
 #include "paths.h"
 #include "platform.h"
@@ -737,6 +738,264 @@ static void test_shipped_save(void)
     free(path);
 }
 
+/* ---- Steam Cloud ------------------------------------------------------- */
+
+/*
+ * Steam keeps its own copy of the savefile per account and prefers it to the
+ * local one, so tabber has to deal with every account that has N++ data. The
+ * fixtures below build a Steam folder with several accounts in it.
+ */
+#define CLOUD_OLD_SAVE  "the copy Steam is holding on to"
+
+/* <steam>/userdata/<id>/230270/remote, created. Caller frees. */
+static char *cloud_dir(const char *steam, const char *id, int with_app)
+{
+    char *user = path_join(steam, CLOUD_USERDATA_DIR);
+    char *account = path_join(user, id);
+    char *app = with_app ? path_join(account, NPP_STEAM_APPID) : str_dup(account);
+    char *remote = with_app ? path_join(app, CLOUD_REMOTE_DIR) : str_dup(app);
+
+    plat_mkdir_p(remote);
+    free(user);
+    free(account);
+    free(app);
+    return remote;
+}
+
+/* Puts a cloud save named `name` holding `data` in an account's folder. */
+static void cloud_put(const char *remote, const char *name, const void *data, size_t len)
+{
+    char *path = path_join(remote, name);
+
+    test_write_bytes(path, data, len);
+    free(path);
+}
+
+static int cloud_has(const char *remote, const char *name)
+{
+    char *path = path_join(remote, name);
+    int there = plat_is_file(path);
+
+    free(path);
+    return there;
+}
+
+/* The bytes of a cloud save. Caller frees. */
+static unsigned char *cloud_read(const char *remote, const char *name, size_t *len_out)
+{
+    char *path = path_join(remote, name);
+    unsigned char *data = test_read_bytes(path, len_out);
+
+    free(path);
+    return data;
+}
+
+/* Finds an account's line in a report. */
+static const cloud_user *cloud_find(const cloud_report *report, const char *id)
+{
+    size_t i;
+
+    for (i = 0; i < report->count; i++) {
+        if (strcmp(report->users[i].id, id) == 0)
+            return &report->users[i];
+    }
+    return NULL;
+}
+
+/*
+ * Every account with N++ data is found, and only those: an account that has
+ * other games but not this one, and a folder that is not an account at all,
+ * are passed over.
+ */
+static void test_cloud_accounts(void)
+{
+    char err[TB_ERR_LEN];
+    char *root = test_dir("cloud_find");
+    char *steam = path_join(root, "Steam");
+    npp_paths paths = {0};
+    cloud_report report;
+    char *with_npp, *other_game, *not_an_account;
+
+    test_case("finding the accounts with N++ cloud data");
+    with_npp = cloud_dir(steam, "76561198000000001", 1);
+    other_game = cloud_dir(steam, "76561198000000002", 0);   /* no N++ folder */
+    not_an_account = cloud_dir(steam, "config", 1);          /* not an ID     */
+    paths.steam_dir = steam;
+
+    CHECK(cloud_apply(&paths, CLOUD_REMOVE, NULL, 0, &report, err, sizeof err) == 0,
+          "the sweep runs (%s)", err);
+    CHECK(report.searched, "Steam's folder was looked at");
+    CHECK_NUM(report.count, 1, "only the account with N++ data is listed");
+    CHECK(cloud_find(&report, "76561198000000001") != NULL, "and it is the right one");
+    CHECK_NUM(report.touched, 0, "it has no cloud save, so nothing was touched");
+    cloud_report_free(&report);
+
+    /* No Steam folder at all: nothing to do, and not a failure. */
+    {
+        npp_paths nowhere = {0};
+
+        CHECK(cloud_apply(&nowhere, CLOUD_REMOVE, NULL, 0, &report, err, sizeof err) == 0,
+              "a game found without Steam is no obstacle");
+        CHECK(!report.searched, "and nothing was searched");
+        CHECK_NUM(report.count, 0, "so no account is listed");
+        cloud_report_free(&report);
+    }
+
+    free(with_npp);
+    free(other_game);
+    free(not_an_account);
+    free(steam);
+    free(root);
+}
+
+/* Replacing: the cloud copy ends up holding the save that just went in. */
+static void test_cloud_replace(void)
+{
+    char err[TB_ERR_LEN];
+    char *root = test_dir("cloud_replace");
+    char *steam = path_join(root, "Steam");
+    npp_paths paths = {0};
+    cloud_report report;
+    const cloud_user *user;
+    unsigned char *gz, *written, *plain;
+    size_t gz_len = 0, written_len = 0, plain_len = 0;
+    char *remote;
+
+    test_case("replacing the cloud save");
+    remote = cloud_dir(steam, "111", 1);
+    paths.steam_dir = steam;
+    gz = test_gzip(CLOUD_OLD_SAVE, strlen(CLOUD_OLD_SAVE), &gz_len);
+    cloud_put(remote, SAVE_GZ_NAME, gz, gz_len);
+
+    /* The save going in is uncompressed, but the cloud only takes gzip: the
+     * quota is 3 MB and the uncompressed savefile is seventy times that. */
+    CHECK(cloud_apply(&paths, CLOUD_REPLACE, (const unsigned char *)TAB_SAVE,
+                      strlen(TAB_SAVE), &report, err, sizeof err) == 0,
+          "the sweep runs (%s)", err);
+    user = cloud_find(&report, "111");
+    CHECK(user && user->replaced, "the cloud save was replaced");
+    CHECK(user && user->written > 0, "and its size reported");
+
+    written = cloud_read(remote, SAVE_GZ_NAME, &written_len);
+    CHECK(written && gz_is_gzip(written, written_len), "what landed is gzipped");
+    plain = written ? gz_extract(written, written_len, &plain_len, err, sizeof err) : NULL;
+    CHECK(plain != NULL, "and unwraps (%s)", err);
+    CHECK(plain && plain_len == strlen(TAB_SAVE) && memcmp(plain, TAB_SAVE, plain_len) == 0,
+          "to the save that went into the game");
+    free(plain);
+    free(written);
+    cloud_report_free(&report);
+
+    /* A save that is already gzipped goes up as it is. */
+    CHECK(cloud_apply(&paths, CLOUD_REPLACE, gz, gz_len, &report, err, sizeof err) == 0,
+          "a gzipped save needs no work");
+    written = cloud_read(remote, SAVE_GZ_NAME, &written_len);
+    CHECK(written && written_len == gz_len && memcmp(written, gz, gz_len) == 0,
+          "it was copied up byte for byte");
+    free(written);
+    cloud_report_free(&report);
+
+    free(gz);
+    free(remote);
+    free(steam);
+    free(root);
+}
+
+/* Removing, keeping, and the uncompressed copy that always goes. */
+static void test_cloud_modes(void)
+{
+    char err[TB_ERR_LEN];
+    char *root = test_dir("cloud_modes");
+    char *steam = path_join(root, "Steam");
+    npp_paths paths = {0};
+    cloud_report report;
+    const cloud_user *user;
+    unsigned char *gz;
+    size_t gz_len = 0;
+    char *remote;
+
+    test_case("the cloud modes");
+    remote = cloud_dir(steam, "222", 1);
+    paths.steam_dir = steam;
+    gz = test_gzip(CLOUD_OLD_SAVE, strlen(CLOUD_OLD_SAVE), &gz_len);
+
+    /* keep: found, reported, untouched. */
+    cloud_put(remote, SAVE_GZ_NAME, gz, gz_len);
+    CHECK(cloud_apply(&paths, CLOUD_KEEP, (const unsigned char *)TAB_SAVE,
+                      strlen(TAB_SAVE), &report, err, sizeof err) == 0, "keep runs");
+    user = cloud_find(&report, "222");
+    CHECK(user && user->had_gz, "the cloud save was found");
+    CHECK(user && !user->replaced && !user->removed_gz, "and left exactly as it was");
+    CHECK(cloud_has(remote, SAVE_GZ_NAME), "so it is still there");
+    cloud_report_free(&report);
+
+    /* remove: it goes. */
+    CHECK(cloud_apply(&paths, CLOUD_REMOVE, (const unsigned char *)TAB_SAVE,
+                      strlen(TAB_SAVE), &report, err, sizeof err) == 0, "remove runs");
+    user = cloud_find(&report, "222");
+    CHECK(user && user->removed_gz, "the cloud save was removed");
+    CHECK(!cloud_has(remote, SAVE_GZ_NAME), "and is gone");
+    cloud_report_free(&report);
+
+    /*
+     * An uncompressed cloud save can only be a leftover from before Steam
+     * Cloud was switched off, in a format nothing reads any more: it goes
+     * whatever the mode, and nothing is put in its place.
+     */
+    cloud_put(remote, SAVE_NAME, "an ancient cloud save", 21);
+    CHECK(cloud_apply(&paths, CLOUD_REPLACE, (const unsigned char *)TAB_SAVE,
+                      strlen(TAB_SAVE), &report, err, sizeof err) == 0, "replace runs");
+    user = cloud_find(&report, "222");
+    CHECK(user && user->removed_raw, "the uncompressed one was removed");
+    CHECK(user && !user->replaced, "and nothing was uploaded in its place");
+    CHECK(!cloud_has(remote, SAVE_NAME), "it is gone");
+    CHECK(!cloud_has(remote, SAVE_GZ_NAME), "and no gzipped one was invented");
+    cloud_report_free(&report);
+
+    /* Both at once: the old one goes, the gzipped one is replaced. */
+    cloud_put(remote, SAVE_NAME, "an ancient cloud save", 21);
+    cloud_put(remote, SAVE_GZ_NAME, gz, gz_len);
+    CHECK(cloud_apply(&paths, CLOUD_REPLACE, (const unsigned char *)TAB_SAVE,
+                      strlen(TAB_SAVE), &report, err, sizeof err) == 0, "both are handled");
+    user = cloud_find(&report, "222");
+    CHECK(user && user->removed_raw && user->replaced, "one removed, one replaced");
+    CHECK(!cloud_has(remote, SAVE_NAME), "the uncompressed one is gone");
+    CHECK(cloud_has(remote, SAVE_GZ_NAME), "the gzipped one is there");
+    cloud_report_free(&report);
+
+    /* An account with no cloud save is reported, and nothing is written. */
+    {
+        char *empty = cloud_dir(steam, "333", 1);
+
+        CHECK(cloud_apply(&paths, CLOUD_REPLACE, (const unsigned char *)TAB_SAVE,
+                          strlen(TAB_SAVE), &report, err, sizeof err) == 0,
+              "the sweep runs");
+        user = cloud_find(&report, "333");
+        CHECK(user && !user->had_gz && !user->had_raw, "the account is listed as empty");
+        CHECK(!cloud_has(empty, SAVE_GZ_NAME), "and nothing was put there");
+        CHECK_NUM(report.count, 2, "both accounts are in the report");
+        cloud_report_free(&report);
+        free(empty);
+    }
+
+    /* Modes are named on the command line, so they have to parse. */
+    {
+        cloud_mode mode = CLOUD_KEEP;
+
+        CHECK(cloud_mode_parse("replace", &mode) == 0 && mode == CLOUD_REPLACE, "'replace'");
+        CHECK(cloud_mode_parse("REMOVE", &mode) == 0 && mode == CLOUD_REMOVE, "'REMOVE'");
+        CHECK(cloud_mode_parse("keep", &mode) == 0 && mode == CLOUD_KEEP, "'keep'");
+        CHECK(cloud_mode_parse("nonsense", &mode) != 0, "and nothing else");
+        CHECK(cloud_mode_parse(NULL, &mode) != 0, "not even nothing at all");
+        CHECK_STR(cloud_mode_name(CLOUD_REPLACE), "replace", "and they have names");
+    }
+
+    free(gz);
+    free(remote);
+    free(steam);
+    free(root);
+}
+
 void suite_save(void)
 {
     test_suite("save");
@@ -753,4 +1012,7 @@ void suite_save(void)
     test_undo();
     test_old_installer_archives();
     test_shipped_save();
+    test_cloud_accounts();
+    test_cloud_replace();
+    test_cloud_modes();
 }

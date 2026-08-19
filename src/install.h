@@ -14,8 +14,8 @@
  * back, so an aborted install leaves the game folder as it was.
  *
  * The savefile is swapped too (see save.h): the one in place is archived and
- * the tab's own — or the fresh one tabber ships — is put in its stead. The
- * `flags` both functions take are that module's (SAVE_FORCE_COMPRESS today).
+ * the tab's own — or the fresh one tabber ships — is put in its stead, and the
+ * copies Steam Cloud keeps of it are dealt with afterwards (see cloud.h).
  *
  * Installing also asks the 3rd party server whether it is up, just before the
  * library is patched. That one is diagnostic only: the verdict is reported in
@@ -26,6 +26,7 @@
 
 #include <stddef.h>
 
+#include "cloud.h"
 #include "config.h"
 #include "digest.h"
 #include "paths.h"
@@ -42,6 +43,15 @@
 /* How many file names an error message lists before summarising. */
 #define INSTALL_MAX_REPORTED    8
 
+/* How an install or uninstall should treat the savefile. */
+typedef struct {
+    unsigned save_flags;   /* save.h flags: SAVE_FORCE_COMPRESS today */
+    cloud_mode cloud;      /* what to do with the Steam Cloud copies   */
+} install_options;
+
+/* The defaults, for callers that have no opinion. */
+void install_options_init(install_options *opts);
+
 typedef struct {
     char *game_levels_dir;      /* where the files went                    */
     char *tab_levels_dir;       /* where they came from                    */
@@ -51,6 +61,7 @@ typedef struct {
     char server_source[32];     /* where that address came from            */
     server_health health;       /* whether that server answered            */
     save_report save;           /* what happened to the savefile           */
+    cloud_report cloud;         /* ...and to its copies in the cloud        */
     char state_path[512];       /* state file updated, empty if none       */
     char warning[TB_ERR_LEN];   /* non-fatal problem, empty if none        */
 } install_report;
@@ -70,7 +81,8 @@ int install_detect(config *cfg, const npp_paths *paths, char *code_out, size_t c
  * untouched.
  */
 int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
-                unsigned flags, install_report *report, char *err, size_t errsz);
+                const install_options *opts, install_report *report,
+                char *err, size_t errsz);
 
 void install_report_free(install_report *report);
 
@@ -81,6 +93,7 @@ typedef struct {
     str_list leftovers;         /* other backups still in the game folder  */
     char server_uri[128];       /* the URI the library points at again     */
     save_report save;           /* what happened to the savefile           */
+    cloud_report cloud;         /* ...and to its copies in the cloud        */
     char state_path[512];       /* state file updated, empty if none       */
     char warning[TB_ERR_LEN];   /* non-fatal problem, empty if none        */
 } uninstall_report;
@@ -92,7 +105,8 @@ typedef struct {
  * Returns 0 on success, or -1 with a reason in `err` and nothing changed.
  */
 int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
-                  unsigned flags, uninstall_report *report, char *err, size_t errsz);
+                  const install_options *opts, uninstall_report *report,
+                  char *err, size_t errsz);
 
 void uninstall_report_free(uninstall_report *report);
 

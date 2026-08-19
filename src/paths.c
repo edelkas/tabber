@@ -256,6 +256,19 @@ int npp_find_game_dirs(npp_paths *paths, char *err, size_t errsz)
     char *installdir, *candidate;
     int ok;
 
+    /* Steam's own folder can be named on its own, which is all the cloud
+     * saves need; it is also what the game-directory override leaves out. */
+    {
+        char *override = plat_getenv(TABBER_ENV_STEAM_DIR);
+
+        if (override) {
+            path_to_native(override);
+            if (plat_is_dir(override))
+                paths->steam_dir = finalize_dir(override);
+            free(override);
+        }
+    }
+
     /* An explicit installation directory short-circuits the Steam lookup. */
     {
         char *override = plat_getenv(TABBER_ENV_GAME_DIR);
@@ -273,7 +286,8 @@ int npp_find_game_dirs(npp_paths *paths, char *err, size_t errsz)
         }
     }
 
-    paths->steam_dir = find_steam_dir(err, errsz);
+    if (!paths->steam_dir)
+        paths->steam_dir = find_steam_dir(err, errsz);
     if (!paths->steam_dir)
         return -1;
 
