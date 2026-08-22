@@ -17,8 +17,14 @@
  *     "download_date": "2026-08-17T18:42:03Z",
  *     "install_date": null,
  *     "uninstall_date": null,
- *     "remove_date": null
+ *     "remove_date": null,
+ *     "palettes": ["nova cosmic", "nova orbit"]
  *   }
+ *
+ * "palettes" holds the folders an install actually created in the game's
+ * palettes folder, so uninstalling deletes those and no others: a palette that
+ * was skipped because the user already had one of that name is not in the list
+ * and is therefore never mistaken for the tab's.
  */
 #ifndef TABBER_CONFIG_H
 #define TABBER_CONFIG_H
@@ -26,6 +32,7 @@
 #include <stddef.h>
 
 #include "json.h"
+#include "util.h"
 
 #define CONFIG_FILENAME      "config.json"
 #define CONFIG_TMP_SUFFIX    ".tmp"
@@ -42,6 +49,7 @@
 #define CJK_INSTALL_DATE     "install_date"
 #define CJK_UNINSTALL_DATE   "uninstall_date"
 #define CJK_REMOVE_DATE      "remove_date"
+#define CJK_PALETTES         "palettes"   /* folders an install created    */
 
 typedef struct {
     json_value *root;   /* whole document, "tabs" included */
@@ -98,5 +106,19 @@ void config_set_uninstalled(config *cfg, int id, const char *code);
  * never created. Returns 1 if anything was recorded.
  */
 int config_set_removed(config *cfg, int id, const char *code);
+
+/*
+ * Records the palette folders an install created, replacing whatever was
+ * listed before. An empty list clears the record, which is what uninstalling
+ * does once they are gone.
+ */
+void config_set_palettes(config *cfg, int id, const char *code, const str_list *names);
+
+/*
+ * Reads that record back. Returns 1 when the tab has one at all, which an
+ * install that put no palette in still does: an empty record means "none went
+ * in", and is not the same as never having recorded any.
+ */
+int config_get_palettes(config *cfg, const char *code, str_list *out);
 
 #endif /* TABBER_CONFIG_H */

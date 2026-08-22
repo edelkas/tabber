@@ -3,8 +3,9 @@
  *
  * Current scope: locating the game's directories, keeping the catalogue of
  * available custom tabs (the digest) up to date, and installing a tab: its
- * level and challenge files, the library patch that redirects the game's
- * queries, and the savefile. Palettes and in-game texts are still to come.
+ * level and challenge files, the palettes it bundles, the library patch that
+ * redirects the game's queries, and the savefile. In-game texts are still to
+ * come.
  */
 #include <stdarg.h>
 #include <stdio.h>
@@ -15,6 +16,7 @@
 #include "config.h"
 #include "digest.h"
 #include "install.h"
+#include "palettes.h"
 #include "patch.h"
 #include "paths.h"
 #include "platform.h"
@@ -55,6 +57,8 @@ typedef struct {
     int offline;       /* never touch the network */
     int compress;      /* gzip the savefile we hand the game, when it reads gzip */
     cloud_mode cloud;  /* what to do with Steam's copies of the savefile */
+    palette_collision palettes;  /* what to do when a palette name is taken */
+    int keep_palettes;           /* leave the tab's palettes behind on uninstall */
 } options;
 
 /* Turns the command line into what install and uninstall take. */
@@ -65,6 +69,8 @@ static install_options install_opts(const options *opts)
     install_options_init(&out);
     out.save_flags = opts->compress ? SAVE_FORCE_COMPRESS : 0u;
     out.cloud = opts->cloud;
+    out.palettes = opts->palettes;
+    out.keep_palettes = opts->keep_palettes;
     return out;
 }
 
@@ -93,6 +99,11 @@ static void print_usage(FILE *out)
         "      --cloud-mode MODE\n"
         "                   What to do with Steam Cloud's copy of the savefile:\n"
         "                   replace (default), remove, or keep it untouched\n"
+        "      --on-palette-collision MODE\n"
+        "                   What to do when a bundled palette's name is taken:\n"
+        "                   skip (default), replace it, or suffix it with a number\n"
+        "      --keep-palettes\n"
+        "                   Leave the tab's palettes in the game when uninstalling\n"
         "  -h, --help       Show this help and exit\n"
         "  -V, --version    Show the version and exit\n");
 }
@@ -385,6 +396,9 @@ static int cmd_fetch(const options *opts, const char *code)
     log_step("contents", "%lu level file(s), %lu challenge file(s) in %s/ (ok)",
              (unsigned long)report.level_files, (unsigned long)report.challenge_files,
              digest_levels_dir(dig));
+    if (report.palettes)
+        log_step("palettes", "%lu bundled in %s/ (ok)",
+                 (unsigned long)report.palettes, digest_palettes_dir(dig));
     log_step("extracted", "%lu file(s) to %s", (unsigned long)report.file_count, report.dir);
     if (report.state_path[0])
         log_step("recorded", "download in %s", report.state_path);
@@ -414,6 +428,56 @@ static void print_save_step(const save_report *save)
         log_step("", "gzipped on the way in, %lu bytes", (unsigned long)save->save_bytes);
     if (save->removed_path[0])
         log_step("", "%s removed, so the game reads the new one", save->removed_path);
+}
+
+/* One line per palette the tab bundles, saying what became of it. */
+static void print_palette_step(const palette_report *pal, palette_collision mode,
+                               int installing)
+{
+    size_t i;
+
+    if (pal->count == 0) {
+        log_step("palettes", "the tab bundles none");
+        return;
+    }
+
+    if (installing)
+        log_step("palettes", "%u bundled, %u installed into %s (on collision: %s)",
+                 (unsigned)pal->count, (unsigned)pal->installed, pal->dir,
+                 palette_collision_name(mode));
+    else if (pal->removed)
+        log_step("palettes", "%u of the tab's own removed from %s",
+                 (unsigned)pal->removed, pal->dir);
+    else
+        log_step("palettes", "%u of the tab's own left in %s",
+                 (unsigned)pal->count, pal->dir);
+
+    for (i = 0; i < pal->count; i++) {
+        const palette_item *item = &pal->items[i];
+        const char *as = item->target && !str_ieq(item->target, item->name)
+                       ? item->target : NULL;
+
+        if (item->outcome == PAL_FAILED) {
+            fprintf(stderr, TABBER_NAME ": warning: the palette '%s' %s\n",
+                    item->name, item->detail[0] ? item->detail : "could not be handled");
+            continue;
+        }
+        if (as)
+            log_step("", "'%s': %s, as '%s'", item->name,
+                     palette_outcome_text(item->outcome), as);
+        else if (item->detail[0])
+            log_step("", "'%s': %s (%s)", item->name,
+                     palette_outcome_text(item->outcome), item->detail);
+        else
+            log_step("", "'%s': %s", item->name, palette_outcome_text(item->outcome));
+    }
+
+    /* Worth knowing when the folder is filling up: past the line the game
+     * simply stops reading, whoever the palettes belong to. */
+    if (installing && pal->total > PALETTE_LIMIT)
+        fprintf(stderr, TABBER_NAME ": warning: the game reads %d palettes and there "
+                        "are now %u; the last ones will be ignored\n",
+                PALETTE_LIMIT, (unsigned)pal->total);
 }
 
 /* One line per Steam account that has N++ cloud data, whatever happened to it. */
@@ -571,6 +635,7 @@ static int cmd_install(const options *opts, const char *code)
                         "(%s: %s); the tab is installed all the same, but its scores will "
                         "not work until the server is back\n",
                 report.health.url, report.health.detail);
+    print_palette_step(&report.palettes, opts->palettes, 1);
     print_save_step(&report.save);
     print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
@@ -719,7 +784,6 @@ static int cmd_uninstall(const options *opts, const char *code)
     }
 
     /* Uninstalling is a local repair job: use whatever digest is at hand. */
-    (void)opts;
     dig = digest_load(err, sizeof err);
     if (!dig) {
         fprintf(stderr, TABBER_NAME ": %s\n", err);
@@ -767,6 +831,7 @@ static int cmd_uninstall(const options *opts, const char *code)
     log_step("target", "%s", report.game_levels_dir);
     log_step("restored", "%lu original file(s)", (unsigned long)report.restored_count);
     log_step("library", "queries point back at %s", report.server_uri);
+    print_palette_step(&report.palettes, opts->palettes, 0);
     print_save_step(&report.save);
     print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
@@ -884,6 +949,18 @@ int main(int argc, char **argv)
             if (cloud_mode_parse(value, &opts.cloud) != 0) {
                 fprintf(stderr, TABBER_NAME ": '%s' is not a cloud mode; use replace, "
                                 "remove or keep\n", value ? value : "");
+                return EXIT_USAGE;
+            }
+        } else if (!strcmp(arg, "--keep-palettes")) {
+            opts.keep_palettes = 1;
+        } else if (!strncmp(arg, "--on-palette-collision", 22)) {
+            /* Either "--on-palette-collision=MODE" or the mode as a word. */
+            const char *value = arg[22] == '=' ? arg + 23
+                              : arg[22] == '\0' && i + 1 < argc ? argv[++i] : NULL;
+
+            if (palette_collision_parse(value, &opts.palettes) != 0) {
+                fprintf(stderr, TABBER_NAME ": '%s' is not a palette collision mode; "
+                                "use skip, replace or suffix\n", value ? value : "");
                 return EXIT_USAGE;
             }
         } else if (arg[0] == '-') {

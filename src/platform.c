@@ -186,6 +186,21 @@ int plat_replace_file(const char *src, const char *dst)
     return rc;
 }
 
+int plat_move_dir(const char *src, const char *dst)
+{
+    wchar_t *wsrc = wide_from_utf8(src);
+    wchar_t *wdst = wide_from_utf8(dst);
+    int rc = -1;
+
+    /* No MOVEFILE_REPLACE_EXISTING here: it is documented not to work on
+     * directories, and a rename-aside has nothing to replace anyway. */
+    if (wsrc && wdst)
+        rc = MoveFileW(wsrc, wdst) ? 0 : -1;
+    free(wsrc);
+    free(wdst);
+    return rc;
+}
+
 int plat_remove_file(const char *path)
 {
     wchar_t *wpath = wide_from_utf8(path);
@@ -504,6 +519,11 @@ int plat_replace_file(const char *src, const char *dst)
     return rename(src, dst) == 0 ? 0 : -1;   /* POSIX rename replaces atomically */
 }
 
+int plat_move_dir(const char *src, const char *dst)
+{
+    return rename(src, dst) == 0 ? 0 : -1;
+}
+
 int plat_remove_file(const char *path)
 {
     return unlink(path) == 0 ? 0 : -1;
@@ -707,6 +727,41 @@ int plat_mkdir_p(const char *path)
 
     free(work);
     return rc;
+}
+
+int plat_copy_tree(const char *src, const char *dst, size_t *files)
+{
+    str_list entries = {0};
+    size_t i;
+    int failures = 0;
+
+    if (!plat_is_dir(src) || plat_mkdir_p(dst) != 0)
+        return -1;
+    if (plat_list_dir(src, &entries) != 0)
+        return -1;
+
+    for (i = 0; i < entries.count; i++) {
+        char *from = path_join(src, entries.items[i]);
+        char *to = path_join(dst, entries.items[i]);
+
+        if (plat_is_dir(from)) {
+            failures += plat_copy_tree(from, to, files) != 0;
+        } else {
+            size_t len = 0;
+            char *data = plat_read_file(from, &len);
+
+            if (!data || plat_write_file(to, data, len) != 0)
+                failures++;
+            else if (files)
+                (*files)++;
+            free(data);
+        }
+        free(from);
+        free(to);
+    }
+
+    str_list_free(&entries);
+    return failures ? -1 : 0;
 }
 
 char *plat_app_root(void)

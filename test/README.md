@@ -13,6 +13,7 @@ Run it with `build.bat test` (Windows) or `make test` (Linux, macOS). Add
 | `test_archive.c` | ZIP reading and writing, DEFLATE both ways, gzip, CRC verification, corruption, unsafe entry names |
 | `test_state.c` | `config.json` round trips and lifecycle, server resolution, URI budget, the server health check |
 | `test_save.c` | Archiving and swapping the savefile in both its forms, and its copies in Steam Cloud |
+| `test_palettes.c` | The baked palette names, collisions, the game's 256 limit, and copying palettes in and out |
 | `test_game.c` | Install, uninstall, library patching, and both health checks |
 | `test_online.c` | The live server, the live digest, fetching a tab, the full catalogue sweep |
 | `fixture_zip.c` | A 462-byte ZIP embedded as bytes |

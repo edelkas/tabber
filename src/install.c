@@ -6,6 +6,7 @@
 #include "config.h"
 #include "install.h"
 #include "json.h"
+#include "palettes.h"
 #include "patch.h"
 #include "platform.h"
 #include "save.h"
@@ -26,8 +27,10 @@ typedef struct {
 void install_options_init(install_options *opts)
 {
     memset(opts, 0, sizeof(*opts));
-    opts->save_flags = 0;         /* leave a save in the form it came in */
-    opts->cloud = CLOUD_REPLACE;  /* keep Steam's copy in step with it   */
+    opts->save_flags = 0;            /* leave a save in the form it came in  */
+    opts->cloud = CLOUD_REPLACE;     /* keep Steam's copy in step with it    */
+    opts->palettes = PALETTE_SKIP;   /* never overwrite a palette of theirs  */
+    opts->keep_palettes = 0;         /* an uninstall takes them out again    */
 }
 
 /* The options a caller that passed none would have meant. */
@@ -177,7 +180,8 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     server_addr addr;
     server_source source;
     save_plan save = {0};
-    int lib_loaded = 0, save_planned = 0, rc = -1;
+    palette_plan palettes = {0};
+    int lib_loaded = 0, save_planned = 0, palettes_planned = 0, rc = -1;
 
     memset(report, 0, sizeof(*report));
 
@@ -326,6 +330,11 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     save_planned = 1;
 
+    /* --- And the palettes: which names are free, and whether they fit --- */
+    if (palettes_plan_build(dig, tab, paths, opts.palettes, &palettes, err, errsz) != 0)
+        goto done;
+    palettes_planned = 1;
+
     /* Read everything up front, so the writing phase is as short as possible. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].source, &files[i].len);
@@ -353,8 +362,15 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         done++;
     }
 
+    /* --- The palettes, copied into the game's own folder --- */
+    if (palettes_plan_apply(&palettes, &report->palettes, err, errsz) != 0) {
+        rollback(files, done);
+        goto done;
+    }
+
     /* --- Redirect the game's queries, last and quickest --- */
     if (lib_write_uri(&img, patch_uri, err, errsz) != 0) {
+        palettes_plan_undo(&palettes);
         rollback(files, done);        /* the level files go back as they were */
         goto done;
     }
@@ -362,6 +378,7 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     /* --- And the savefile: the vanilla one filed away, the tab's put in --- */
     if (save_plan_apply(&save, &report->save, err, errsz) != 0) {
         lib_write_uri(&img, LIB_OFFICIAL_URI, cfg_err, sizeof cfg_err);
+        palettes_plan_undo(&palettes);
         rollback(files, done);
         goto done;
     }
@@ -379,9 +396,21 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     snprintf(report->server_source, sizeof report->server_source, "%s",
              server_source_name(source));
 
+    /* Nothing can fail from here on, so the palettes we replaced can go. */
+    palettes_plan_commit(&palettes);
+
     /* --- Record it --- */
     config_set_installed(state, tab->id, tab->code);
     config_set_state_library(state, 1);      /* the library now matches */
+    {
+        /* Only the folders we really created, so an uninstall deletes ours
+         * and leaves alone the ones that were already there. */
+        str_list made = {0};
+
+        palettes_plan_installed(&palettes, &made);
+        config_set_palettes(state, tab->id, tab->code, &made);
+        str_list_free(&made);
+    }
     if (config_save(state, cfg_err, sizeof cfg_err) != 0)
         err_set(report->warning, sizeof report->warning,
                 "the install was not recorded: %s", cfg_err);
@@ -394,6 +423,8 @@ done:
         lib_close(&img);
     if (save_planned)
         save_plan_free(&save);
+    if (palettes_planned)
+        palettes_plan_free(&palettes);
     if (state)
         config_free(state);
     install_files_free(files, count);
@@ -412,6 +443,7 @@ done:
 void install_report_free(install_report *report)
 {
     cloud_report_free(&report->cloud);
+    palette_report_free(&report->palettes);
     free(report->game_levels_dir);
     free(report->tab_levels_dir);
     str_list_free(&report->skipped);
@@ -496,6 +528,7 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     lib_image img;
     lib_health health;
     save_plan save = {0};
+    str_list palettes = {0};
     int lib_loaded = 0, save_planned = 0, rc = -1;
 
     memset(report, 0, sizeof(*report));
@@ -525,6 +558,15 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         err_set(err, errsz, "the game has no '%s' folder at '%s'", levels_name, game_dir);
         goto done;
     }
+
+    /*
+     * The palettes to take out, as recorded when they went in. An empty record
+     * means the install put none in, and nothing is to be deleted; no record
+     * at all means the install predates this, and the digest's own list is
+     * then the best guess we have.
+     */
+    if (!config_get_palettes(state, tab->code, &palettes))
+        palettes_bundled(tab, &palettes);
 
     collect_shipped_files(dig, tab, &wanted, &report->skipped);
     if (wanted.count == 0) {
@@ -651,6 +693,15 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         restored++;
     }
 
+    /*
+     * The palettes, last: the game is already back as it was, so a palette
+     * that will not delete is a warning and not a reason to undo any of it.
+     */
+    if (palettes_remove(dig, paths, &palettes, opts.keep_palettes, &report->palettes,
+                        cfg_err, sizeof cfg_err) != 0)
+        err_set(report->warning, sizeof report->warning,
+                "the tab's palettes were left in the game folder: %s", cfg_err);
+
     report->restored_count = restored;
     report->game_levels_dir = game_dir;
     collect_leftover_backups(report->game_levels_dir, &wanted, &report->leftovers);
@@ -659,6 +710,8 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
 
     /* --- Record it. install_date is left alone: it is still true. --- */
     config_set_uninstalled(state, tab->id, tab->code);
+    if (!opts.keep_palettes && report->palettes.failed == 0)
+        config_set_palettes(state, tab->id, tab->code, NULL);   /* they are gone */
     config_set_state_library(state, 1);      /* the library is official again */
     if (config_save(state, cfg_err, sizeof cfg_err) != 0)
         err_set(report->warning, sizeof report->warning,
@@ -675,6 +728,7 @@ done:
     if (state)
         config_free(state);
     install_files_free(files, count);
+    str_list_free(&palettes);
     str_list_free(&wanted);
     str_list_free(&missing);
     str_list_free(&no_backup);
@@ -686,6 +740,7 @@ done:
 void uninstall_report_free(uninstall_report *report)
 {
     cloud_report_free(&report->cloud);
+    palette_report_free(&report->palettes);
     free(report->game_levels_dir);
     str_list_free(&report->skipped);
     str_list_free(&report->leftovers);

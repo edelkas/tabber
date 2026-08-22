@@ -16,6 +16,7 @@
 #include "gzip.h"
 #include "install.h"
 #include "json.h"
+#include "palettes.h"
 #include "patch.h"
 #include "paths.h"
 #include "platform.h"
@@ -31,6 +32,9 @@
 #define TAB_EXTRA_FILE    "README.txt"      /* not a file the game reads */
 #define TAB_LEVEL_BODY    "custom level data"
 #define TAB_CHALLENGE_BODY "AGNT AGNO"
+#define TAB_PALETTE       "test palette"    /* the palette the fixture bundles */
+#define TAB_SWATCH        "background.tga"
+#define TAB_SWATCH_BODY   "colours in a file"
 #define EXPECTED_PATCH    "http://" TEST_DEAD_HOST ":9/" TAB_CODE
 
 /* The savefile the fake game starts with, and the one tabber "ships". */
@@ -47,6 +51,7 @@ typedef struct {
     char *install;     /* the fake installation directory                */
     char *levels;      /* the game's levels folder                       */
     char *library;     /* the fake main library                          */
+    char *palettes;    /* the game's palettes folder                     */
     char *personal;    /* the fake personal folder, holding the savefile */
     char *fresh;       /* the fresh savefile tabber would ship           */
     char *cloud;       /* the fake Steam Cloud folder of one account     */
@@ -71,6 +76,7 @@ static void world_build(world *w, const char *name)
     {
         char *assets = path_join(w->install, NPP_ASSETS_SUBDIR);
         w->levels = path_join(assets, DIGEST_DEFAULT_LEVELS_DIR);
+        w->palettes = path_join(assets, DIGEST_DEFAULT_PALETTES_DIR);
         free(assets);
     }
 
@@ -90,6 +96,20 @@ static void world_build(world *w, const char *name)
     test_write(path, "notes that the game never reads");
     free(path);
     free(tab_levels);
+
+    /* ...and the palette it bundles, a folder of swatches of its own. */
+    {
+        char *tab_root = tab_dir_path(TAB_CODE);
+        char *pal = path_join(tab_root, DIGEST_DEFAULT_PALETTES_DIR);
+        char *folder = path_join(pal, TAB_PALETTE);
+
+        path = path_join(folder, TAB_SWATCH);
+        test_write(path, TAB_SWATCH_BODY);
+        free(path);
+        free(folder);
+        free(pal);
+        free(tab_root);
+    }
 
     /* The personal folder, with a savefile in it, and the shipped fresh one. */
     w->personal = test_fake_personal(w->root, SAVE_NAME, GAME_SAVE, strlen(GAME_SAVE));
@@ -139,6 +159,7 @@ static void world_free(world *w)
     free(w->root);
     free(w->install);
     free(w->levels);
+    free(w->palettes);
     free(w->library);
     free(w->personal);
     free(w->fresh);
@@ -186,6 +207,18 @@ static const npp_tab *world_tab(world *w, const char *code)
     const npp_tab *tab = digest_find(w->dig, code);
     CHECK(tab != NULL, "the digest knows '%s'", code);
     return tab;
+}
+
+/* Contents of a palette's swatch in the game's folder. Caller frees. */
+static char *palette_file(world *w, const char *name)
+{
+    char *folder = path_join(w->palettes, name);
+    char *path = path_join(folder, TAB_SWATCH);
+    char *text = test_read(path);
+
+    free(path);
+    free(folder);
+    return text;
 }
 
 /* Contents of a file in the game's levels folder. Caller frees. */
@@ -287,6 +320,14 @@ static void test_install_uninstall(void)
 
     check_library(&w, EXPECTED_PATCH, "the library points at the 3rd party server");
 
+    /* The palette it bundles was copied into the game's own folder, which the
+     * fake install ships without, exactly as the real Windows build does. */
+    CHECK_NUM(installed.palettes.count, 1, "the bundled palette is reported");
+    CHECK_NUM(installed.palettes.installed, 1, "and it went in");
+    text = palette_file(&w, TAB_PALETTE);
+    CHECK_STR(text, TAB_SWATCH_BODY, "its swatches came across");
+    free(text);
+
     /* The savefile was swapped as part of the same install. */
     text = personal_file(&w, SAVE_NAME);
     CHECK_STR(text, FRESH_SAVE, "the tab's savefile is in place");
@@ -347,6 +388,11 @@ static void test_install_uninstall(void)
     free(backup);
 
     check_library(&w, LIB_OFFICIAL_URI, "the library points at the official server again");
+
+    CHECK_NUM(removed.palettes.removed, 1, "the palette it brought was taken out again");
+    text = palette_file(&w, TAB_PALETTE);
+    CHECK(text == NULL, "and its folder is gone from the game");
+    free(text);
 
     text = personal_file(&w, SAVE_NAME);
     CHECK_STR(text, GAME_SAVE, "the player's savefile is back, byte for byte");
@@ -618,6 +664,50 @@ static void test_remove(void)
     world_free(&w);
 }
 
+/*
+ * A palette of the user's own, with the same name as one the tab bundles. It
+ * is skipped on the way in, and so must survive the way out: the uninstall
+ * goes by what the install recorded, not by what the tab happens to ship.
+ */
+static void test_palette_not_ours(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    install_report installed;
+    uninstall_report removed;
+    char *folder, *path, *text;
+
+    test_case("a palette we did not install is not removed");
+    world_build(&w, "game_palette");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    folder = path_join(w.palettes, TAB_PALETTE);
+    path = path_join(folder, TAB_SWATCH);
+    test_write(path, "the player's own colours");
+    free(path);
+    free(folder);
+
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
+          "install succeeds (%s)", err);
+    CHECK_NUM(installed.palettes.installed, 0, "the bundled palette is skipped");
+    text = palette_file(&w, TAB_PALETTE);
+    CHECK_STR(text, "the player's own colours", "theirs is left as it was");
+    free(text);
+
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &removed, err, sizeof err) == 0,
+          "uninstall succeeds (%s)", err);
+    CHECK_NUM(removed.palettes.removed, 0, "and nothing is deleted on the way out");
+    text = palette_file(&w, TAB_PALETTE);
+    CHECK_STR(text, "the player's own colours", "their palette is still theirs");
+    free(text);
+
+    install_report_free(&installed);
+    uninstall_report_free(&removed);
+    world_free(&w);
+}
+
 /* A code becomes a directory name that gets deleted recursively. */
 static void test_codes(void)
 {
@@ -648,5 +738,6 @@ void suite_game(void)
     test_uninstall_refusals();
     test_health_mismatches();
     test_remove();
+    test_palette_not_ours();
     test_codes();
 }

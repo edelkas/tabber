@@ -346,7 +346,8 @@ const char *TEST_DIGEST_JSON =
 "                        \"version\": 1, \"enabled\": true },\n"
 "      \"download\": { \"link\": \"https://example.invalid/tst.zip\", \"size\": 1, \"md5\": \"0\" },\n"
 "      \"disk\": { \"size\": 2, \"level_files\": [\"SI.txt\"],\n"
-"                  \"challenge_files\": [\"Scodes.txt\"], \"palettes\": [] },\n"
+"                  \"challenge_files\": [\"Scodes.txt\"],\n"
+"                  \"palettes\": [\"test palette\"] },\n"
 "      \"properties\": {}, \"stats\": {}\n"
 "    },\n"
 "    {\n"
@@ -401,6 +402,7 @@ int main(int argc, char **argv)
     suite_archive();
     suite_state();
     suite_save();
+    suite_palettes();
     suite_game();
     if (online)
         suite_online(full);

@@ -112,6 +112,7 @@ void suite_core(void);      /* strings, buffers, paths, json, kv, md5 */
 void suite_archive(void);   /* inflate, zip, integrity, unsafe paths   */
 void suite_state(void);     /* config.json and server resolution       */
 void suite_save(void);      /* archiving and swapping the savefile     */
+void suite_palettes(void);  /* bundled palettes: names, limits, removal */
 void suite_game(void);      /* install, uninstall, library patching    */
 void suite_online(int full);/* live digest, downloads, full sweep      */
 

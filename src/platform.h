@@ -92,6 +92,13 @@ int plat_write_at(const char *path, size_t offset, const void *data, size_t len)
 /* Renames `src` over `dst`, replacing it atomically. Returns 0 on success. */
 int plat_replace_file(const char *src, const char *dst);
 
+/*
+ * Renames a directory. Unlike plat_replace_file this never replaces anything:
+ * `dst` must not exist, which is all a rename-aside needs and all Windows
+ * offers for directories. Returns 0 on success.
+ */
+int plat_move_dir(const char *src, const char *dst);
+
 int plat_remove_file(const char *path);
 
 /* Creates a directory, including any missing parent. Returns 0 on success
@@ -103,6 +110,13 @@ int plat_mkdir_p(const char *path);
  * when `path` does not exist. Handle with care: it recurses.
  */
 int plat_remove_tree(const char *path);
+
+/*
+ * Copies a directory and everything inside it, creating `dst` and any missing
+ * parent. `files` (optional) is incremented by the number of files copied.
+ * Returns 0 on success, -1 if any part of it could not be copied.
+ */
+int plat_copy_tree(const char *src, const char *dst, size_t *files);
 
 /*
  * Absolute, symlink-free path with the on-disk spelling (letter case

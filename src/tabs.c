@@ -6,6 +6,7 @@
 #include "json.h"
 #include "md5.h"
 #include "net.h"
+#include "palettes.h"
 #include "platform.h"
 #include "tabs.h"
 #include "util.h"
@@ -148,6 +149,58 @@ done:
     return rc;
 }
 
+/* ASCII case-insensitive prefix test, for archive paths. */
+static int name_has_prefix(const char *name, const char *prefix)
+{
+    size_t i;
+
+    for (i = 0; prefix[i]; i++) {
+        char a = name[i], b = prefix[i];
+
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b)
+            return 0;
+    }
+    return 1;
+}
+
+/*
+ * Every palette the digest promises must have a folder of its own with
+ * something in it. Checking here means an install never trips over a palette
+ * that was missing from the download all along.
+ */
+static long verify_palettes(const zip_archive *zip, const json_value *disk,
+                            const char *palettes_dir, char *err, size_t errsz)
+{
+    const json_value *list = json_get(disk, PJK_PALETTES);
+    const json_value *item;
+    long found = 0;
+
+    if (!list || list->type != JSON_ARRAY)
+        return 0;
+
+    for (item = list->children; item; item = item->next) {
+        char *prefix;
+        size_t i;
+        int any = 0;
+
+        if (item->type != JSON_STRING)
+            continue;
+        prefix = str_fmt("%s/%s/", palettes_dir, item->string);
+        for (i = 0; i < zip->count && !any; i++)
+            any = !zip->entries[i].is_dir && name_has_prefix(zip->entries[i].name, prefix);
+        if (!any) {
+            err_set(err, errsz, "the archive has no files under '%s'", prefix);
+            free(prefix);
+            return -1;
+        }
+        free(prefix);
+        found++;
+    }
+    return found;
+}
+
 /* ---- State ------------------------------------------------------------- */
 
 /*
@@ -182,7 +235,7 @@ int tab_fetch(const digest *dig, const npp_tab *tab, tab_report *report,
 {
     const json_value *download, *disk;
     const char *link, *expected_md5, *levels_dir;
-    long expected_size, expected_disk_size, level_files, challenge_files;
+    long expected_size, expected_disk_size, level_files, challenge_files, palettes;
     char *archive = NULL, *dir = NULL;
     size_t archive_len = 0, i;
     zip_archive zip;
@@ -243,6 +296,9 @@ int tab_fetch(const digest *dig, const npp_tab *tab, tab_report *report,
         goto done;
     challenge_files = verify_file_list(&zip, disk, TJK_CHALLENGE_FILES, levels_dir, err, errsz);
     if (challenge_files < 0)
+        goto done;
+    palettes = verify_palettes(&zip, disk, digest_palettes_dir(dig), err, errsz);
+    if (palettes < 0)
         goto done;
 
     /* --- Decompress everything before touching the disk --- */
@@ -308,6 +364,7 @@ int tab_fetch(const digest *dig, const npp_tab *tab, tab_report *report,
     report->file_count = staged_count;
     report->level_files = (size_t)level_files;
     report->challenge_files = (size_t)challenge_files;
+    report->palettes = (size_t)palettes;
     record_download(tab, report);
     rc = 0;
 

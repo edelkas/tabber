@@ -39,6 +39,11 @@ tabber [options] [command]
       --cloud-mode MODE
                    What to do with Steam Cloud's copy of the savefile:
                    replace (default), remove, or keep it untouched
+      --on-palette-collision MODE
+                   What to do when a bundled palette's name is taken:
+                   skip (default), replace it, or suffix it with a number
+      --keep-palettes
+                   Leave the tab's palettes in the game when uninstalling
   -h, --help       Show help
   -V, --version    Show version
 ```
@@ -61,7 +66,7 @@ exercises the real code rather than a copy of it. It runs in three tiers:
 
 | Tier | Needs | Covers |
 | --- | --- | --- |
-| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, Steam Cloud, install/uninstall/patching against a stand-in game |
+| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, Steam Cloud, palettes, install/uninstall/patching against a stand-in game |
 | `--online` | the network | downloading the live digest, fetching a tab and verifying it |
 | `--full` | the network | downloading and verifying **every** published tab |
 
@@ -85,6 +90,9 @@ Some things are worth knowing about how the tests check what they check:
   savefile tabber ships.
 - **Refusals** assert not just the error but that nothing moved: files, backups
   and the library are all re-checked afterwards.
+- **Palettes** are checked from both sides: that the tab's go in, and that a
+  palette of the user's own is never quietly lost — not to a collision, not to
+  a rolled-back install, and not to the uninstall that follows one.
 - **The server** the offline tier probes is `127.0.0.1:9`, a port nothing
   listens on, so the health check is exercised for real — a refused connection
   — without leaving the machine. The live server is only asked in `--online`.
@@ -105,6 +113,7 @@ cover.
 | `src/tabs.c/.h`  | Downloading, verifying and unpacking a custom tab |
 | `src/install.c/.h` | Installing a custom tab into the game |
 | `src/patch.c/.h` | Redirecting the game's server queries, and the library health check |
+| `src/palettes.c/.h` | The palettes a tab bundles: names, the game's limit, copying them in and out |
 | `src/save.c/.h`  | Archiving and swapping the savefile |
 | `src/cloud.c/.h` | The savefile's copies in Steam Cloud, per Steam account |
 | `src/gzip.c/.h`  | Reading and writing gzip streams (RFC 1952), for gzipped savefiles |
@@ -214,7 +223,8 @@ first: letters and digits only, so `..`, `a/b` and friends are refused outright.
 
 `tabber install CODE` fetches the tab first if it is not in the store, then
 replaces the game's level and challenge files with the tab's own, in
-`<installation dir>/NPP/<config.levels_dir>/`. Each original is kept next to it
+`<installation dir>/NPP/<config.levels_dir>/`, copies in the palettes it
+bundles, patches the library and swaps the savefile. Each original is kept next to it
 with `OG` appended to the whole file name (`SI.txt` -> `SI.txtOG`), a name the
 game does not parse, so uninstalling means deleting the tab's files and renaming
 the originals back.
@@ -425,6 +435,82 @@ itself is archived in the personal folder as described above. If the sweep
 cannot reach an account's folder, that account is reported as a warning and the
 install still stands.
 
+## The palettes
+
+A palette is a folder of TGA colour swatches, and the game reads them from
+`<installation dir>/NPP/<config.palettes_dir>/<palette name>/`: every subfolder
+there is one palette, named by the folder itself. On Windows the game ships
+without that folder at all, so it is created when the first palette goes in.
+
+A tab's own palettes sit in the same place inside its download, and the digest
+names them in `disk.palettes`. Only those are installed: a folder in the tab's
+archive that the digest does not list is left where it is, and a palette the
+digest promises but the archive lacks is caught at fetch time rather than
+halfway through an install.
+
+Copying them across is the easy part. What takes the work is deciding whether a
+palette can go in at all, and each one gets its own line in the install log
+saying what became of it.
+
+### Names
+
+Palette names must be unique, and are compared case-insensitively, so a name
+cannot be freed by respelling it. When the name a tab wants is already taken,
+`--on-palette-collision` decides:
+
+| Mode | What happens |
+| --- | --- |
+| `skip` (default) | the palette that is there stays, and the tab's is not installed |
+| `replace` | the tab's palette overwrites it |
+| `suffix` | the tab's goes in beside it as `<name> 2`, `<name> 3`, and so on |
+
+The default is `skip` because it is the only one that cannot cost the user
+anything: `replace` overwrites a palette that may well be their own work, and
+is not undone by a later uninstall — the folder it took is deleted along with
+the tab's other palettes, since by then the original is already gone.
+
+Names can also collide with a palette that is nowhere in the folder. **123 of
+the game's palettes are baked into the library**, take precedence over anything
+on disk, and cannot be found by looking at the game's files, so tabber carries
+the list. A folder named after one of them would simply be ignored by the game,
+which is why it is not copied in even under `replace`: the palette would simply
+never appear. Under `suffix` it goes in anyway, since the suffixed name is no
+longer a baked one.
+
+The four palettes [cut before release][cut] are the exception: they were baked
+with ` CUT` appended, so `line` is a free name while `line CUT` is not. Bringing
+them back as custom palettes works, and tabber treats them accordingly.
+
+[cut]: https://github.com/edelkas/nppdocs/blob/master/docs/palettes.md#cut-palettes
+
+### The limit
+
+The game indexes palettes with a single byte and stops reading at **256**, the
+123 baked ones included. Past that line the remaining palettes are still listed
+in-game but never parsed, and selecting one does nothing. That leaves room for
+133 in the folder, whoever they belong to.
+
+A folder named after a baked palette does not count against that: the game
+drops it before it is ever parsed, so it occupies no slot. Keeping copies of
+the baked palettes in the folder is common — the Linux build ships them, and
+they are handy to edit from — and counting them would tally those palettes
+twice and turn a tab away for a shortage of room that is not real. The total is
+therefore the 123 baked ones plus only the folders the game does not already
+skip.
+
+Rather than deleting somebody else's palette to make room, a palette that does
+not fit is simply not copied, and the log says why. The check comes after the
+name check on purpose: a palette that replaces an existing one, or that is
+skipped because its name is taken, takes no new slot and so can never be the one
+that does not fit.
+
+### Undoing
+
+An install that fails later — the library patch, the savefile swap — takes the
+palettes back out with everything else. Under `replace` the palette being
+overwritten is renamed aside first and only deleted once the install is past the
+point of undo, so a rollback puts the original back rather than leaving a hole.
+
 ## Uninstalling
 
 `tabber uninstall CODE` puts the game back: it deletes the tab's files and
@@ -445,6 +531,14 @@ Both checks run before anything moves, and either aborts the whole thing:
 
 The library is restored first and the level files second, undoing the install in
 reverse, and a failure in the second step re-applies the patch.
+
+The tab's palettes are removed last, unless `--keep-palettes` says to leave
+them. Which ones those are comes from `config.json`, where the install recorded
+the folders it actually created — never from the digest's list — so a palette
+that was skipped because the user already had one of that name is not mistaken
+for the tab's and deleted. Only an install that predates the record falls back
+to the digest. A palette that will not delete is a warning: by then the game is
+already back as it was, which is no reason to undo any of it.
 
 The files on disk are the authority, not `config.json`: a state file that has
 drifted out of step will not stop a real installation from being undone.
@@ -471,7 +565,8 @@ touched:
       "download_date": "2026-08-17T19:15:06Z",
       "install_date": null,
       "uninstall_date": null,
-      "remove_date": null
+      "remove_date": null,
+      "palettes": []
     }
   ]
 }
@@ -479,8 +574,11 @@ touched:
 
 Dates are ISO 8601 UTC, the format the digest itself uses, and are `null` until
 the corresponding action happens. A successful `fetch` creates the entry if
-needed and sets `downloaded` and `download_date`; the install fields are wired
-up but left untouched until installing exists.
+needed and sets `downloaded` and `download_date`; installing stamps
+`install_date` and lists under `palettes` the folders it created in the game's
+palettes folder, which is what a later uninstall goes by. An empty list means
+the install put none in, and is not the same as the key being absent, which
+means the install predates the record.
 
 The file is edited in place rather than regenerated: keys this version does not
 know about, and fields it does not own, survive a rewrite. If it is missing it
@@ -499,7 +597,7 @@ alone rather than overwriting whatever is in there.
 - [x] Check that the 3rd party server is up
 - [x] Back up and swap the savefile
 - [x] Handle Steam Cloud's copy of the savefile
-- [ ] Install custom palettes
+- [x] Install custom palettes
 - [ ] Replace in-game texts
 - [ ] Optional extras (controls, …)
 - [ ] DearImGui front-end

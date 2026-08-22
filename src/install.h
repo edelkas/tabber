@@ -13,6 +13,9 @@
  * Every check runs before the first rename, and any failure mid-way is rolled
  * back, so an aborted install leaves the game folder as it was.
  *
+ * The palettes a tab bundles are copied in too (see palettes.h), and taken out
+ * again when it is uninstalled.
+ *
  * The savefile is swapped too (see save.h): the one in place is archived and
  * the tab's own — or the fresh one tabber ships — is put in its stead, and the
  * copies Steam Cloud keeps of it are dealt with afterwards (see cloud.h).
@@ -29,6 +32,7 @@
 #include "cloud.h"
 #include "config.h"
 #include "digest.h"
+#include "palettes.h"
 #include "paths.h"
 #include "save.h"
 #include "server.h"
@@ -45,8 +49,10 @@
 
 /* How an install or uninstall should treat the savefile. */
 typedef struct {
-    unsigned save_flags;   /* save.h flags: SAVE_FORCE_COMPRESS today */
-    cloud_mode cloud;      /* what to do with the Steam Cloud copies   */
+    unsigned save_flags;          /* save.h flags: SAVE_FORCE_COMPRESS today  */
+    cloud_mode cloud;             /* what to do with the Steam Cloud copies   */
+    palette_collision palettes;   /* what to do when a palette name is taken  */
+    int keep_palettes;            /* leave the tab's palettes behind on undo  */
 } install_options;
 
 /* The defaults, for callers that have no opinion. */
@@ -60,6 +66,7 @@ typedef struct {
     char server_uri[128];       /* what the library now points at          */
     char server_source[32];     /* where that address came from            */
     server_health health;       /* whether that server answered            */
+    palette_report palettes;    /* what happened to the bundled palettes   */
     save_report save;           /* what happened to the savefile           */
     cloud_report cloud;         /* ...and to its copies in the cloud        */
     char state_path[512];       /* state file updated, empty if none       */
@@ -92,6 +99,7 @@ typedef struct {
     str_list skipped;           /* shipped files the game does not support */
     str_list leftovers;         /* other backups still in the game folder  */
     char server_uri[128];       /* the URI the library points at again     */
+    palette_report palettes;    /* what happened to the bundled palettes   */
     save_report save;           /* what happened to the savefile           */
     cloud_report cloud;         /* ...and to its copies in the cloud        */
     char state_path[512];       /* state file updated, empty if none       */

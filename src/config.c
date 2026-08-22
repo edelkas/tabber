@@ -220,3 +220,31 @@ int config_set_removed(config *cfg, int id, const char *code)
     json_object_set(entry, CJK_REMOVE_DATE, json_new_string(now));
     return 1;
 }
+
+void config_set_palettes(config *cfg, int id, const char *code, const str_list *names)
+{
+    json_value *entry = config_tab_entry(cfg, id, code);
+    json_value *array;
+    size_t i;
+
+    if (!entry)
+        return;
+    array = json_new_array();
+    for (i = 0; names && i < names->count; i++)
+        json_array_append(array, json_new_string(names->items[i]));
+    json_object_set(entry, CJK_PALETTES, array);
+}
+
+int config_get_palettes(config *cfg, const char *code, str_list *out)
+{
+    const json_value *array = json_get(config_find_tab(cfg, code), CJK_PALETTES);
+    const json_value *item;
+
+    if (!array || array->type != JSON_ARRAY)
+        return 0;
+    for (item = array->children; item; item = item->next) {
+        if (item->type == JSON_STRING && item->string[0])
+            str_list_push(out, str_dup(item->string));
+    }
+    return 1;
+}

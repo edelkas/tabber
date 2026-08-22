@@ -43,6 +43,7 @@ typedef struct {
     size_t file_count;             /* files written to disk            */
     size_t level_files;            /* required level files found       */
     size_t challenge_files;        /* required challenge files found   */
+    size_t palettes;               /* bundled palettes found           */
     char md5[MD5_HEX_LEN + 1];     /* verified hash of the archive     */
     char state_path[512];          /* state file updated, empty if none */
     char warning[TB_ERR_LEN];      /* non-fatal problem, empty if none  */
