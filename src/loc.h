@@ -47,9 +47,6 @@
 #define LOC_FIELD_SEP       '|'
 #define LOC_HEADER_ID       "LOC_ID"   /* first field of the first line */
 
-/* Staging name for the rewrite, so the table is never half-written. */
-#define LOC_TMP_SUFFIX      ".tabber-tmp"
-
 /* What --languages accepts besides a comma-separated list. */
 #define LOC_LANGS_ALL_WORD  "all"
 #define LOC_LANGS_NONE_WORD "none"

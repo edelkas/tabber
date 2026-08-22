@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +50,15 @@ char *str_dup_lower(const char *s)
             *p = (char)(*p - 'A' + 'a');
     }
     return copy;
+}
+
+char *str_trim_copy(const char *start, const char *end)
+{
+    while (start < end && isspace((unsigned char)*start))
+        start++;
+    while (end > start && isspace((unsigned char)end[-1]))
+        end--;
+    return str_fmt("%.*s", (int)(end - start), start);
 }
 
 /* Formats into a right-sized buffer: vsnprintf first reports the length needed. */
@@ -172,6 +182,55 @@ void str_list_free(str_list *list)
     free(list->items);
     list->items = NULL;
     list->count = list->cap = 0;
+}
+
+void text_lines_split(const char *text, size_t len, text_lines *out)
+{
+    size_t start = 0, i;
+
+    memset(out, 0, sizeof(*out));
+    for (i = 0; i <= len; i++) {
+        size_t end;
+
+        if (i < len && text[i] != '\n')
+            continue;
+        end = i;
+        if (i == len && start == len && len > 0)
+            break;                          /* the text ended on a terminator */
+        if (end > start && text[end - 1] == '\r')
+            end--;
+        str_list_push(&out->lines, str_fmt("%.*s", (int)(end - start), text + start));
+        str_list_push(&out->ends, str_dup(i == len ? "" : end < i ? "\r\n" : "\n"));
+        start = i + 1;
+    }
+}
+
+char *text_lines_join(const text_lines *lines, size_t *len_out)
+{
+    byte_buf out = {0};
+    size_t i;
+
+    for (i = 0; i < lines->lines.count; i++) {
+        buf_append(&out, lines->lines.items[i], strlen(lines->lines.items[i]));
+        buf_append(&out, lines->ends.items[i], strlen(lines->ends.items[i]));
+    }
+    return buf_finish(&out, len_out);
+}
+
+void text_lines_set(text_lines *lines, size_t index, char *line)
+{
+    if (index >= lines->lines.count) {
+        free(line);
+        return;
+    }
+    free(lines->lines.items[index]);
+    lines->lines.items[index] = line;
+}
+
+void text_lines_free(text_lines *lines)
+{
+    str_list_free(&lines->lines);
+    str_list_free(&lines->ends);
 }
 
 void buf_append(byte_buf *buf, const void *data, size_t len)

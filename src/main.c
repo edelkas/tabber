@@ -4,7 +4,8 @@
  * Current scope: locating the game's directories, keeping the catalogue of
  * available custom tabs (the digest) up to date, and installing a tab: its
  * level and challenge files, the palettes it bundles, the library patch that
- * redirects the game's queries, the savefile, and the game's own texts.
+ * redirects the game's queries, the savefile, and the game's own texts. It also
+ * binds several players' controls together, which co-op tabs need.
  */
 #include <stdarg.h>
 #include <stdio.h>
@@ -15,6 +16,7 @@
 #include "config.h"
 #include "digest.h"
 #include "install.h"
+#include "keys.h"
 #include "loc.h"
 #include "palettes.h"
 #include "patch.h"
@@ -92,6 +94,8 @@ static void print_usage(FILE *out)
         "  remove CODE      Delete the downloaded files of the custom tab CODE\n"
         "  install CODE     Install the custom tab CODE into the game (fetching it if needed)\n"
         "  uninstall CODE   Restore the game's original files, undoing an install\n"
+        "  bind LIST        Give the players in LIST (e.g. 1,2) the first one's controls\n"
+        "  unbind [LIST]    Restore the controls 'bind' changed, or clear LIST's\n"
         "  check            Verify the game library matches the recorded state\n"
         "  server           Check that the 3rd party server is up\n"
         "\n"
@@ -919,6 +923,216 @@ done:
     return rc;
 }
 
+/* ---- bind / unbind ----------------------------------------------------- */
+
+/* One line per binding, saying what it answers to now. */
+static void print_keys_step(const keys_report *keys)
+{
+    size_t i;
+
+    log_step("bindings", "%s", keys->path);
+    for (i = 0; i < keys->count; i++) {
+        const key_item *item = &keys->items[i];
+
+        if (item->outcome == KEY_ABSENT)
+            fprintf(stderr, TABBER_NAME ": warning: '%s' is not set in the bindings "
+                            "file, so it was left alone\n", item->name);
+        else if (item->outcome == KEY_SAME)
+            log_step("", "%s: %s", item->name, key_outcome_text(item->outcome));
+        else
+            log_step("", "%s: %s -> %s", item->name, item->before, item->after);
+    }
+    log_step("changed", "%u binding(s)", (unsigned)keys->changed);
+}
+
+/* Reads a player list, or explains why it is not one. */
+static int read_players(const char *list, int *players, size_t *count)
+{
+    char err[TB_ERR_LEN];
+
+    if (keys_players_parse(list, players, count, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        return -1;
+    }
+    return 0;
+}
+
+/* "2 and 3", or "2, 3 and 4": the players about to answer to another's keys. */
+static char *players_text(const int *players, size_t from, size_t count)
+{
+    byte_buf text = {0};
+    size_t i;
+
+    for (i = from; i < count; i++) {
+        char one[16];
+
+        if (i > from)
+            buf_append(&text, i + 1 == count ? " and " : ", ", i + 1 == count ? 5 : 2);
+        snprintf(one, sizeof one, "%d", players[i]);
+        buf_append(&text, one, strlen(one));
+    }
+    return buf_finish(&text, NULL);
+}
+
+static int cmd_bind(const options *opts, const char *list)
+{
+    char err[TB_ERR_LEN];
+    npp_paths paths = {0};
+    config *state = NULL;
+    keys_plan plan;
+    keys_report report;
+    int players[KEYS_PLAYER_MAX];
+    size_t count = 0, recorded, i;
+    char *names;
+    int planned = 0, rc = EXIT_FAILED;
+
+    (void)opts;
+
+    if (!list) {
+        fprintf(stderr, TABBER_NAME ": 'bind' needs a list of players, e.g. "
+                        "'%s bind 1,2'\n", TABBER_NAME);
+        return EXIT_USAGE;
+    }
+    if (read_players(list, players, &count) != 0)
+        return EXIT_USAGE;
+    if (count < 2) {
+        fprintf(stderr, TABBER_NAME ": 'bind' needs at least two players: the one whose "
+                        "keys are copied, and one to copy them to\n");
+        return EXIT_USAGE;
+    }
+
+    if (npp_find_personal_dir(&paths, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        return EXIT_NOT_FOUND;
+    }
+    state = config_load(err, sizeof err);
+    if (!state) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        goto done;
+    }
+
+    if (keys_bind_build(&paths, players, count, config_get_keybindings(state),
+                        &plan, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": the controls could not be bound: %s\n", err);
+        goto done;
+    }
+    planned = 1;
+
+    names = players_text(players, 1, count);
+    printf("Binding player%s %s to player %d's controls...\n",
+           count > 2 ? "s" : "", names, players[0]);
+    free(names);
+
+    if (keys_plan_apply(&plan, &report, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": the controls could not be bound: %s\n", err);
+        keys_report_free(&report);
+        goto done;
+    }
+    print_keys_step(&report);
+
+    for (i = 0; i < report.count; i++) {
+        if (report.items[i].outcome == KEY_BOUND &&
+            !strcmp(report.items[i].after, KEYS_UNBOUND)) {
+            fprintf(stderr, TABBER_NAME ": warning: player %d has no key bound to some "
+                            "of its controls, so neither do the players copying it\n",
+                    report.source);
+            break;
+        }
+    }
+    keys_report_free(&report);
+
+    /* The originals, so `unbind` can put them back. Without that record the
+     * change would not be undoable, which is reason enough to take it back. */
+    recorded = json_count(plan.record);
+    config_set_keybindings(state, keys_plan_take_record(&plan));
+    if (config_save(state, err, sizeof err) != 0) {
+        keys_plan_undo(&plan);
+        fprintf(stderr, TABBER_NAME ": the original bindings could not be recorded "
+                        "(%s), so the controls were left as they were\n", err);
+        goto done;
+    }
+    log_step("recorded", "%u original binding(s) in %s", (unsigned)recorded, state->path);
+    printf("Controls bound.\n");
+    rc = EXIT_OK;
+
+done:
+    if (planned)
+        keys_plan_free(&plan);
+    if (state)
+        config_free(state);
+    npp_paths_free(&paths);
+    return rc;
+}
+
+static int cmd_unbind(const options *opts, const char *list)
+{
+    char err[TB_ERR_LEN];
+    npp_paths paths = {0};
+    config *state = NULL;
+    keys_plan plan;
+    keys_report report;
+    int players[KEYS_PLAYER_MAX];
+    size_t count = 0;
+    int planned = 0, rc = EXIT_FAILED;
+
+    (void)opts;
+
+    /* The list is optional: without it, only what is on record is put back. */
+    if (list && read_players(list, players, &count) != 0)
+        return EXIT_USAGE;
+
+    if (npp_find_personal_dir(&paths, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        return EXIT_NOT_FOUND;
+    }
+    state = config_load(err, sizeof err);
+    if (!state) {
+        fprintf(stderr, TABBER_NAME ": %s\n", err);
+        goto done;
+    }
+
+    if (keys_unbind_build(&paths, players, count, config_get_keybindings(state),
+                          &plan, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": the controls could not be restored: %s\n", err);
+        goto done;
+    }
+    planned = 1;
+
+    if (plan.count == 0) {
+        printf("No controls are on record as changed, and no player was named, so "
+               "there is nothing to undo.\n");
+        rc = EXIT_OK;
+        goto done;
+    }
+
+    printf("Restoring the controls tabber changed...\n");
+    if (keys_plan_apply(&plan, &report, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": the controls could not be restored: %s\n", err);
+        keys_report_free(&report);
+        goto done;
+    }
+    print_keys_step(&report);
+    keys_report_free(&report);
+
+    /* Nothing is changed any more, so nothing is on record any more. */
+    config_set_keybindings(state, keys_plan_take_record(&plan));
+    if (config_save(state, err, sizeof err) != 0)
+        fprintf(stderr, TABBER_NAME ": warning: the controls were restored but the "
+                        "record of them was not cleared: %s\n", err);
+    else
+        log_step("recorded", "the record of changed controls is empty again");
+    printf("Controls restored.\n");
+    rc = EXIT_OK;
+
+done:
+    if (planned)
+        keys_plan_free(&plan);
+    if (state)
+        config_free(state);
+    npp_paths_free(&paths);
+    return rc;
+}
+
 /* ---- remove ------------------------------------------------------------ */
 
 static int cmd_remove(const options *opts, const char *code)
@@ -1002,6 +1216,10 @@ static int run_command(const options *opts, const char *command, const char *arg
         return cmd_install(opts, argument);
     if (!strcmp(command, "uninstall"))
         return cmd_uninstall(opts, argument);
+    if (!strcmp(command, "bind"))
+        return cmd_bind(opts, argument);
+    if (!strcmp(command, "unbind"))
+        return cmd_unbind(opts, argument);
     if (!strcmp(command, "check"))
         return cmd_check(opts);
     if (!strcmp(command, "server"))

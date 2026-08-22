@@ -117,6 +117,7 @@ void suite_state(void);     /* config.json and server resolution       */
 void suite_save(void);      /* archiving and swapping the savefile     */
 void suite_palettes(void);  /* bundled palettes: names, limits, removal */
 void suite_loc(void);       /* in-game texts: replacing and restoring   */
+void suite_keys(void);      /* binding players' controls together       */
 void suite_game(void);      /* install, uninstall, library patching    */
 void suite_online(int full);/* live digest, downloads, full sweep      */
 

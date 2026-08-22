@@ -59,16 +59,6 @@ const char *loc_outcome_text(loc_outcome outcome)
 
 /* ---- Which languages to write ------------------------------------------ */
 
-/* A copy of [start, end) without the whitespace at either end. Caller frees. */
-static char *trim_copy(const char *start, const char *end)
-{
-    while (start < end && isspace((unsigned char)*start))
-        start++;
-    while (end > start && isspace((unsigned char)end[-1]))
-        end--;
-    return str_fmt("%.*s", (int)(end - start), start);
-}
-
 int loc_langs_parse(const char *text, loc_langs *out)
 {
     char *trimmed;
@@ -78,7 +68,7 @@ int loc_langs_parse(const char *text, loc_langs *out)
     if (!text)
         return -1;
 
-    trimmed = trim_copy(text, text + strlen(text));
+    trimmed = str_trim_copy(text, text + strlen(text));
     if (str_ieq(trimmed, LOC_LANGS_ALL_WORD) || str_ieq(trimmed, LOC_LANGS_NONE_WORD)) {
         out->kind = str_ieq(trimmed, LOC_LANGS_ALL_WORD) ? LOC_LANGS_ALL : LOC_LANGS_NONE;
         free(trimmed);
@@ -93,7 +83,7 @@ int loc_langs_parse(const char *text, loc_langs *out)
 
         while (*end && *end != LOC_LANGS_SEP)
             end++;
-        name = trim_copy(p, end);
+        name = str_trim_copy(p, end);
         /* Kept as the user spelled it, so a warning echoes what they wrote. */
         if (name[0] && !str_list_contains(&out->names, name))
             str_list_push(&out->names, name);
@@ -116,56 +106,6 @@ void loc_langs_free(loc_langs *langs)
 }
 
 /* ---- The file ---------------------------------------------------------- */
-
-/*
- * loc.txt held line by line, so one field of one line can be rewritten without
- * disturbing a single byte of the rest: the game's own file is nearly a
- * thousand lines of text in eleven languages, and none of it is ours to
- * reformat. Line terminators are kept as they were found, one per line.
- */
-typedef struct {
-    str_list lines;   /* the content of each line, terminator stripped */
-    str_list ends;    /* the terminator it carried, "" on the last one */
-} loc_file;
-
-static void loc_file_free(loc_file *file)
-{
-    str_list_free(&file->lines);
-    str_list_free(&file->ends);
-}
-
-static void loc_file_parse(const char *text, size_t len, loc_file *file)
-{
-    size_t start = 0, i;
-
-    memset(file, 0, sizeof(*file));
-    for (i = 0; i <= len; i++) {
-        size_t end;
-
-        if (i < len && text[i] != '\n')
-            continue;
-        end = i;
-        if (i == len && start == len && len > 0)
-            break;                          /* the file ended on a terminator */
-        if (end > start && text[end - 1] == '\r')
-            end--;
-        str_list_push(&file->lines, str_fmt("%.*s", (int)(end - start), text + start));
-        str_list_push(&file->ends, str_dup(i == len ? "" : end < i ? "\r\n" : "\n"));
-        start = i + 1;
-    }
-}
-
-static char *loc_file_text(const loc_file *file, size_t *len_out)
-{
-    byte_buf out = {0};
-    size_t i;
-
-    for (i = 0; i < file->lines.count; i++) {
-        buf_append(&out, file->lines.items[i], strlen(file->lines.items[i]));
-        buf_append(&out, file->ends.items[i], strlen(file->ends.items[i]));
-    }
-    return buf_finish(&out, len_out);
-}
 
 /* Number of fields a line holds, which is one more than its separators. */
 static size_t field_count(const char *line)
@@ -218,7 +158,7 @@ static char *field_set(const char *line, size_t index, const char *value)
 }
 
 /* Index of the line naming `id`, or -1. Line 0 is the header, never a match. */
-static long find_line(const loc_file *file, const char *id)
+static long find_line(const text_lines *file, const char *id)
 {
     size_t i;
 
@@ -244,7 +184,7 @@ static const char *skip_bom(const char *text)
  * of every line. Fails when the file is not the game's string table, which is
  * worth catching before rewriting nine hundred lines of it.
  */
-static int read_languages(const loc_file *file, const char *path, str_list *out,
+static int read_languages(const text_lines *file, const char *path, str_list *out,
                           char *err, size_t errsz)
 {
     char *first = file->lines.count ? field_get(file->lines.items[0], 0) : NULL;
@@ -321,7 +261,7 @@ struct loc_change {
 };
 
 /* The game's string table. Caller frees. */
-static char *loc_file_path(const npp_paths *paths)
+static char *table_path(const npp_paths *paths)
 {
     char *assets = path_join(paths->install_dir, NPP_ASSETS_SUBDIR);
     char *path = path_join(assets, LOC_FILE_NAME);
@@ -335,7 +275,7 @@ static char *loc_file_path(const npp_paths *paths)
  * overwritten goes into `record` first, when there is one, so the change can be
  * undone without tabber having to know the game's own texts.
  */
-static void set_field(loc_file *file, size_t line, size_t field, const char *language,
+static void set_field(text_lines *file, size_t line, size_t field, const char *language,
                       const char *value, loc_change *item, json_value *record)
 {
     char *current = field_get(file->lines.items[line], field);
@@ -367,20 +307,20 @@ static void set_field(loc_file *file, size_t line, size_t field, const char *lan
 }
 
 /* Serialises the edited file, but only when an edit was actually made. */
-static void finish_plan(loc_plan *plan, const loc_file *file)
+static void finish_plan(loc_plan *plan, const text_lines *file)
 {
     size_t i;
 
     for (i = 0; i < plan->count; i++) {
         if (plan->items[i].changed) {
-            plan->updated = loc_file_text(file, &plan->updated_len);
+            plan->updated = text_lines_join(file, &plan->updated_len);
             return;
         }
     }
 }
 
 /* Reads the file and its header, the first half of either kind of plan. */
-static int open_table(loc_plan *plan, loc_file *file, str_list *have,
+static int open_table(loc_plan *plan, text_lines *file, str_list *have,
                       char *err, size_t errsz)
 {
     plan->original = plat_read_file(plan->path, &plan->original_len);
@@ -388,21 +328,21 @@ static int open_table(loc_plan *plan, loc_file *file, str_list *have,
         err_set(err, errsz, "cannot read the game's text table at '%s'", plan->path);
         return -1;
     }
-    loc_file_parse(plan->original, plan->original_len, file);
+    text_lines_split(plan->original, plan->original_len, file);
     return read_languages(file, plan->path, have, err, errsz);
 }
 
 int loc_plan_build(const npp_paths *paths, const npp_tab *tab, const loc_langs *langs,
                    loc_plan *plan, char *err, size_t errsz)
 {
-    loc_file file;
+    text_lines file;
     str_list have = {0};
     size_t *fields = NULL, count, i, k;
     int rc = -1;
 
     memset(&file, 0, sizeof file);
     memset(plan, 0, sizeof(*plan));
-    plan->path = loc_file_path(paths);
+    plan->path = table_path(paths);
     plan->record = json_new_object();
 
     /* Asked to leave the texts alone, we do not even open the file: a game
@@ -446,7 +386,7 @@ int loc_plan_build(const npp_paths *paths, const npp_tab *tab, const loc_langs *
 done:
     free(fields);
     str_list_free(&have);
-    loc_file_free(&file);
+    text_lines_free(&file);
     if (rc != 0)
         loc_plan_free(plan);
     return rc;
@@ -474,7 +414,7 @@ static void note_language(loc_plan *plan, const char *language)
 }
 
 /* Puts one string back the way the record says it was. */
-static void restore_recorded(loc_plan *plan, loc_file *file, const str_list *have,
+static void restore_recorded(loc_plan *plan, text_lines *file, const str_list *have,
                              const json_value *entry, loc_change *item, size_t line)
 {
     const json_value *member;
@@ -502,7 +442,7 @@ static void restore_recorded(loc_plan *plan, loc_file *file, const str_list *hav
  * record does not cover them and the file really has been changed: a string
  * that already reads as the game shipped it is left exactly as it is.
  */
-static void restore_legacy(loc_plan *plan, loc_file *file, const str_list *have,
+static void restore_legacy(loc_plan *plan, text_lines *file, const str_list *have,
                            const loc_replacement *rep, const json_value *entry,
                            loc_change *item, size_t line)
 {
@@ -537,7 +477,7 @@ static const loc_replacement *replacement_for(const char *id)
 int loc_restore_build(const npp_paths *paths, const json_value *record,
                       loc_plan *plan, char *err, size_t errsz)
 {
-    loc_file file;
+    text_lines file;
     str_list have = {0}, ids = {0};
     const json_value *member;
     size_t i;
@@ -545,7 +485,7 @@ int loc_restore_build(const npp_paths *paths, const json_value *record,
 
     memset(&file, 0, sizeof file);
     memset(plan, 0, sizeof(*plan));
-    plan->path = loc_file_path(paths);
+    plan->path = table_path(paths);
     plan->restoring = 1;
 
     if (open_table(plan, &file, &have, err, errsz) != 0)
@@ -590,36 +530,13 @@ int loc_restore_build(const npp_paths *paths, const json_value *record,
 done:
     str_list_free(&ids);
     str_list_free(&have);
-    loc_file_free(&file);
+    text_lines_free(&file);
     if (rc != 0)
         loc_plan_free(plan);
     return rc;
 }
 
 /* ---- Applying ---------------------------------------------------------- */
-
-/*
- * Stages the new contents beside the file and swaps them in, the same way the
- * state file is written: a table left half-written would cost the game every
- * string past the interruption.
- */
-static int write_table(const char *path, const char *data, size_t len)
-{
-    char *tmp = str_fmt("%s%s", path, LOC_TMP_SUFFIX);
-    int rc = -1;
-
-    if (plat_write_file(tmp, data, len) != 0)
-        goto done;
-    if (plat_replace_file(tmp, path) != 0) {
-        plat_remove_file(tmp);
-        goto done;
-    }
-    rc = 0;
-
-done:
-    free(tmp);
-    return rc;
-}
 
 static void fill_report(const loc_plan *plan, loc_report *report)
 {
@@ -650,7 +567,7 @@ static void fill_report(const loc_plan *plan, loc_report *report)
 
 int loc_plan_apply(loc_plan *plan, loc_report *report, char *err, size_t errsz)
 {
-    if (plan->updated && write_table(plan->path, plan->updated, plan->updated_len) != 0) {
+    if (plan->updated && plat_write_file_atomic(plan->path, plan->updated, plan->updated_len) != 0) {
         err_set(err, errsz, "cannot write the game's text table at '%s'", plan->path);
         fill_report(plan, report);
         return -1;
@@ -665,7 +582,7 @@ void loc_plan_undo(loc_plan *plan)
 {
     if (!plan->applied)
         return;
-    write_table(plan->path, plan->original, plan->original_len);
+    plat_write_file_atomic(plan->path, plan->original, plan->original_len);
     plan->applied = 0;
 }
 

@@ -23,6 +23,9 @@ char *str_dup(const char *s);
 /* Returns a copy of `s` with ASCII letters lowercased. Caller frees. */
 char *str_dup_lower(const char *s);
 
+/* A copy of [start, end) without the whitespace at either end. Caller frees. */
+char *str_trim_copy(const char *start, const char *end);
+
 /* printf-style formatting into a freshly allocated string. Caller frees. */
 char *str_fmt(const char *fmt, ...);
 
@@ -68,6 +71,28 @@ void str_list_sort(str_list *list);
 int str_list_contains(const str_list *list, const char *s);
 
 void str_list_free(str_list *list);
+
+/* ---- Text as lines ------------------------------------------------------ */
+
+/*
+ * A text file split into lines, each keeping the terminator it carried, so one
+ * line can be rewritten and every other byte handed back exactly as it was.
+ * The game's own files are ours to edit, not to reformat.
+ */
+typedef struct {
+    str_list lines;   /* the content of each line, terminator stripped */
+    str_list ends;    /* "\n", "\r\n", or "" on a file ending mid-line */
+} text_lines;
+
+void text_lines_split(const char *text, size_t len, text_lines *out);
+
+/* Joins them back together. `len_out` (optional) receives the byte count. */
+char *text_lines_join(const text_lines *lines, size_t *len_out);
+
+/* Replaces line `index`, taking ownership of `line`. */
+void text_lines_set(text_lines *lines, size_t index, char *line);
+
+void text_lines_free(text_lines *lines);
 
 /* ---- Growable byte buffer ---------------------------------------------- */
 

@@ -247,6 +247,18 @@ const json_value *config_get_strings(config *cfg)
     return record && record->type == JSON_OBJECT ? record : NULL;
 }
 
+void config_set_keybindings(config *cfg, json_value *record)
+{
+    json_object_set(cfg->root, CJK_KEYBINDINGS, record ? record : json_new_object());
+}
+
+const json_value *config_get_keybindings(config *cfg)
+{
+    const json_value *record = json_get(cfg->root, CJK_KEYBINDINGS);
+
+    return record && record->type == JSON_OBJECT ? record : NULL;
+}
+
 int config_get_palettes(config *cfg, const char *code, str_list *out)
 {
     const json_value *array = json_get(config_find_tab(cfg, code), CJK_PALETTES);

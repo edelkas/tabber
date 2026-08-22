@@ -37,6 +37,15 @@
  * always describes the replacements that are live right now: uninstalling puts
  * the originals back and empties it. Keeping them here rather than in the
  * source is what lets tabber undo a change without knowing the game's own text.
+ *
+ * "keybindings", also at the root, does the same for the controls the `bind`
+ * command changes, one member per setting it overwrote:
+ *
+ *   "keybindings": { "input_p2_jump_key": "KEYBIND(\"V\")" }
+ *
+ * `unbind` puts those back and empties it, so it too always describes what is
+ * live. A value of "-1" is a binding that had no key to begin with, which is
+ * worth recording like any other.
  */
 #ifndef TABBER_CONFIG_H
 #define TABBER_CONFIG_H
@@ -63,6 +72,7 @@
 #define CJK_REMOVE_DATE      "remove_date"
 #define CJK_PALETTES         "palettes"   /* folders an install created    */
 #define CJK_STRINGS          "strings"    /* in-game texts replaced, at the root */
+#define CJK_KEYBINDINGS      "keybindings"/* controls changed, likewise          */
 
 typedef struct {
     json_value *root;   /* whole document, "tabs" included */
@@ -143,5 +153,12 @@ void config_set_strings(config *cfg, json_value *record);
 
 /* That record, or NULL when the state file has none. Owned by the config. */
 const json_value *config_get_strings(config *cfg);
+
+/*
+ * The same for the key bindings the `bind` command overwrote. NULL empties the
+ * record, which is what `unbind` does once the originals are back.
+ */
+void config_set_keybindings(config *cfg, json_value *record);
+const json_value *config_get_keybindings(config *cfg);
 
 #endif /* TABBER_CONFIG_H */

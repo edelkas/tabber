@@ -692,6 +692,24 @@ int plat_write_file(const char *path, const void *data, size_t len)
     return 0;
 }
 
+int plat_write_file_atomic(const char *path, const void *data, size_t len)
+{
+    char *tmp = str_fmt("%s%s", path, PLAT_TMP_SUFFIX);
+    int rc = -1;
+
+    if (plat_write_file(tmp, data, len) != 0)
+        goto done;
+    if (plat_replace_file(tmp, path) != 0) {
+        plat_remove_file(tmp);
+        goto done;
+    }
+    rc = 0;
+
+done:
+    free(tmp);
+    return rc;
+}
+
 int plat_mkdir_p(const char *path)
 {
     char *work;

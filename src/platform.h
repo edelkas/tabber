@@ -83,6 +83,16 @@ char *plat_read_file(const char *path, size_t *len_out);
 /* Writes `len` bytes to `path`, truncating it. Returns 0 on success. */
 int plat_write_file(const char *path, const void *data, size_t len);
 
+/* Staging name for the write below. */
+#define PLAT_TMP_SUFFIX ".tabber-tmp"
+
+/*
+ * The same, but staged beside the file and swapped in, so an interrupted write
+ * cannot leave a truncated one behind. For the game's own files, where losing
+ * the tail of what was there costs more than the write is worth.
+ */
+int plat_write_file_atomic(const char *path, const void *data, size_t len);
+
 /*
  * Overwrites `len` bytes at `offset` inside an existing file, leaving the rest
  * of it alone. Returns 0 on success.

@@ -28,6 +28,8 @@ tabber [options] [command]
   remove CODE      Delete the downloaded files of the custom tab CODE
   install CODE     Install the custom tab CODE into the game (fetching it if needed)
   uninstall CODE   Restore the game's original files, undoing an install
+  bind LIST        Give the players in LIST (e.g. 1,2) the first one's controls
+  unbind [LIST]    Restore the controls 'bind' changed, or clear LIST's
   check            Verify the game library matches the recorded state
   server           Check that the 3rd party server is up
 
@@ -69,7 +71,7 @@ exercises the real code rather than a copy of it. It runs in three tiers:
 
 | Tier | Needs | Covers |
 | --- | --- | --- |
-| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, Steam Cloud, palettes, in-game texts, install/uninstall/patching against a stand-in game |
+| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, Steam Cloud, palettes, in-game texts, player controls, install/uninstall/patching against a stand-in game |
 | `--online` | the network | downloading the live digest, fetching a tab and verifying it |
 | `--full` | the network | downloading and verifying **every** published tab |
 
@@ -100,6 +102,10 @@ Some things are worth knowing about how the tests check what they check:
   byte for byte against what it should read, and a table that has been written
   to and then restored has to be the file it started as, down to its line
   endings.
+- **The controls** are checked the same way, on a stand-in `keys.vars` written
+  out in full: a bind that gets the three settings right but disturbs a comment,
+  a blank line or somebody else's key fails, and a bind followed by an unbind
+  has to give back the identical file.
 - **The server** the offline tier probes is `127.0.0.1:9`, a port nothing
   listens on, so the health check is exercised for real — a refused connection
   — without leaving the machine. The live server is only asked in `--online`.
@@ -122,6 +128,7 @@ cover.
 | `src/patch.c/.h` | Redirecting the game's server queries, and the library health check |
 | `src/palettes.c/.h` | The palettes a tab bundles: names, the game's limit, copying them in and out |
 | `src/loc.c/.h`   | The game's own texts (`loc.txt`): replacing them per language, and putting them back |
+| `src/keys.c/.h`  | The player controls (`keys.vars`): binding several players to one set of keys |
 | `src/save.c/.h`  | Archiving and swapping the savefile |
 | `src/cloud.c/.h` | The savefile's copies in Steam Cloud, per Steam account |
 | `src/gzip.c/.h`  | Reading and writing gzip streams (RFC 1952), for gzipped savefiles |
@@ -604,6 +611,75 @@ beside the file and swapped in, so an interruption cannot leave the game short
 of nine hundred strings, and an install that fails at a later step puts the
 original bytes straight back.
 
+## The controls
+
+Some custom tabs — Duality most of all — ship co-op maps built for
+one player driving both ninjas at once. That needs two players bound to the same
+keys, and the game will not do it: bind a key that is already taken in its
+options screen and it is unbound from whoever had it. Written straight into the
+file it works perfectly well, and the file is
+
+```
+<personal dir>/keys.vars
+```
+
+next to the savefile. It is a list of `name = value;` settings, one per line,
+with `//` comments and blank lines between the blocks, and a value is either
+`KEYBIND("<key>")` or `-1`, which means the action has no key at all. tabber
+treats those values as opaque: they are copied and compared as they stand, never
+interpreted.
+
+```
+tabber bind 1,2      player 2 gets player 1's controls
+tabber bind 1,2,3    ...and so does player 3
+tabber unbind        put back whatever bind changed
+tabber unbind 2,3    clear those players' controls instead
+```
+
+The first player in the list is the one whose keys are copied; the rest are
+copied to, and are the only ones changed. Whitespace is stripped, a player named
+twice counts once, and only numbers from 1 to 4 are players.
+
+Only three settings per player are touched — `left`, `right` and `jump`. Those
+are what drives a ninja; the other nine work the menus, and sharing those
+between players would do nothing but take options away.
+
+### Putting them back
+
+Every value `bind` overwrites is recorded in `config.json` under `keybindings`
+before it is written, so `unbind` puts back exactly what was there:
+
+```json
+{
+  "keybindings": {
+    "input_p2_left_key": "-1",
+    "input_p3_jump_key": "KEYBIND(\"F3\")"
+  }
+}
+```
+
+A binding that already read what `bind` was about to write is not recorded — its
+value is the new one, not an original — and neither is one an earlier `bind`
+already recorded: that first record is what the player really had, while what is
+in the file now is only what tabber left there. `-1` is recorded like any other
+value, since an action with no key is a state worth restoring to.
+
+`unbind` empties the record afterwards, so `keybindings` always describes the
+changes that are live right now. With a full record it restores the file to
+precisely what it was, whether or not a player list was given.
+
+The list is the fallback for controls tabber did not bind — an older installer's
+work, for instance, which recorded nothing. Naming a player whose bindings are
+not in the record clears their three settings to `-1`: the original is
+unknowable, and `-1` at least undoes the sharing instead of leaving two players
+on one key. One recorded binding is enough to spare a player from that, since it
+can only be there because tabber put it there; the two that are not recorded
+were never changed, and are left alone.
+
+The file is rewritten in one pass from a copy held in memory, staged beside
+itself and swapped in. Only the values move: the spacing, the comments, the
+blank lines and the line endings all come back exactly as they were.
+
 ## Uninstalling
 
 `tabber uninstall CODE` puts the game back: it deletes the tab's files and
@@ -668,7 +744,8 @@ touched:
       "palettes": []
     }
   ],
-  "strings": {}
+  "strings": {},
+  "keybindings": {}
 }
 ```
 
@@ -685,6 +762,10 @@ install replaced, one entry per `LOC_ID` and one member per language, each
 carrying the text that was there before. Only one tab can be installed at a
 time, so one record is enough; uninstalling puts the originals back and leaves
 it empty.
+
+`keybindings` does the same for the player controls the `bind` command changes,
+one member per setting it overwrote (see [the controls](#the-controls)), and
+`unbind` empties it the same way.
 
 The file is edited in place rather than regenerated: keys this version does not
 know about, and fields it does not own, survive a rewrite. If it is missing it
@@ -705,5 +786,6 @@ alone rather than overwriting whatever is in there.
 - [x] Handle Steam Cloud's copy of the savefile
 - [x] Install custom palettes
 - [x] Replace in-game texts
-- [ ] Optional extras (controls, …)
+- [x] Bind several players' controls together (`bind` / `unbind`)
+- [ ] Optional extras
 - [ ] DearImGui front-end

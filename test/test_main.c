@@ -428,6 +428,7 @@ int main(int argc, char **argv)
     suite_save();
     suite_palettes();
     suite_loc();
+    suite_keys();
     suite_game();
     if (online)
         suite_online(full);
