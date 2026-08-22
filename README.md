@@ -44,6 +44,9 @@ tabber [options] [command]
                    skip (default), replace it, or suffix it with a number
       --keep-palettes
                    Leave the tab's palettes in the game when uninstalling
+      --languages LIST
+                   Which languages of the in-game texts a tab replaces:
+                   all (default), none, or a comma-separated list
   -h, --help       Show help
   -V, --version    Show version
 ```
@@ -66,7 +69,7 @@ exercises the real code rather than a copy of it. It runs in three tiers:
 
 | Tier | Needs | Covers |
 | --- | --- | --- |
-| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, Steam Cloud, palettes, install/uninstall/patching against a stand-in game |
+| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, Steam Cloud, palettes, in-game texts, install/uninstall/patching against a stand-in game |
 | `--online` | the network | downloading the live digest, fetching a tab and verifying it |
 | `--full` | the network | downloading and verifying **every** published tab |
 
@@ -93,6 +96,10 @@ Some things are worth knowing about how the tests check what they check:
 - **Palettes** are checked from both sides: that the tab's go in, and that a
   palette of the user's own is never quietly lost — not to a collision, not to
   a rolled-back install, and not to the uninstall that follows one.
+- **In-game texts** are judged on the whole file: the string table is compared
+  byte for byte against what it should read, and a table that has been written
+  to and then restored has to be the file it started as, down to its line
+  endings.
 - **The server** the offline tier probes is `127.0.0.1:9`, a port nothing
   listens on, so the health check is exercised for real — a refused connection
   — without leaving the machine. The live server is only asked in `--online`.
@@ -114,6 +121,7 @@ cover.
 | `src/install.c/.h` | Installing a custom tab into the game |
 | `src/patch.c/.h` | Redirecting the game's server queries, and the library health check |
 | `src/palettes.c/.h` | The palettes a tab bundles: names, the game's limit, copying them in and out |
+| `src/loc.c/.h`   | The game's own texts (`loc.txt`): replacing them per language, and putting them back |
 | `src/save.c/.h`  | Archiving and swapping the savefile |
 | `src/cloud.c/.h` | The savefile's copies in Steam Cloud, per Steam account |
 | `src/gzip.c/.h`  | Reading and writing gzip streams (RFC 1952), for gzipped savefiles |
@@ -224,7 +232,8 @@ first: letters and digits only, so `..`, `a/b` and friends are refused outright.
 `tabber install CODE` fetches the tab first if it is not in the store, then
 replaces the game's level and challenge files with the tab's own, in
 `<installation dir>/NPP/<config.levels_dir>/`, copies in the palettes it
-bundles, patches the library and swaps the savefile. Each original is kept next to it
+bundles, replaces a handful of the game's own texts, patches the library and
+swaps the savefile. Each original is kept next to it
 with `OG` appended to the whole file name (`SI.txt` -> `SI.txtOG`), a name the
 game does not parse, so uninstalling means deleting the tab's files and renaming
 the originals back.
@@ -251,6 +260,7 @@ read into memory before any of it is written:
 | The game folder accepts writes | permissions, or the game is running |
 | The library still carries the official URI, once | it looks patched already |
 | The new URI fits in the original's length | the server address is too long |
+| The game's text table is readable | `loc.txt` is missing, or is not the game's |
 
 That last one matters: without it, installing over an existing backup would
 overwrite a pristine original with a modded file. If a rename or write still
@@ -511,6 +521,89 @@ palettes back out with everything else. Under `replace` the palette being
 overwritten is renamed aside first and only deleted once the install is past the
 point of undo, so a rollback puts the original back rather than leaving a hole.
 
+## The in-game texts
+
+A custom tab is not the official game, and a couple of the strings the game
+shows stop being true once one is installed: the friend highscore panel is the
+tab's speedrun boards, and the title screen still says "Press Any Key" where it
+could name the tab. tabber rewrites those in
+`<installation dir>/NPP/loc.txt`, the table holding every string the game
+shows.
+
+That file is one string per line, one language per field, fields separated by
+vertical bars. The first field of a line is the `LOC_ID` naming the string, and
+the first line is the header, whose fields name the languages in the order
+every other line lists them:
+
+```
+LOC_ID|english|french|italian|german|spanish|...
+HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_SHORT|Friends|Amis|Amici|Freunde|Amigos|...
+```
+
+Three strings are replaced today:
+
+| `LOC_ID` | Becomes |
+| --- | --- |
+| `HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_LONG` | `Speedrun Boards` |
+| `HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_SHORT` | `Speedrun` |
+| `PLAYER_PRESS_ANY` | the tab's name, capitalised |
+
+Adding a fourth is a row in `loc_replacements` in `src/loc.c` and nothing else:
+recording the originals, restoring them and reporting what happened all work off
+that table rather than off the entries in it. A `LOC_ID` the game's table does
+not carry is reported and skipped, so a row that a later version of the game
+drops costs nothing.
+
+### Which languages
+
+`--languages` takes `all` (the default), `none`, or a comma-separated list such
+as `--languages spanish,english`. Names are trimmed and matched
+case-insensitively, and one the table does not carry is a warning rather than a
+refusal: the languages it does carry are still written. With `none` the file is
+not even opened, so a game whose table has gone missing can still take a tab.
+
+The replacements are English whichever column they go into. Custom texts in
+eleven languages would be a lot of work for three labels, and an English label
+in a Spanish menu at least says what the panel really shows, which the original
+no longer does — which is why the default is every language rather than English
+alone.
+
+### Putting them back
+
+Nothing about the game's own texts is hardcoded, with the one exception below.
+What a replacement overwrites is copied into `config.json` under `strings`
+before it is written:
+
+```json
+{
+  "strings": {
+    "HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_SHORT": {
+      "english": "Friends",
+      "spanish": "Amigos"
+    }
+  }
+}
+```
+
+Uninstalling puts each of those back and empties the record, so `strings` always
+describes the replacements that are live right now. A column that already read
+what tabber was about to write is not recorded: its contents are the
+replacement, not an original, and recording them would make the uninstall
+restore the change instead of undoing it.
+
+The exception is the installer that came before tabber. It replaced the same
+three strings in English and recorded nothing anywhere, so undoing its work
+needs the originals — `Friends Highscores`, `Friends` and `Press Any Key` — and
+those three are carried in the source. An uninstall restores them whenever the
+record does not cover English and the file does not already read as the game
+shipped it, which is what lets tabber take over from an installation it did not
+make itself.
+
+The whole table is rewritten in one pass from a copy held in memory, staged
+beside the file and swapped in, so an interruption cannot leave the game short
+of nine hundred strings, and an install that fails at a later step puts the
+original bytes straight back.
+
 ## Uninstalling
 
 `tabber uninstall CODE` puts the game back: it deletes the tab's files and
@@ -531,6 +624,12 @@ Both checks run before anything moves, and either aborts the whole thing:
 
 The library is restored first and the level files second, undoing the install in
 reverse, and a failure in the second step re-applies the patch.
+
+The game's texts are put back next, from the record in `config.json` plus the
+three English originals tabber carries for installs it did not make (see [the
+in-game texts](#the-in-game-texts)). Like the palettes below it, a table that
+will not rewrite is a warning rather than a reason to undo the uninstall, and
+the record is only emptied once the originals really are back.
 
 The tab's palettes are removed last, unless `--keep-palettes` says to leave
 them. Which ones those are comes from `config.json`, where the install recorded
@@ -568,7 +667,8 @@ touched:
       "remove_date": null,
       "palettes": []
     }
-  ]
+  ],
+  "strings": {}
 }
 ```
 
@@ -579,6 +679,12 @@ needed and sets `downloaded` and `download_date`; installing stamps
 palettes folder, which is what a later uninstall goes by. An empty list means
 the install put none in, and is not the same as the key being absent, which
 means the install predates the record.
+
+`strings`, beside `tabs` rather than inside it, holds the in-game texts an
+install replaced, one entry per `LOC_ID` and one member per language, each
+carrying the text that was there before. Only one tab can be installed at a
+time, so one record is enough; uninstalling puts the originals back and leaves
+it empty.
 
 The file is edited in place rather than regenerated: keys this version does not
 know about, and fields it does not own, survive a rewrite. If it is missing it
@@ -598,6 +704,6 @@ alone rather than overwriting whatever is in there.
 - [x] Back up and swap the savefile
 - [x] Handle Steam Cloud's copy of the savefile
 - [x] Install custom palettes
-- [ ] Replace in-game texts
+- [x] Replace in-game texts
 - [ ] Optional extras (controls, …)
 - [ ] DearImGui front-end

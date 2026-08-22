@@ -14,6 +14,7 @@ Run it with `build.bat test` (Windows) or `make test` (Linux, macOS). Add
 | `test_state.c` | `config.json` round trips and lifecycle, server resolution, URI budget, the server health check |
 | `test_save.c` | Archiving and swapping the savefile in both its forms, and its copies in Steam Cloud |
 | `test_palettes.c` | The baked palette names, collisions, the game's 256 limit, and copying palettes in and out |
+| `test_loc.c` | The game's own texts: which languages are written, the state record, restoring, and the ones the old installer left behind |
 | `test_game.c` | Install, uninstall, library patching, and both health checks |
 | `test_online.c` | The live server, the live digest, fetching a tab, the full catalogue sweep |
 | `fixture_zip.c` | A 462-byte ZIP embedded as bytes |
@@ -36,6 +37,9 @@ Two rules keep the suite trustworthy:
   supposed to be refused, check afterwards that the files, the backups and the
   library are all still as they were. The savefile tests take this furthest:
   every refusal is followed by a byte-for-byte check that the save survived.
+- **Prefer the whole file to a field of it.** The text tests compare the entire
+  string table against what it should read, so a rewrite that gets the right
+  answer by disturbing something else still fails.
 
 To confirm the suite still bites, break something on purpose and watch it fail
 before fixing it back.

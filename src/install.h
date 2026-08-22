@@ -14,7 +14,8 @@
  * back, so an aborted install leaves the game folder as it was.
  *
  * The palettes a tab bundles are copied in too (see palettes.h), and taken out
- * again when it is uninstalled.
+ * again when it is uninstalled, and a handful of the game's own texts are
+ * replaced (see loc.h) and put back.
  *
  * The savefile is swapped too (see save.h): the one in place is archived and
  * the tab's own — or the fresh one tabber ships — is put in its stead, and the
@@ -32,6 +33,7 @@
 #include "cloud.h"
 #include "config.h"
 #include "digest.h"
+#include "loc.h"
 #include "palettes.h"
 #include "paths.h"
 #include "save.h"
@@ -53,6 +55,7 @@ typedef struct {
     cloud_mode cloud;             /* what to do with the Steam Cloud copies   */
     palette_collision palettes;   /* what to do when a palette name is taken  */
     int keep_palettes;            /* leave the tab's palettes behind on undo  */
+    const loc_langs *languages;   /* in-game texts: NULL is every language    */
 } install_options;
 
 /* The defaults, for callers that have no opinion. */
@@ -67,6 +70,7 @@ typedef struct {
     char server_source[32];     /* where that address came from            */
     server_health health;       /* whether that server answered            */
     palette_report palettes;    /* what happened to the bundled palettes   */
+    loc_report strings;         /* ...and to the game's own texts          */
     save_report save;           /* what happened to the savefile           */
     cloud_report cloud;         /* ...and to its copies in the cloud        */
     char state_path[512];       /* state file updated, empty if none       */
@@ -100,6 +104,7 @@ typedef struct {
     str_list leftovers;         /* other backups still in the game folder  */
     char server_uri[128];       /* the URI the library points at again     */
     palette_report palettes;    /* what happened to the bundled palettes   */
+    loc_report strings;         /* ...and to the game's own texts          */
     save_report save;           /* what happened to the savefile           */
     cloud_report cloud;         /* ...and to its copies in the cloud        */
     char state_path[512];       /* state file updated, empty if none       */

@@ -6,6 +6,7 @@
 #include "config.h"
 #include "install.h"
 #include "json.h"
+#include "loc.h"
 #include "palettes.h"
 #include "patch.h"
 #include "platform.h"
@@ -31,7 +32,15 @@ void install_options_init(install_options *opts)
     opts->cloud = CLOUD_REPLACE;     /* keep Steam's copy in step with it    */
     opts->palettes = PALETTE_SKIP;   /* never overwrite a palette of theirs  */
     opts->keep_palettes = 0;         /* an uninstall takes them out again    */
+    opts->languages = NULL;          /* the texts change in every language   */
 }
+
+/*
+ * What opts->languages being NULL stands for. Every language, because the
+ * replacements say what the panel actually shows and the original no longer
+ * does, whichever language the player reads it in.
+ */
+static const loc_langs loc_langs_every = { LOC_LANGS_ALL, { NULL, 0, 0 } };
 
 /* The options a caller that passed none would have meant. */
 static install_options options_or_default(const install_options *opts)
@@ -181,7 +190,9 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     server_source source;
     save_plan save = {0};
     palette_plan palettes = {0};
-    int lib_loaded = 0, save_planned = 0, palettes_planned = 0, rc = -1;
+    loc_plan strings = {0};
+    int lib_loaded = 0, save_planned = 0, palettes_planned = 0, strings_planned = 0;
+    int rc = -1;
 
     memset(report, 0, sizeof(*report));
 
@@ -335,6 +346,12 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     palettes_planned = 1;
 
+    /* --- And the game's own texts, with the originals kept to put back --- */
+    if (loc_plan_build(paths, tab, opts.languages ? opts.languages : &loc_langs_every,
+                       &strings, err, errsz) != 0)
+        goto done;
+    strings_planned = 1;
+
     /* Read everything up front, so the writing phase is as short as possible. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].source, &files[i].len);
@@ -368,8 +385,16 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     }
 
+    /* --- The game's own texts, rewritten in one pass over loc.txt --- */
+    if (loc_plan_apply(&strings, &report->strings, err, errsz) != 0) {
+        palettes_plan_undo(&palettes);
+        rollback(files, done);
+        goto done;
+    }
+
     /* --- Redirect the game's queries, last and quickest --- */
     if (lib_write_uri(&img, patch_uri, err, errsz) != 0) {
+        loc_plan_undo(&strings);
         palettes_plan_undo(&palettes);
         rollback(files, done);        /* the level files go back as they were */
         goto done;
@@ -378,6 +403,7 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     /* --- And the savefile: the vanilla one filed away, the tab's put in --- */
     if (save_plan_apply(&save, &report->save, err, errsz) != 0) {
         lib_write_uri(&img, LIB_OFFICIAL_URI, cfg_err, sizeof cfg_err);
+        loc_plan_undo(&strings);
         palettes_plan_undo(&palettes);
         rollback(files, done);
         goto done;
@@ -411,6 +437,9 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         config_set_palettes(state, tab->id, tab->code, &made);
         str_list_free(&made);
     }
+    /* The texts we overwrote, so an uninstall can put them back without
+     * tabber having to carry a copy of the game's own strings. */
+    config_set_strings(state, loc_plan_take_record(&strings));
     if (config_save(state, cfg_err, sizeof cfg_err) != 0)
         err_set(report->warning, sizeof report->warning,
                 "the install was not recorded: %s", cfg_err);
@@ -425,6 +454,8 @@ done:
         save_plan_free(&save);
     if (palettes_planned)
         palettes_plan_free(&palettes);
+    if (strings_planned)
+        loc_plan_free(&strings);
     if (state)
         config_free(state);
     install_files_free(files, count);
@@ -444,6 +475,7 @@ void install_report_free(install_report *report)
 {
     cloud_report_free(&report->cloud);
     palette_report_free(&report->palettes);
+    loc_report_free(&report->strings);
     free(report->game_levels_dir);
     free(report->tab_levels_dir);
     str_list_free(&report->skipped);
@@ -528,8 +560,10 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     lib_image img;
     lib_health health;
     save_plan save = {0};
+    loc_plan strings = {0};
     str_list palettes = {0};
-    int lib_loaded = 0, save_planned = 0, rc = -1;
+    int lib_loaded = 0, save_planned = 0, strings_planned = 0, strings_done = 0;
+    int rc = -1;
 
     memset(report, 0, sizeof(*report));
     patched_uri[0] = '\0';
@@ -651,6 +685,20 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     save_planned = 1;
 
+    /*
+     * --- And the texts to put back. What they were is read from the state
+     * file, so nothing about the game's own strings is hardcoded; a record
+     * that is not there still leaves the three English ones the old installer
+     * overwrote, which are. Failing to work that out is not a reason to refuse
+     * to uninstall, so it is reported and the rest goes ahead.
+     */
+    if (loc_restore_build(paths, config_get_strings(state), &strings,
+                          cfg_err, sizeof cfg_err) != 0)
+        err_set(report->warning, sizeof report->warning,
+                "the game's texts were left as they are: %s", cfg_err);
+    else
+        strings_planned = 1;
+
     /* Keep the tab's copies in memory, so a failure part-way can be undone. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].target, &files[i].len);
@@ -694,9 +742,17 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     }
 
     /*
-     * The palettes, last: the game is already back as it was, so a palette
-     * that will not delete is a warning and not a reason to undo any of it.
+     * The texts and then the palettes, last: the game is already back as it
+     * was, so neither is a reason to undo any of it if it will not go through.
      */
+    if (strings_planned) {
+        if (loc_plan_apply(&strings, &report->strings, cfg_err, sizeof cfg_err) != 0)
+            err_set(report->warning, sizeof report->warning,
+                    "the game's texts were left as they are: %s", cfg_err);
+        else
+            strings_done = 1;
+    }
+
     if (palettes_remove(dig, paths, &palettes, opts.keep_palettes, &report->palettes,
                         cfg_err, sizeof cfg_err) != 0)
         err_set(report->warning, sizeof report->warning,
@@ -710,6 +766,8 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
 
     /* --- Record it. install_date is left alone: it is still true. --- */
     config_set_uninstalled(state, tab->id, tab->code);
+    if (strings_done)
+        config_set_strings(state, NULL);    /* the originals are back in place */
     if (!opts.keep_palettes && report->palettes.failed == 0)
         config_set_palettes(state, tab->id, tab->code, NULL);   /* they are gone */
     config_set_state_library(state, 1);      /* the library is official again */
@@ -725,6 +783,8 @@ done:
         lib_close(&img);
     if (save_planned)
         save_plan_free(&save);
+    if (strings_planned)
+        loc_plan_free(&strings);
     if (state)
         config_free(state);
     install_files_free(files, count);
@@ -741,6 +801,7 @@ void uninstall_report_free(uninstall_report *report)
 {
     cloud_report_free(&report->cloud);
     palette_report_free(&report->palettes);
+    loc_report_free(&report->strings);
     free(report->game_levels_dir);
     str_list_free(&report->skipped);
     str_list_free(&report->leftovers);

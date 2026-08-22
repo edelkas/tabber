@@ -235,6 +235,18 @@ void config_set_palettes(config *cfg, int id, const char *code, const str_list *
     json_object_set(entry, CJK_PALETTES, array);
 }
 
+void config_set_strings(config *cfg, json_value *record)
+{
+    json_object_set(cfg->root, CJK_STRINGS, record ? record : json_new_object());
+}
+
+const json_value *config_get_strings(config *cfg)
+{
+    const json_value *record = json_get(cfg->root, CJK_STRINGS);
+
+    return record && record->type == JSON_OBJECT ? record : NULL;
+}
+
 int config_get_palettes(config *cfg, const char *code, str_list *out)
 {
     const json_value *array = json_get(config_find_tab(cfg, code), CJK_PALETTES);

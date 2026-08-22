@@ -106,6 +106,9 @@ char *test_fake_game(const char *dir);
 /* The digest used by the offline suites: two tabs, one of them installable. */
 extern const char *TEST_DIGEST_JSON;
 
+/* The string table that fake game carries, as it reads before any install. */
+extern const char *TEST_LOC_TABLE;
+
 /* ---- Suites ------------------------------------------------------------ */
 
 void suite_core(void);      /* strings, buffers, paths, json, kv, md5 */
@@ -113,6 +116,7 @@ void suite_archive(void);   /* inflate, zip, integrity, unsafe paths   */
 void suite_state(void);     /* config.json and server resolution       */
 void suite_save(void);      /* archiving and swapping the savefile     */
 void suite_palettes(void);  /* bundled palettes: names, limits, removal */
+void suite_loc(void);       /* in-game texts: replacing and restoring   */
 void suite_game(void);      /* install, uninstall, library patching    */
 void suite_online(int full);/* live digest, downloads, full sweep      */
 

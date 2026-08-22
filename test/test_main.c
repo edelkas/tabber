@@ -8,6 +8,7 @@
 
 #include "digest.h"
 #include "gzip.h"
+#include "loc.h"
 #include "patch.h"
 #include "paths.h"
 #include "platform.h"
@@ -296,6 +297,17 @@ char *test_fake_game(const char *dir)
     }
     free(levels);
 
+    /* The game's string table, two languages wide, holding the strings a tab
+     * replaces among a couple it leaves alone. */
+    {
+        char *assets = path_join(install, NPP_ASSETS_SUBDIR);
+        char *loc = path_join(assets, LOC_FILE_NAME);
+
+        test_write(loc, TEST_LOC_TABLE);
+        free(loc);
+        free(assets);
+    }
+
     /*
      * A stand-in library: filler, the official URI exactly once followed by a
      * NUL, then more filler. The filler is a single repeated character so it
@@ -321,6 +333,18 @@ char *test_fake_game(const char *dir)
     test_setenv(TABBER_ENV_GAME_DIR, install);
     return install;
 }
+
+/*
+ * The game's string table as the fake installation carries it: the header, the
+ * three strings a custom tab replaces, and two it does not.
+ */
+const char *TEST_LOC_TABLE =
+    "LOC_ID|english|spanish\n"
+    "EPISODE|Episode|Episodio\n"
+    "HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_LONG|Friends Highscores|Records de amigos\n"
+    "HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_SHORT|Friends|Amigos\n"
+    "PLAYER_PRESS_ANY|Press Any Key|Pulsa una tecla\n"
+    "LEVEL|Level|Nivel\n";
 
 /*
  * A digest with the same shape as the published one: the global config lists,
@@ -403,6 +427,7 @@ int main(int argc, char **argv)
     suite_state();
     suite_save();
     suite_palettes();
+    suite_loc();
     suite_game();
     if (online)
         suite_online(full);

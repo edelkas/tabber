@@ -4,8 +4,7 @@
  * Current scope: locating the game's directories, keeping the catalogue of
  * available custom tabs (the digest) up to date, and installing a tab: its
  * level and challenge files, the palettes it bundles, the library patch that
- * redirects the game's queries, and the savefile. In-game texts are still to
- * come.
+ * redirects the game's queries, the savefile, and the game's own texts.
  */
 #include <stdarg.h>
 #include <stdio.h>
@@ -16,6 +15,7 @@
 #include "config.h"
 #include "digest.h"
 #include "install.h"
+#include "loc.h"
 #include "palettes.h"
 #include "patch.h"
 #include "paths.h"
@@ -45,6 +45,9 @@
 /* Width of the step labels in the `fetch` log. */
 #define FETCH_LABEL_WIDTH 9
 
+/* Languages a log line names one by one before giving their count instead. */
+#define LOG_MAX_LANGUAGES 4
+
 /* Exit codes. */
 #define EXIT_OK         0
 #define EXIT_NOT_FOUND  1
@@ -59,6 +62,7 @@ typedef struct {
     cloud_mode cloud;  /* what to do with Steam's copies of the savefile */
     palette_collision palettes;  /* what to do when a palette name is taken */
     int keep_palettes;           /* leave the tab's palettes behind on uninstall */
+    loc_langs languages;         /* which languages of the in-game texts to write */
 } options;
 
 /* Turns the command line into what install and uninstall take. */
@@ -71,6 +75,7 @@ static install_options install_opts(const options *opts)
     out.cloud = opts->cloud;
     out.palettes = opts->palettes;
     out.keep_palettes = opts->keep_palettes;
+    out.languages = &opts->languages;
     return out;
 }
 
@@ -104,6 +109,9 @@ static void print_usage(FILE *out)
         "                   skip (default), replace it, or suffix it with a number\n"
         "      --keep-palettes\n"
         "                   Leave the tab's palettes in the game when uninstalling\n"
+        "      --languages LIST\n"
+        "                   Which languages of the in-game texts a tab replaces:\n"
+        "                   all (default), none, or a comma-separated list\n"
         "  -h, --help       Show this help and exit\n"
         "  -V, --version    Show the version and exit\n");
 }
@@ -480,6 +488,66 @@ static void print_palette_step(const palette_report *pal, palette_collision mode
                 PALETTE_LIMIT, (unsigned)pal->total);
 }
 
+/* "english, spanish", or their count once naming them stops helping. */
+static void languages_text(char *out, size_t outsz, const str_list *names)
+{
+    size_t i, used = 0;
+
+    if (names->count == 0) {
+        snprintf(out, outsz, "none");
+        return;
+    }
+    if (names->count > LOG_MAX_LANGUAGES) {
+        snprintf(out, outsz, "%u languages", (unsigned)names->count);
+        return;
+    }
+    for (i = 0; i < names->count && used + 1 < outsz; i++) {
+        int written = snprintf(out + used, outsz - used, "%s%s", i ? ", " : "",
+                               names->items[i]);
+        if (written < 0)
+            break;
+        used += (size_t)written;
+    }
+}
+
+/* One line per in-game text the tab changes, saying what it now reads. */
+static void print_loc_step(const loc_report *loc, int installing)
+{
+    char langs[128];
+    size_t i, touched = 0;
+
+    if (!loc->path)
+        return;              /* the plan could not be worked out; already warned */
+
+    for (i = 0; i < loc->unknown.count; i++)
+        fprintf(stderr, TABBER_NAME ": warning: the game's texts have no '%s' "
+                        "language, skipped\n", loc->unknown.items[i]);
+
+    if (loc->count == 0) {
+        log_step("texts", "left alone, no language of them was selected");
+        return;
+    }
+    for (i = 0; i < loc->count; i++)
+        touched += loc->items[i].outcome == LOC_CHANGED ? 1 : 0;
+
+    languages_text(langs, sizeof langs, &loc->languages);
+    log_step("texts", "%u of %u %s in %s (%s)", (unsigned)touched, (unsigned)loc->count,
+             installing ? "replaced" : "restored", loc->path, langs);
+
+    for (i = 0; i < loc->count; i++) {
+        const loc_item *item = &loc->items[i];
+
+        if (item->outcome != LOC_CHANGED)
+            log_step("", "'%s': %s", item->id, loc_outcome_text(item->outcome));
+        else if (installing)
+            log_step("", "'%s': \"%s\" in %u language(s)", item->id, item->text,
+                     (unsigned)item->changed);
+        else
+            log_step("", "'%s': the original is back in %u language(s)", item->id,
+                     (unsigned)item->changed);
+    }
+}
+
 /* One line per Steam account that has N++ cloud data, whatever happened to it. */
 static void print_cloud_step(const cloud_report *cloud, cloud_mode mode)
 {
@@ -636,6 +704,7 @@ static int cmd_install(const options *opts, const char *code)
                         "not work until the server is back\n",
                 report.health.url, report.health.detail);
     print_palette_step(&report.palettes, opts->palettes, 1);
+    print_loc_step(&report.strings, 1);
     print_save_step(&report.save);
     print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
@@ -832,6 +901,7 @@ static int cmd_uninstall(const options *opts, const char *code)
     log_step("restored", "%lu original file(s)", (unsigned long)report.restored_count);
     log_step("library", "queries point back at %s", report.server_uri);
     print_palette_step(&report.palettes, opts->palettes, 0);
+    print_loc_step(&report.strings, 0);
     print_save_step(&report.save);
     print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
@@ -915,12 +985,39 @@ static int cmd_remove(const options *opts, const char *code)
 
 /* ---- Entry point ------------------------------------------------------- */
 
+/* Runs the command the arguments named, or says there is no such thing. */
+static int run_command(const options *opts, const char *command, const char *argument)
+{
+    if (!command || !strcmp(command, "paths"))
+        return cmd_paths(opts);
+    if (!strcmp(command, "list"))
+        return cmd_list(opts);
+    if (!strcmp(command, "update"))
+        return cmd_update(opts);
+    if (!strcmp(command, "fetch"))
+        return cmd_fetch(opts, argument);
+    if (!strcmp(command, "remove"))
+        return cmd_remove(opts, argument);
+    if (!strcmp(command, "install"))
+        return cmd_install(opts, argument);
+    if (!strcmp(command, "uninstall"))
+        return cmd_uninstall(opts, argument);
+    if (!strcmp(command, "check"))
+        return cmd_check(opts);
+    if (!strcmp(command, "server"))
+        return cmd_server(opts);
+
+    fprintf(stderr, TABBER_NAME ": unknown command '%s'\n", command);
+    print_usage(stderr);
+    return EXIT_USAGE;
+}
+
 int main(int argc, char **argv)
 {
     options opts = {0};
     const char *command = NULL;
     const char *argument = NULL;
-    int i;
+    int i, rc;
 
     plat_init();
 
@@ -951,6 +1048,17 @@ int main(int argc, char **argv)
                                 "remove or keep\n", value ? value : "");
                 return EXIT_USAGE;
             }
+        } else if (!strncmp(arg, "--languages", 11)) {
+            /* Either "--languages=LIST" or the list as a word. */
+            const char *value = arg[11] == '=' ? arg + 12
+                              : arg[11] == '\0' && i + 1 < argc ? argv[++i] : NULL;
+
+            loc_langs_free(&opts.languages);
+            if (loc_langs_parse(value, &opts.languages) != 0) {
+                fprintf(stderr, TABBER_NAME ": '%s' names no language; use all, none "
+                                "or a comma-separated list\n", value ? value : "");
+                return EXIT_USAGE;
+            }
         } else if (!strcmp(arg, "--keep-palettes")) {
             opts.keep_palettes = 1;
         } else if (!strncmp(arg, "--on-palette-collision", 22)) {
@@ -977,26 +1085,7 @@ int main(int argc, char **argv)
         }
     }
 
-    if (!command || !strcmp(command, "paths"))
-        return cmd_paths(&opts);
-    if (!strcmp(command, "list"))
-        return cmd_list(&opts);
-    if (!strcmp(command, "update"))
-        return cmd_update(&opts);
-    if (!strcmp(command, "fetch"))
-        return cmd_fetch(&opts, argument);
-    if (!strcmp(command, "remove"))
-        return cmd_remove(&opts, argument);
-    if (!strcmp(command, "install"))
-        return cmd_install(&opts, argument);
-    if (!strcmp(command, "uninstall"))
-        return cmd_uninstall(&opts, argument);
-    if (!strcmp(command, "check"))
-        return cmd_check(&opts);
-    if (!strcmp(command, "server"))
-        return cmd_server(&opts);
-
-    fprintf(stderr, TABBER_NAME ": unknown command '%s'\n", command);
-    print_usage(stderr);
-    return EXIT_USAGE;
+    rc = run_command(&opts, command, argument);
+    loc_langs_free(&opts.languages);
+    return rc;
 }

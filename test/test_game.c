@@ -37,6 +37,21 @@
 #define TAB_SWATCH_BODY   "colours in a file"
 #define EXPECTED_PATCH    "http://" TEST_DEAD_HOST ":9/" TAB_CODE
 
+/* The lines of the game's string table once this tab is installed, and the
+ * ones the previous installer used to leave behind in English. */
+#define LOC_ID_SHORT   "HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_SHORT"
+#define LOC_DONE_LONG  "HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_LONG|" \
+                       "Speedrun Boards|Speedrun Boards\n"
+#define LOC_DONE_SHORT LOC_ID_SHORT "|Speedrun|Speedrun\n"
+#define LOC_DONE_PRESS "PLAYER_PRESS_ANY|Test Tab|Test Tab\n"
+#define LOC_OLD_TABLE  "LOC_ID|english|spanish\n" \
+                       "EPISODE|Episode|Episodio\n" \
+                       "HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_LONG|" \
+                       "Speedrun Boards|Records de amigos\n" \
+                       LOC_ID_SHORT "|Speedrun|Amigos\n" \
+                       "PLAYER_PRESS_ANY|Metanet|Pulsa una tecla\n" \
+                       "LEVEL|Level|Nivel\n"
+
 /* The savefile the fake game starts with, and the one tabber "ships". */
 #define GAME_SAVE         "the player's own save"
 #define FRESH_SAVE        "the fresh save tabber ships"
@@ -221,6 +236,29 @@ static char *palette_file(world *w, const char *name)
     return text;
 }
 
+/* The game's string table as it now reads. Caller frees. */
+static char *loc_table(world *w)
+{
+    char *assets = path_join(w->install, NPP_ASSETS_SUBDIR);
+    char *path = path_join(assets, LOC_FILE_NAME);
+    char *text = test_read(path);
+
+    free(path);
+    free(assets);
+    return text;
+}
+
+/* Overwrites it, which is how a table the old installer edited is set up. */
+static void set_loc_table(world *w, const char *text)
+{
+    char *assets = path_join(w->install, NPP_ASSETS_SUBDIR);
+    char *path = path_join(assets, LOC_FILE_NAME);
+
+    test_write(path, text);
+    free(path);
+    free(assets);
+}
+
 /* Contents of a file in the game's levels folder. Caller frees. */
 static char *game_file(world *w, const char *name)
 {
@@ -328,6 +366,16 @@ static void test_install_uninstall(void)
     CHECK_STR(text, TAB_SWATCH_BODY, "its swatches came across");
     free(text);
 
+    /* The game's own texts were replaced, in both languages the table has. */
+    CHECK_NUM(installed.strings.changed, 6, "three strings in two languages");
+    text = loc_table(&w);
+    CHECK(strstr(text, LOC_DONE_LONG) != NULL, "the friend boards are renamed");
+    CHECK(strstr(text, LOC_DONE_SHORT) != NULL, "the short label with them");
+    CHECK(strstr(text, LOC_DONE_PRESS) != NULL, "and the title screen names the tab");
+    CHECK(strstr(text, "LEVEL|Level|Nivel") != NULL,
+          "a string the tab does not replace is left alone");
+    free(text);
+
     /* The savefile was swapped as part of the same install. */
     text = personal_file(&w, SAVE_NAME);
     CHECK_STR(text, FRESH_SAVE, "the tab's savefile is in place");
@@ -358,6 +406,9 @@ static void test_install_uninstall(void)
              json_get_string(entry, CJK_INSTALL_DATE, ""));
     CHECK(json_get_bool(json_get(cfg->root, CJK_STATE), CJK_LIBRARY, 0),
           "state.library is true");
+    CHECK_STR(json_get_string(json_get(config_get_strings(cfg), LOC_ID_SHORT),
+                              "english", ""), "Friends",
+              "and the texts that were overwritten are recorded with their originals");
     CHECK(lib_check(cfg, w.dig, &w.paths, &health, err, sizeof err) == 0, "the check runs");
     CHECK(health.healthy, "an installed game passes: %s", health.detail);
     CHECK_NUM(health.state, LIB_PATCHED, "the library is patched");
@@ -389,6 +440,10 @@ static void test_install_uninstall(void)
 
     check_library(&w, LIB_OFFICIAL_URI, "the library points at the official server again");
 
+    text = loc_table(&w);
+    CHECK_STR(text, TEST_LOC_TABLE, "the game's texts are back, byte for byte");
+    free(text);
+
     CHECK_NUM(removed.palettes.removed, 1, "the palette it brought was taken out again");
     text = palette_file(&w, TAB_PALETTE);
     CHECK(text == NULL, "and its folder is gone from the game");
@@ -415,6 +470,8 @@ static void test_install_uninstall(void)
     CHECK(json_get(entry, CJK_UNINSTALL_DATE)->type == JSON_STRING, "uninstall_date is stamped");
     CHECK_STR(json_get_string(entry, CJK_INSTALL_DATE, ""), install_date,
               "install_date is kept");
+    CHECK_NUM(json_count(config_get_strings(cfg)), 0,
+              "the record of replaced texts is emptied, since none is live now");
     CHECK(lib_check(cfg, w.dig, &w.paths, &health, err, sizeof err) == 0, "the check runs");
     CHECK(health.healthy, "the game is clean again: %s", health.detail);
     config_free(cfg);
@@ -709,6 +766,131 @@ static void test_palette_not_ours(void)
 }
 
 /* A code becomes a directory name that gets deleted recursively. */
+/*
+ * --languages picks the columns, and the choice reaches all the way through an
+ * install: with none, the table is not touched at all.
+ */
+static void test_texts_by_language(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    install_options opts;
+    install_report installed;
+    uninstall_report removed;
+    loc_langs langs;
+    config *cfg;
+    char *text;
+
+    test_case("--languages decides which columns an install writes");
+    world_build(&w, "game_texts");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    install_options_init(&opts);
+    loc_langs_parse("SPANISH, klingon", &langs);
+    opts.languages = &langs;
+
+    CHECK(tab_install(w.dig, tab, &w.paths, &opts, &installed, err, sizeof err) == 0,
+          "install succeeds (%s)", err);
+    CHECK_NUM(installed.strings.changed, 3, "three strings, in the one language asked for");
+    CHECK_NUM(installed.strings.unknown.count, 1, "the language it does not have is named");
+
+    text = loc_table(&w);
+    CHECK(strstr(text, LOC_ID_SHORT "|Friends|Speedrun\n") != NULL,
+          "Spanish is replaced and English is left as the game shipped it");
+    free(text);
+
+    cfg = config_load(err, sizeof err);
+    CHECK(json_get(json_get(config_get_strings(cfg), LOC_ID_SHORT), "english") == NULL,
+          "only the language that changed is recorded");
+    config_free(cfg);
+
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, &opts, &removed, err, sizeof err) == 0,
+          "uninstall succeeds (%s)", err);
+    text = loc_table(&w);
+    CHECK_STR(text, TEST_LOC_TABLE, "and the table is the game's own again");
+    free(text);
+
+    install_report_free(&installed);
+    uninstall_report_free(&removed);
+    loc_langs_free(&langs);
+    world_free(&w);
+
+    test_case("...and 'none' leaves the game's texts entirely alone");
+    world_build(&w, "game_texts_none");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    install_options_init(&opts);
+    loc_langs_parse("none", &langs);
+    opts.languages = &langs;
+
+    CHECK(tab_install(w.dig, tab, &w.paths, &opts, &installed, err, sizeof err) == 0,
+          "install succeeds (%s)", err);
+    CHECK_NUM(installed.strings.count, 0, "no string is even considered");
+    text = loc_table(&w);
+    CHECK_STR(text, TEST_LOC_TABLE, "the table is untouched, byte for byte");
+    free(text);
+
+    cfg = config_load(err, sizeof err);
+    CHECK_NUM(json_count(config_get_strings(cfg)), 0, "and there is nothing to record");
+    config_free(cfg);
+
+    install_report_free(&installed);
+    loc_langs_free(&langs);
+    world_free(&w);
+}
+
+/*
+ * The drop-in case: a game whose English texts were changed by the installer
+ * that came before tabber, which recorded nothing anywhere. Uninstalling has to
+ * put those back too, from the originals tabber carries.
+ */
+static void test_texts_from_the_old_installer(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    install_options opts;
+    install_report installed;
+    uninstall_report removed;
+    loc_langs langs;
+    char *text;
+
+    test_case("texts the previous installer left behind are restored as well");
+    world_build(&w, "game_texts_legacy");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    /* The game as that installer would have left it: English replaced, in a
+     * table nothing in the state file knows anything about. */
+    set_loc_table(&w, LOC_OLD_TABLE);
+
+    install_options_init(&opts);
+    loc_langs_parse("none", &langs);      /* so tabber records nothing itself */
+    opts.languages = &langs;
+
+    CHECK(tab_install(w.dig, tab, &w.paths, &opts, &installed, err, sizeof err) == 0,
+          "install succeeds (%s)", err);
+    text = loc_table(&w);
+    CHECK_STR(text, LOC_OLD_TABLE, "the install leaves the old texts as they are");
+    free(text);
+
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, &opts, &removed, err, sizeof err) == 0,
+          "uninstall succeeds (%s)", err);
+    CHECK_NUM(removed.strings.changed, 3, "the three English strings go back");
+    text = loc_table(&w);
+    CHECK_STR(text, TEST_LOC_TABLE,
+              "and the table is the game's own again, though nothing recorded it");
+    free(text);
+
+    install_report_free(&installed);
+    uninstall_report_free(&removed);
+    loc_langs_free(&langs);
+    world_free(&w);
+}
+
 static void test_codes(void)
 {
     static const char *bad[] = { "..", "../..", "a/b", "a\\b", ".", "me t", "", NULL };
@@ -739,5 +921,7 @@ void suite_game(void)
     test_health_mismatches();
     test_remove();
     test_palette_not_ours();
+    test_texts_by_language();
+    test_texts_from_the_old_installer();
     test_codes();
 }

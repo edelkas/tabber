@@ -25,6 +25,18 @@
  * palettes folder, so uninstalling deletes those and no others: a palette that
  * was skipped because the user already had one of that name is not in the list
  * and is therefore never mistaken for the tab's.
+ *
+ * Alongside "tabs", at the root, "strings" records the in-game texts an install
+ * replaced, holding the original of every language it wrote over:
+ *
+ *   "strings": {
+ *     "HIGH_SCORE_PANEL_FRIEND_HIGHSCORES_SHORT": { "english": "Friends" }
+ *   }
+ *
+ * Only one tab can be installed at a time, so one record is enough, and it
+ * always describes the replacements that are live right now: uninstalling puts
+ * the originals back and empties it. Keeping them here rather than in the
+ * source is what lets tabber undo a change without knowing the game's own text.
  */
 #ifndef TABBER_CONFIG_H
 #define TABBER_CONFIG_H
@@ -50,6 +62,7 @@
 #define CJK_UNINSTALL_DATE   "uninstall_date"
 #define CJK_REMOVE_DATE      "remove_date"
 #define CJK_PALETTES         "palettes"   /* folders an install created    */
+#define CJK_STRINGS          "strings"    /* in-game texts replaced, at the root */
 
 typedef struct {
     json_value *root;   /* whole document, "tabs" included */
@@ -120,5 +133,15 @@ void config_set_palettes(config *cfg, int id, const char *code, const str_list *
  * in", and is not the same as never having recorded any.
  */
 int config_get_palettes(config *cfg, const char *code, str_list *out);
+
+/*
+ * Records the in-game texts an install replaced, taking ownership of `record`
+ * and replacing whatever was there. NULL empties the record, which is what
+ * uninstalling does once the originals are back.
+ */
+void config_set_strings(config *cfg, json_value *record);
+
+/* That record, or NULL when the state file has none. Owned by the config. */
+const json_value *config_get_strings(config *cfg);
 
 #endif /* TABBER_CONFIG_H */
