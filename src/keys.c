@@ -6,6 +6,7 @@
 #include "json.h"
 #include "keys.h"
 #include "platform.h"
+#include "tabs.h"
 #include "util.h"
 
 /*
@@ -31,6 +32,21 @@ const char *key_outcome_text(key_outcome outcome)
 }
 
 /* ---- The player list --------------------------------------------------- */
+
+/*
+ * Appends a player, unless it is already there: naming one twice is harmless
+ * and counts once, whether the list came from a command or from the digest.
+ */
+static void players_add(int *players, size_t *count, int value)
+{
+    size_t i;
+
+    for (i = 0; i < *count; i++) {
+        if (players[i] == value)
+            return;
+    }
+    players[(*count)++] = value;
+}
 
 int keys_players_parse(const char *text, int *players, size_t *count,
                        char *err, size_t errsz)
@@ -76,14 +92,7 @@ int keys_players_parse(const char *text, int *players, size_t *count,
             return -1;
         }
         free(token);
-
-        /* Naming a player twice is harmless, and only counts once. */
-        for (i = 0; i < *count; i++) {
-            if (players[i] == value)
-                break;
-        }
-        if (i == *count)
-            players[(*count)++] = value;
+        players_add(players, count, value);
 
         if (!*end)
             break;
@@ -92,6 +101,46 @@ int keys_players_parse(const char *text, int *players, size_t *count,
 
     if (*count == 0) {
         err_set(err, errsz, "no player was named; give a list like '1,2'");
+        return -1;
+    }
+    return 0;
+}
+
+int keys_players_wanted(const npp_tab *tab, int *players, size_t *count,
+                        char *err, size_t errsz)
+{
+    const json_value *list = json_get(json_get(tab->node, TJK_DISK), KJK_BIND);
+    const json_value *item;
+
+    *count = 0;
+    if (!list || list->type == JSON_NULL)
+        return 0;                     /* the usual case: the tab needs none */
+    if (list->type != JSON_ARRAY) {
+        err_set(err, errsz, "the digest's '%s' for this tab is not a list of players",
+                KJK_BIND);
+        return -1;
+    }
+
+    for (item = list->children; item; item = item->next) {
+        double value = item->type == JSON_NUMBER ? item->number : 0;
+
+        if (item->type != JSON_NUMBER || value != (double)(int)value ||
+            (int)value < KEYS_PLAYER_MIN || (int)value > KEYS_PLAYER_MAX) {
+            err_set(err, errsz, "the digest asks this tab to bind something that is not "
+                                "a player; use whole numbers from %d to %d",
+                    KEYS_PLAYER_MIN, KEYS_PLAYER_MAX);
+            *count = 0;
+            return -1;
+        }
+        players_add(players, count, (int)value);
+    }
+
+    /* One player is one player's own keys: nothing to copy, and a digest that
+     * says so is more likely wrong than deliberate. */
+    if (*count == 1) {
+        err_set(err, errsz, "the digest asks this tab to bind player %d to itself",
+                players[0]);
+        *count = 0;
         return -1;
     }
     return 0;

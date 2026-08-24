@@ -39,13 +39,14 @@
  * source is what lets tabber undo a change without knowing the game's own text.
  *
  * "keybindings", also at the root, does the same for the controls the `bind`
- * command changes, one member per setting it overwrote:
+ * command changes — and an install does, when the tab's digest entry asks for
+ * several players to share one set — one member per setting overwritten:
  *
  *   "keybindings": { "input_p2_jump_key": "KEYBIND(\"V\")" }
  *
- * `unbind` puts those back and empties it, so it too always describes what is
- * live. A value of "-1" is a binding that had no key to begin with, which is
- * worth recording like any other.
+ * `unbind` and uninstalling put those back and empty it, so it too always
+ * describes what is live. A value of "-1" is a binding that had no key to
+ * begin with, which is worth recording like any other.
  */
 #ifndef TABBER_CONFIG_H
 #define TABBER_CONFIG_H

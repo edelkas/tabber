@@ -552,6 +552,29 @@ static void print_loc_step(const loc_report *loc, int installing)
     }
 }
 
+/* One line per binding, saying what it answers to now. */
+static void print_keys_step(const keys_report *keys)
+{
+    size_t i;
+
+    if (!keys->path)
+        return;              /* nothing asked for them, or the plan failed */
+
+    log_step("bindings", "%s", keys->path);
+    for (i = 0; i < keys->count; i++) {
+        const key_item *item = &keys->items[i];
+
+        if (item->outcome == KEY_ABSENT)
+            fprintf(stderr, TABBER_NAME ": warning: '%s' is not set in the bindings "
+                            "file, so it was left alone\n", item->name);
+        else if (item->outcome == KEY_SAME)
+            log_step("", "%s: %s", item->name, key_outcome_text(item->outcome));
+        else
+            log_step("", "%s: %s -> %s", item->name, item->before, item->after);
+    }
+    log_step("changed", "%u binding(s)", (unsigned)keys->changed);
+}
+
 /* One line per Steam account that has N++ cloud data, whatever happened to it. */
 static void print_cloud_step(const cloud_report *cloud, cloud_mode mode)
 {
@@ -709,6 +732,7 @@ static int cmd_install(const options *opts, const char *code)
                 report.health.url, report.health.detail);
     print_palette_step(&report.palettes, opts->palettes, 1);
     print_loc_step(&report.strings, 1);
+    print_keys_step(&report.bindings);
     print_save_step(&report.save);
     print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
@@ -906,6 +930,7 @@ static int cmd_uninstall(const options *opts, const char *code)
     log_step("library", "queries point back at %s", report.server_uri);
     print_palette_step(&report.palettes, opts->palettes, 0);
     print_loc_step(&report.strings, 0);
+    print_keys_step(&report.bindings);
     print_save_step(&report.save);
     print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
@@ -924,26 +949,6 @@ done:
 }
 
 /* ---- bind / unbind ----------------------------------------------------- */
-
-/* One line per binding, saying what it answers to now. */
-static void print_keys_step(const keys_report *keys)
-{
-    size_t i;
-
-    log_step("bindings", "%s", keys->path);
-    for (i = 0; i < keys->count; i++) {
-        const key_item *item = &keys->items[i];
-
-        if (item->outcome == KEY_ABSENT)
-            fprintf(stderr, TABBER_NAME ": warning: '%s' is not set in the bindings "
-                            "file, so it was left alone\n", item->name);
-        else if (item->outcome == KEY_SAME)
-            log_step("", "%s: %s", item->name, key_outcome_text(item->outcome));
-        else
-            log_step("", "%s: %s -> %s", item->name, item->before, item->after);
-    }
-    log_step("changed", "%u binding(s)", (unsigned)keys->changed);
-}
 
 /* Reads a player list, or explains why it is not one. */
 static int read_players(const char *list, int *players, size_t *count)

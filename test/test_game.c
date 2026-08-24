@@ -16,6 +16,7 @@
 #include "gzip.h"
 #include "install.h"
 #include "json.h"
+#include "keys.h"
 #include "palettes.h"
 #include "patch.h"
 #include "paths.h"
@@ -51,6 +52,35 @@
                        LOC_ID_SHORT "|Speedrun|Amigos\n" \
                        "PLAYER_PRESS_ANY|Metanet|Pulsa una tecla\n" \
                        "LEVEL|Level|Nivel\n"
+
+/*
+ * The bindings file the fake personal folder starts with. The fixture tab's
+ * digest entry asks for players 1 and 2 to share one set of controls, so
+ * installing it should leave the file reading KEYS_BOUND and put the three
+ * originals — one of them unbound to begin with — on record.
+ */
+#define KEYS_P1_LEFT  "KEYBIND(\"Left\")"
+#define KEYS_P1_RIGHT "KEYBIND(\"Right\")"
+#define KEYS_P1_JUMP  "KEYBIND(\"Z\")"
+#define KEYS_P2_LEFT  "KEYBIND(\"A\")"
+#define KEYS_P2_RIGHT "KEYBIND(\"D\")"
+#define KEYS_P2_JUMP  KEYS_UNBOUND
+#define KEYS_P1_BLOCK "//Player 1\n" \
+                      "input_p1_left_key = " KEYS_P1_LEFT ";\n" \
+                      "input_p1_right_key = " KEYS_P1_RIGHT ";\n" \
+                      "input_p1_jump_key = " KEYS_P1_JUMP ";\n" \
+                      "input_p1_back_key = KEYBIND(\"X\");\n" \
+                      "\n"
+#define KEYS_P2_BLOCK(left, right, jump) \
+                      "//Player 2\n" \
+                      "input_p2_left_key = " left ";\n" \
+                      "input_p2_right_key = " right ";\n" \
+                      "input_p2_jump_key = " jump ";\n" \
+                      "input_p2_back_key = KEYBIND(\"R\");\n"
+#define KEYS_TABLE    "//Created automatically. Modify at your own risk\n" \
+                      KEYS_P1_BLOCK KEYS_P2_BLOCK(KEYS_P2_LEFT, KEYS_P2_RIGHT, KEYS_P2_JUMP)
+#define KEYS_BOUND    "//Created automatically. Modify at your own risk\n" \
+                      KEYS_P1_BLOCK KEYS_P2_BLOCK(KEYS_P1_LEFT, KEYS_P1_RIGHT, KEYS_P1_JUMP)
 
 /* The savefile the fake game starts with, and the one tabber "ships". */
 #define GAME_SAVE         "the player's own save"
@@ -126,8 +156,12 @@ static void world_build(world *w, const char *name)
         free(tab_root);
     }
 
-    /* The personal folder, with a savefile in it, and the shipped fresh one. */
+    /* The personal folder, with a savefile in it, and the shipped fresh one.
+     * The game's bindings file lives there too, beside the save. */
     w->personal = test_fake_personal(w->root, SAVE_NAME, GAME_SAVE, strlen(GAME_SAVE));
+    path = path_join(w->personal, KEYS_FILE_NAME);
+    test_write(path, KEYS_TABLE);
+    free(path);
     w->fresh = path_join(w->root, "fresh_nprofile.zip");
     test_write_zip(w->fresh, SAVE_NAME, FRESH_SAVE, strlen(FRESH_SAVE));
     test_use_fresh_save(w->fresh);
@@ -891,6 +925,110 @@ static void test_texts_from_the_old_installer(void)
     world_free(&w);
 }
 
+/*
+ * The digest is what asks for the controls to be shared: the fixture tab
+ * carries "bind": [1, 2], so installing it should do exactly what `bind 1,2`
+ * does, and uninstalling should undo it from the same record.
+ */
+static void test_controls_bound_by_the_tab(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    install_report installed;
+    uninstall_report removed;
+    const json_value *record;
+    config *cfg;
+    char *text;
+
+    test_case("a tab whose digest asks for it gets the controls bound");
+    world_build(&w, "game_bind");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
+          "install succeeds (%s)", err);
+    CHECK_STR(installed.warning, "", "with nothing to warn about");
+    CHECK_NUM(installed.bindings.changed, 3, "player 2's three controls are bound");
+    CHECK_NUM(installed.bindings.source, 1, "to player 1's");
+
+    text = personal_file(&w, KEYS_FILE_NAME);
+    CHECK_STR(text, KEYS_BOUND, "and the file says so, disturbing nothing else");
+    free(text);
+
+    /* The originals, so the change can be undone: the unbound one included. */
+    cfg = config_load(err, sizeof err);
+    record = config_get_keybindings(cfg);
+    CHECK_NUM(json_count(record), 3, "three originals are on record");
+    CHECK_STR(json_get_string(record, "input_p2_left_key", ""), KEYS_P2_LEFT,
+              "the key player 2 used to answer to");
+    CHECK_STR(json_get_string(record, "input_p2_jump_key", ""), KEYS_UNBOUND,
+              "and the control that had no key at all");
+    CHECK(json_get(record, "input_p1_left_key") == NULL,
+          "player 1 is not recorded: nothing of theirs was changed");
+    config_free(cfg);
+
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &removed, err, sizeof err) == 0,
+          "uninstall succeeds (%s)", err);
+    CHECK_NUM(removed.bindings.changed, 3, "the three go back");
+    text = personal_file(&w, KEYS_FILE_NAME);
+    CHECK_STR(text, KEYS_TABLE, "and the file is the player's own again");
+    free(text);
+
+    cfg = config_load(err, sizeof err);
+    CHECK_NUM(json_count(config_get_keybindings(cfg)), 0,
+              "with nothing left on record");
+    config_free(cfg);
+
+    install_report_free(&installed);
+    uninstall_report_free(&removed);
+    world_free(&w);
+}
+
+/*
+ * A player who has never run the game has no bindings file. That is no reason
+ * to refuse the tab: it is installed, the controls are not touched, and the
+ * report says so.
+ */
+static void test_controls_without_a_bindings_file(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    install_report installed;
+    uninstall_report removed;
+    config *cfg;
+    char *path;
+
+    test_case("a missing bindings file does not stop an install");
+    world_build(&w, "game_bind_missing");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    path = path_join(w.personal, KEYS_FILE_NAME);
+    plat_remove_file(path);
+    free(path);
+
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
+          "install succeeds (%s)", err);
+    CHECK(installed.warning[0] != '\0', "and says the controls were left alone");
+    CHECK(installed.bindings.path == NULL, "no bindings were worked out");
+    CHECK(!personal_has(&w, KEYS_FILE_NAME), "no bindings file was invented");
+
+    cfg = config_load(err, sizeof err);
+    CHECK_NUM(json_count(config_get_keybindings(cfg)), 0, "and nothing is on record");
+    config_free(cfg);
+
+    /* Nor does it stop the uninstall: there is simply nothing to put back. */
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &removed, err, sizeof err) == 0,
+          "uninstall succeeds (%s)", err);
+    CHECK(removed.bindings.path == NULL, "with no bindings to restore");
+
+    install_report_free(&installed);
+    uninstall_report_free(&removed);
+    world_free(&w);
+}
+
 static void test_codes(void)
 {
     static const char *bad[] = { "..", "../..", "a/b", "a\\b", ".", "me t", "", NULL };
@@ -923,5 +1061,7 @@ void suite_game(void)
     test_palette_not_ours();
     test_texts_by_language();
     test_texts_from_the_old_installer();
+    test_controls_bound_by_the_tab();
+    test_controls_without_a_bindings_file();
     test_codes();
 }

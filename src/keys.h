@@ -23,18 +23,26 @@
  * A binding that is not in that record was never changed by us: unbinding
  * leaves it alone, unless the caller names its player, in which case the three
  * are cleared to -1 as the best that can be done without knowing the original.
+ *
+ * A tab that needs this says so in the digest, and installing it then binds
+ * the players it names as if `bind` had been run by hand (see
+ * keys_players_wanted); uninstalling puts them back.
  */
 #ifndef TABBER_KEYS_H
 #define TABBER_KEYS_H
 
 #include <stddef.h>
 
+#include "digest.h"
 #include "json.h"
 #include "paths.h"
 #include "util.h"
 
 /* The bindings file, beside the savefile in the personal directory. */
 #define KEYS_FILE_NAME      "keys.vars"
+
+/* Digest key naming the players a tab wants bound, under its "disk" object. */
+#define KJK_BIND            "bind"
 
 /* How a setting is written, and what an unbound one reads. */
 #define KEYS_ASSIGN         '='
@@ -63,6 +71,17 @@ char *keys_setting_name(int player, const char *action);
  */
 int keys_players_parse(const char *text, int *players, size_t *count,
                        char *err, size_t errsz);
+
+/*
+ * The same list, read from a tab's digest entry instead of the command line:
+ * "bind": [1, 2] under its "disk" object means player 2 is to answer to
+ * player 1's keys while that tab is installed. `players` must hold
+ * KEYS_PLAYER_MAX entries. Returns 0, with `count` at 0 when the tab asks for
+ * nothing, or -1 with a reason in `err` when the digest names something that
+ * is not a player.
+ */
+int keys_players_wanted(const npp_tab *tab, int *players, size_t *count,
+                        char *err, size_t errsz);
 
 /* ---- What was done ----------------------------------------------------- */
 

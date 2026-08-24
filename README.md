@@ -239,8 +239,8 @@ first: letters and digits only, so `..`, `a/b` and friends are refused outright.
 `tabber install CODE` fetches the tab first if it is not in the store, then
 replaces the game's level and challenge files with the tab's own, in
 `<installation dir>/NPP/<config.levels_dir>/`, copies in the palettes it
-bundles, replaces a handful of the game's own texts, patches the library and
-swaps the savefile. Each original is kept next to it
+bundles, replaces a handful of the game's own texts, binds the players the tab
+asks for to one set of controls, patches the library and swaps the savefile. Each original is kept next to it
 with `OG` appended to the whole file name (`SI.txt` -> `SI.txtOG`), a name the
 game does not parse, so uninstalling means deleting the tab's files and renaming
 the originals back.
@@ -680,6 +680,32 @@ The file is rewritten in one pass from a copy held in memory, staged beside
 itself and swapped in. Only the values move: the spacing, the comments, the
 blank lines and the line endings all come back exactly as they were.
 
+### At the tab's own request
+
+A tab that needs this says so in the digest, under its `disk` object:
+
+```json
+"disk": { "level_files": ["C.txt"], "bind": [1, 2] }
+```
+
+`bind` is the same list the command takes, so Duality's `[1, 2]` means exactly
+`tabber bind 1,2`: player 2 answers to player 1's keys while the tab is
+installed. Installing does it, recording the originals in `keybindings` as
+usual; uninstalling puts them back and empties the record. Most tabs carry no
+`bind` at all, and nothing about the controls happens for them.
+
+The list is read the same way as the command's, and the digest gets no more
+benefit of the doubt than a user does: anything that is not a whole number from
+1 to 4, or a list naming a single player, is refused rather than guessed at.
+
+This one step is not allowed to fail an install. A player who has never run the
+game has no `keys.vars` at all, and refusing to install over that would be
+absurd: the tab plays either way, only single-handed co-op does not. So a
+bindings file that cannot be read is reported as a warning, the install carries
+on without it, and `bind 1,2` puts it right once the game has written the file.
+An install that does bind and then fails at a later step takes the change back
+out with everything else.
+
 ## Uninstalling
 
 `tabber uninstall CODE` puts the game back: it deletes the tab's files and
@@ -706,6 +732,10 @@ three English originals tabber carries for installs it did not make (see [the
 in-game texts](#the-in-game-texts)). Like the palettes below it, a table that
 will not rewrite is a warning rather than a reason to undo the uninstall, and
 the record is only emptied once the originals really are back.
+
+The controls follow, from the `keybindings` record and on the same terms (see
+[the controls](#the-controls)). An empty record means nothing was ever bound,
+and the bindings file is then not even opened.
 
 The tab's palettes are removed last, unless `--keep-palettes` says to leave
 them. Which ones those are comes from `config.json`, where the install recorded
@@ -786,6 +816,6 @@ alone rather than overwriting whatever is in there.
 - [x] Handle Steam Cloud's copy of the savefile
 - [x] Install custom palettes
 - [x] Replace in-game texts
-- [x] Bind several players' controls together (`bind` / `unbind`)
+- [x] Bind several players' controls together (`bind` / `unbind`, or at the tab's request)
 - [ ] Optional extras
 - [ ] DearImGui front-end

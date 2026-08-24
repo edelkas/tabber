@@ -6,6 +6,7 @@
 #include "config.h"
 #include "install.h"
 #include "json.h"
+#include "keys.h"
 #include "loc.h"
 #include "palettes.h"
 #include "patch.h"
@@ -191,7 +192,9 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     save_plan save = {0};
     palette_plan palettes = {0};
     loc_plan strings = {0};
+    keys_plan bindings = {0};
     int lib_loaded = 0, save_planned = 0, palettes_planned = 0, strings_planned = 0;
+    int bindings_planned = 0;
     int rc = -1;
 
     memset(report, 0, sizeof(*report));
@@ -352,6 +355,28 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     strings_planned = 1;
 
+    /*
+     * --- And the controls, when the tab's digest entry asks for several
+     * players on one set of keys. Unlike everything above, a bindings file we
+     * cannot make sense of does not stop the install: the tab still plays,
+     * only single-handed co-op does not, and `bind` can put that right once
+     * the game has written the file. So it is reported and skipped.
+     */
+    {
+        int players[KEYS_PLAYER_MAX];
+        size_t players_count = 0;
+
+        if (keys_players_wanted(tab, players, &players_count, cfg_err, sizeof cfg_err) != 0 ||
+            (players_count >= 2 &&
+             keys_bind_build(paths, players, players_count, config_get_keybindings(state),
+                             &bindings, cfg_err, sizeof cfg_err) != 0))
+            err_set(report->warning, sizeof report->warning,
+                    "the tab wants several players to share one set of controls, but "
+                    "they were left as they are: %s", cfg_err);
+        else if (players_count >= 2)
+            bindings_planned = 1;
+    }
+
     /* Read everything up front, so the writing phase is as short as possible. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].source, &files[i].len);
@@ -392,8 +417,18 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     }
 
+    /* --- The controls, so one player can drive two ninjas --- */
+    if (bindings_planned &&
+        keys_plan_apply(&bindings, &report->bindings, err, errsz) != 0) {
+        loc_plan_undo(&strings);
+        palettes_plan_undo(&palettes);
+        rollback(files, done);
+        goto done;
+    }
+
     /* --- Redirect the game's queries, last and quickest --- */
     if (lib_write_uri(&img, patch_uri, err, errsz) != 0) {
+        keys_plan_undo(&bindings);
         loc_plan_undo(&strings);
         palettes_plan_undo(&palettes);
         rollback(files, done);        /* the level files go back as they were */
@@ -403,6 +438,7 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     /* --- And the savefile: the vanilla one filed away, the tab's put in --- */
     if (save_plan_apply(&save, &report->save, err, errsz) != 0) {
         lib_write_uri(&img, LIB_OFFICIAL_URI, cfg_err, sizeof cfg_err);
+        keys_plan_undo(&bindings);
         loc_plan_undo(&strings);
         palettes_plan_undo(&palettes);
         rollback(files, done);
@@ -440,6 +476,9 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     /* The texts we overwrote, so an uninstall can put them back without
      * tabber having to carry a copy of the game's own strings. */
     config_set_strings(state, loc_plan_take_record(&strings));
+    /* The bindings likewise, merged with any an earlier `bind` recorded. */
+    if (bindings_planned)
+        config_set_keybindings(state, keys_plan_take_record(&bindings));
     if (config_save(state, cfg_err, sizeof cfg_err) != 0)
         err_set(report->warning, sizeof report->warning,
                 "the install was not recorded: %s", cfg_err);
@@ -456,6 +495,8 @@ done:
         palettes_plan_free(&palettes);
     if (strings_planned)
         loc_plan_free(&strings);
+    if (bindings_planned)
+        keys_plan_free(&bindings);
     if (state)
         config_free(state);
     install_files_free(files, count);
@@ -476,6 +517,7 @@ void install_report_free(install_report *report)
     cloud_report_free(&report->cloud);
     palette_report_free(&report->palettes);
     loc_report_free(&report->strings);
+    keys_report_free(&report->bindings);
     free(report->game_levels_dir);
     free(report->tab_levels_dir);
     str_list_free(&report->skipped);
@@ -561,8 +603,10 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     lib_health health;
     save_plan save = {0};
     loc_plan strings = {0};
+    keys_plan bindings = {0};
     str_list palettes = {0};
     int lib_loaded = 0, save_planned = 0, strings_planned = 0, strings_done = 0;
+    int bindings_planned = 0, bindings_done = 0;
     int rc = -1;
 
     memset(report, 0, sizeof(*report));
@@ -699,6 +743,21 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     else
         strings_planned = 1;
 
+    /*
+     * --- And the controls, put back the same way and from the same kind of
+     * record. Nothing on record means nothing was ever bound, and the
+     * bindings file is then not even opened: a player who never ran the game
+     * has none, and that is no reason to complain.
+     */
+    if (json_count(config_get_keybindings(state)) > 0) {
+        if (keys_unbind_build(paths, NULL, 0, config_get_keybindings(state), &bindings,
+                              cfg_err, sizeof cfg_err) != 0)
+            err_set(report->warning, sizeof report->warning,
+                    "the game's key bindings were left as they are: %s", cfg_err);
+        else
+            bindings_planned = 1;
+    }
+
     /* Keep the tab's copies in memory, so a failure part-way can be undone. */
     for (i = 0; i < count; i++) {
         files[i].data = plat_read_file(files[i].target, &files[i].len);
@@ -753,6 +812,14 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
             strings_done = 1;
     }
 
+    if (bindings_planned) {
+        if (keys_plan_apply(&bindings, &report->bindings, cfg_err, sizeof cfg_err) != 0)
+            err_set(report->warning, sizeof report->warning,
+                    "the game's key bindings were left as they are: %s", cfg_err);
+        else
+            bindings_done = 1;
+    }
+
     if (palettes_remove(dig, paths, &palettes, opts.keep_palettes, &report->palettes,
                         cfg_err, sizeof cfg_err) != 0)
         err_set(report->warning, sizeof report->warning,
@@ -768,6 +835,8 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     config_set_uninstalled(state, tab->id, tab->code);
     if (strings_done)
         config_set_strings(state, NULL);    /* the originals are back in place */
+    if (bindings_done)
+        config_set_keybindings(state, keys_plan_take_record(&bindings));  /* likewise */
     if (!opts.keep_palettes && report->palettes.failed == 0)
         config_set_palettes(state, tab->id, tab->code, NULL);   /* they are gone */
     config_set_state_library(state, 1);      /* the library is official again */
@@ -785,6 +854,8 @@ done:
         save_plan_free(&save);
     if (strings_planned)
         loc_plan_free(&strings);
+    if (bindings_planned)
+        keys_plan_free(&bindings);
     if (state)
         config_free(state);
     install_files_free(files, count);
@@ -802,6 +873,7 @@ void uninstall_report_free(uninstall_report *report)
     cloud_report_free(&report->cloud);
     palette_report_free(&report->palettes);
     loc_report_free(&report->strings);
+    keys_report_free(&report->bindings);
     free(report->game_levels_dir);
     str_list_free(&report->skipped);
     str_list_free(&report->leftovers);

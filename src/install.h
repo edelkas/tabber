@@ -15,7 +15,9 @@
  *
  * The palettes a tab bundles are copied in too (see palettes.h), and taken out
  * again when it is uninstalled, and a handful of the game's own texts are
- * replaced (see loc.h) and put back.
+ * replaced (see loc.h) and put back. A tab whose digest entry asks for it also
+ * has several players' controls bound to one set of keys (see keys.h), which
+ * uninstalling undoes.
  *
  * The savefile is swapped too (see save.h): the one in place is archived and
  * the tab's own — or the fresh one tabber ships — is put in its stead, and the
@@ -33,6 +35,7 @@
 #include "cloud.h"
 #include "config.h"
 #include "digest.h"
+#include "keys.h"
 #include "loc.h"
 #include "palettes.h"
 #include "paths.h"
@@ -71,6 +74,7 @@ typedef struct {
     server_health health;       /* whether that server answered            */
     palette_report palettes;    /* what happened to the bundled palettes   */
     loc_report strings;         /* ...and to the game's own texts          */
+    keys_report bindings;       /* ...and to the player controls           */
     save_report save;           /* what happened to the savefile           */
     cloud_report cloud;         /* ...and to its copies in the cloud        */
     char state_path[512];       /* state file updated, empty if none       */
@@ -105,6 +109,7 @@ typedef struct {
     char server_uri[128];       /* the URI the library points at again     */
     palette_report palettes;    /* what happened to the bundled palettes   */
     loc_report strings;         /* ...and to the game's own texts          */
+    keys_report bindings;       /* ...and to the player controls           */
     save_report save;           /* what happened to the savefile           */
     cloud_report cloud;         /* ...and to its copies in the cloud        */
     char state_path[512];       /* state file updated, empty if none       */

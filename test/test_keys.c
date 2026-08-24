@@ -167,6 +167,34 @@ static json_value *unbind_players(world *w, const int *players, size_t count,
     return out;
 }
 
+/*
+ * A stand-in digest entry carrying `bind`, or none at all when it is NULL.
+ * The node is the caller's to free once the tab has been read.
+ */
+static json_value *tab_asking_for(const char *bind, npp_tab *tab)
+{
+    char err[TB_ERR_LEN];
+    char *text = bind ? str_fmt("{ \"disk\": { \"bind\": %s } }", bind)
+                      : str_dup("{ \"disk\": {} }");
+    json_value *node = json_parse(text, err, sizeof err);
+
+    free(text);
+    memset(tab, 0, sizeof(*tab));
+    tab->node = node;
+    return node;
+}
+
+/* What a tab's digest entry asks for, and why it was refused. Frees the node. */
+static int wanted(const char *bind, int *players, size_t *count, char *err, size_t errsz)
+{
+    npp_tab tab;
+    json_value *node = tab_asking_for(bind, &tab);
+    int rc = keys_players_wanted(&tab, players, count, err, errsz);
+
+    json_free(node);
+    return rc;
+}
+
 /* A record of one setting, as an earlier bind would have left it. */
 static json_value *record_of(const char *name, const char *value)
 {
@@ -214,6 +242,47 @@ static void test_players_parsed(void)
           "a trailing comma names an empty player");
     CHECK(keys_players_parse("", players, &count, err, sizeof err) != 0,
           "and an empty list names nobody");
+}
+
+static void test_players_from_the_digest(void)
+{
+    int players[KEYS_PLAYER_MAX];
+    size_t count = 0;
+    char err[TB_ERR_LEN];
+
+    test_case("a tab's digest entry names the players it wants bound");
+
+    CHECK(wanted("[1, 2]", players, &count, err, sizeof err) == 0,
+          "'bind': [1, 2] is a list of players (%s)", err);
+    CHECK_NUM(count, 2, "two of them");
+    CHECK_NUM(players[0], 1, "the first is the one whose keys are copied");
+    CHECK_NUM(players[1], 2, "the second copies them");
+
+    CHECK(wanted("[1, 2, 2, 3]", players, &count, err, sizeof err) == 0,
+          "a player named twice is read (%s)", err);
+    CHECK_NUM(count, 3, "and counted once");
+
+    /* The usual case, by far: a tab that needs nothing of the sort. */
+    CHECK(wanted(NULL, players, &count, err, sizeof err) == 0 && count == 0,
+          "a tab without 'bind' asks for nothing");
+    CHECK(wanted("[]", players, &count, err, sizeof err) == 0 && count == 0,
+          "and so does an empty list");
+
+    /* Anything else is a digest we do not understand, and saying so beats
+     * guessing at what the tab meant. */
+    CHECK(wanted("[2]", players, &count, err, sizeof err) != 0,
+          "one player alone has nobody to copy");
+    CHECK(wanted("[1, 5]", players, &count, err, sizeof err) != 0,
+          "there is no player 5");
+    CHECK(wanted("[1, 0]", players, &count, err, sizeof err) != 0,
+          "nor a player 0");
+    CHECK(wanted("[1, 2.5]", players, &count, err, sizeof err) != 0,
+          "nor half of one");
+    CHECK(wanted("[1, \"2\"]", players, &count, err, sizeof err) != 0,
+          "a player written as text is not one");
+    CHECK(wanted("2", players, &count, err, sizeof err) != 0,
+          "and a bare number is not a list");
+    CHECK_NUM(count, 0, "a list that is refused names nobody");
 }
 
 static void test_setting_names(void)
@@ -727,6 +796,7 @@ void suite_keys(void)
 {
     test_suite("keys");
     test_players_parsed();
+    test_players_from_the_digest();
     test_setting_names();
     test_bind_one_player();
     test_bind_two_players();
