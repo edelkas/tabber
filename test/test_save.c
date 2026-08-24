@@ -543,12 +543,21 @@ static void test_refusals(void)
     test_write_bytes(path, VANILLA_SAVE, strlen(VANILLA_SAVE));
     free(path);
 
-    /* No shipped save and no archive for this direction: nothing to install. */
+    /*
+     * No archive for this direction and no fresh save on disk either: the one
+     * built into the executable is used, which is also the only check that it
+     * really is a ZIP with a savefile in it.
+     */
     test_use_fresh_save(NULL);
-    CHECK(save_plan_build(&w.paths, TAB_CODE, 1, 0, &plan, err, sizeof err) != 0,
-          "with no save to put in place, the swap is refused");
+    if (CHECK(save_plan_build(&w.paths, TAB_CODE, 1, 0, &plan, err, sizeof err) == 0,
+              "with no save on disk, the built-in one is used (%s)", err)) {
+        CHECK(plan.used_fresh && plan.from_builtin, "and is reported as built in");
+        CHECK_STR(plan.source_path, SAVE_FRESH_BUILTIN, "named rather than pathed");
+        CHECK(plan.save_len > 0, "a savefile came out of it");
+        save_plan_free(&plan);
+    }
     CHECK(holds(&w, SAVE_NAME, VANILLA_SAVE, strlen(VANILLA_SAVE)),
-          "the savefile survived all of that");
+          "the savefile survived all of that, nothing having been applied");
     test_use_fresh_save(w.fresh);
 
     /* A personal folder that is not there. */

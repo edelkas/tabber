@@ -19,6 +19,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shlobj.h>   /* SHGetKnownFolderPath, FOLDERID_Documents */
+#include <io.h>       /* _isatty, _fileno                          */
+#include <stdio.h>
 
 #ifdef _MSC_VER
 #  pragma comment(lib, "advapi32.lib")   /* registry */
@@ -107,6 +109,19 @@ char *plat_getenv(const char *name)
     return out;
 }
 
+int plat_setenv(const char *name, const char *value)
+{
+    wchar_t *wname = wide_from_utf8(name);
+    wchar_t *wvalue = value ? wide_from_utf8(value) : NULL;
+    int rc = -1;
+
+    if (wname && (wvalue || !value))
+        rc = SetEnvironmentVariableW(wname, wvalue) ? 0 : -1;
+    free(wname);
+    free(wvalue);
+    return rc;
+}
+
 /* Wrapper around the known-folder API, returning UTF-8. */
 static char *win_known_folder(REFKNOWNFOLDERID id)
 {
@@ -145,11 +160,11 @@ char *plat_documents_dir(void)
     return docs;
 }
 
-char *plat_exe_dir(void)
+char *plat_exe_path(void)
 {
     wchar_t *wbuf = NULL;
     DWORD cap = MAX_PATH, len;
-    char *path, *dir;
+    char *path;
 
     /* GetModuleFileNameW truncates instead of reporting the size: grow blindly. */
     for (;;) {
@@ -166,11 +181,7 @@ char *plat_exe_dir(void)
 
     path = utf8_from_wide(wbuf);
     free(wbuf);
-    if (!path)
-        return NULL;
-    dir = path_dirname(path);
-    free(path);
-    return dir;
+    return path;
 }
 
 int plat_replace_file(const char *src, const char *dst)
@@ -418,6 +429,124 @@ done:
     return out;
 }
 
+/* ---- Running other programs -------------------------------------------- */
+
+int plat_make_executable(const char *path)
+{
+    (void)path;      /* here it is the extension that makes a file runnable */
+    return 0;
+}
+
+int plat_is_interactive(void)
+{
+    return _isatty(_fileno(stdin)) && _isatty(_fileno(stdout));
+}
+
+/*
+ * Appends one argument to a command line the way the C runtime will parse it
+ * back: quoted when it holds a space or a quote of its own, and backslashes
+ * doubled where a quote follows them. CreateProcess takes the whole line as a
+ * single string, so the quoting is ours to get right — and the path of the
+ * program itself routinely has a space in it.
+ */
+static void append_arg(byte_buf *out, const char *arg)
+{
+    size_t i = 0, slashes;
+
+    if (arg[0] && !strpbrk(arg, " \t\"")) {
+        buf_append(out, arg, strlen(arg));
+        return;
+    }
+
+    buf_append(out, "\"", 1);
+    while (arg[i]) {
+        for (slashes = 0; arg[i] == '\\'; i++)
+            slashes++;
+        if (!arg[i]) {                        /* they precede the closing quote */
+            while (slashes--)
+                buf_append(out, "\\\\", 2);
+            break;
+        }
+        if (arg[i] == '"') {
+            while (slashes--)
+                buf_append(out, "\\\\", 2);
+            buf_append(out, "\\\"", 2);
+        } else {
+            while (slashes--)
+                buf_append(out, "\\", 1);
+            buf_append(out, &arg[i], 1);
+        }
+        i++;
+    }
+    buf_append(out, "\"", 1);
+}
+
+/* Starts `exe`, waits for it, and reports its exit code. */
+static int run_child(const char *exe, char *const *args, size_t count, int *status)
+{
+    byte_buf line = {0};
+    char *utf8;
+    wchar_t *wexe, *wline;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    DWORD code = 0;
+    size_t i;
+    int rc = -1;
+
+    /* Anything of ours still sitting in a buffer has to reach the console
+     * before the child starts writing to the same one. */
+    fflush(NULL);
+
+    append_arg(&line, exe);
+    for (i = 0; i < count; i++) {
+        buf_append(&line, " ", 1);
+        append_arg(&line, args[i]);
+    }
+    utf8 = buf_finish(&line, NULL);
+
+    wexe = wide_from_utf8(exe);
+    wline = wide_from_utf8(utf8);
+    free(utf8);
+    if (!wexe || !wline)
+        goto done;
+
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    memset(&pi, 0, sizeof pi);
+
+    /* The handles are inherited, so the child writes to our own console. */
+    if (!CreateProcessW(wexe, wline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
+        goto done;
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    if (status)
+        *status = (int)code;
+    rc = 0;
+
+done:
+    free(wexe);
+    free(wline);
+    return rc;
+}
+
+int plat_run_and_wait(const char *exe, char *const *args, size_t count, int *status)
+{
+    return run_child(exe, args, count, status);
+}
+
+/*
+ * There is no exec here: a process cannot become another program. The new
+ * binary runs as a child instead and its exit code is passed on, which is the
+ * difference the caller has to live with.
+ */
+int plat_restart(const char *exe, char *const *args, size_t count, int *status)
+{
+    return run_child(exe, args, count, status);
+}
+
 /* ====================================================================== */
 /*  POSIX (Linux, macOS)                                                  */
 /* ====================================================================== */
@@ -428,6 +557,7 @@ done:
 #include <limits.h>
 #include <pwd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #if defined(__APPLE__)
@@ -473,9 +603,16 @@ char *plat_documents_dir(void)
     return docs;
 }
 
-char *plat_exe_dir(void)
+int plat_setenv(const char *name, const char *value)
 {
-    char *path = NULL, *dir;
+    if (!value)
+        return unsetenv(name) == 0 ? 0 : -1;
+    return setenv(name, value, 1) == 0 ? 0 : -1;
+}
+
+char *plat_exe_path(void)
+{
+    char *path = NULL;
 
 #if defined(__APPLE__)
     {
@@ -509,9 +646,7 @@ char *plat_exe_dir(void)
     }
 #endif
 
-    dir = path_dirname(path);
-    free(path);
-    return dir;
+    return path;
 }
 
 int plat_replace_file(const char *src, const char *dst)
@@ -615,11 +750,87 @@ char *plat_canonical_path(const char *path)
     return out;
 }
 
+/* ---- Running other programs -------------------------------------------- */
+
+int plat_make_executable(const char *path)
+{
+    /* A binary unpacked from a ZIP arrives with no modes worth the name. */
+    return chmod(path, 0755) == 0 ? 0 : -1;
+}
+
+int plat_is_interactive(void)
+{
+    return isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+}
+
+/* What execv wants: the program's own name, the arguments, and a NULL. */
+static char **build_argv(const char *exe, char *const *args, size_t count)
+{
+    char **argv = xmalloc((count + 2) * sizeof(*argv));
+    size_t i;
+
+    argv[0] = (char *)exe;
+    for (i = 0; i < count; i++)
+        argv[i + 1] = args[i];
+    argv[count + 1] = NULL;
+    return argv;
+}
+
+int plat_run_and_wait(const char *exe, char *const *args, size_t count, int *status)
+{
+    char **argv = build_argv(exe, args, count);   /* built before the fork */
+    pid_t pid;
+    int state = 0;
+
+    fflush(NULL);
+    pid = fork();
+    if (pid < 0) {
+        free(argv);
+        return -1;
+    }
+    if (pid == 0) {
+        execv(exe, argv);
+        _exit(127);                  /* only reached when it will not run */
+    }
+    free(argv);
+
+    if (waitpid(pid, &state, 0) < 0)
+        return -1;
+    if (status)
+        *status = WIFEXITED(state) ? WEXITSTATUS(state) : -1;
+    return 0;
+}
+
+int plat_restart(const char *exe, char *const *args, size_t count, int *status)
+{
+    char **argv = build_argv(exe, args, count);
+
+    (void)status;                    /* a successful exec never comes back */
+
+    /* exec throws away whatever stdio has buffered, so everything printed so
+     * far has to be out of the door before it. */
+    fflush(NULL);
+    execv(exe, argv);
+    free(argv);
+    return -1;
+}
+
 #endif /* _WIN32 */
 
 /* ====================================================================== */
 /*  Portable helpers                                                      */
 /* ====================================================================== */
+
+char *plat_exe_dir(void)
+{
+    char *path = plat_exe_path(), *dir;
+
+    if (!path)
+        return NULL;
+    dir = path_dirname(path);
+    free(path);
+    return dir;
+}
 
 char *plat_read_file(const char *path, size_t *len_out)
 {

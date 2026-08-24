@@ -44,6 +44,13 @@ int check_long_eq(long got, long want, const char *file, int line, const char *w
 #define TEST_DEAD_HOST  "127.0.0.1"
 #define TEST_DEAD_PORT  9
 
+/* What an executable is called here, for the tests that write one. */
+#ifdef _WIN32
+#  define TEST_EXE_SUFFIX ".exe"
+#else
+#  define TEST_EXE_SUFFIX ""
+#endif
+
 /* ---- Scratch space ----------------------------------------------------- */
 
 /*
@@ -118,6 +125,7 @@ void suite_save(void);      /* archiving and swapping the savefile     */
 void suite_palettes(void);  /* bundled palettes: names, limits, removal */
 void suite_loc(void);       /* in-game texts: replacing and restoring   */
 void suite_keys(void);      /* binding players' controls together       */
+void suite_update(void);    /* versions, release manifests, replacing itself */
 void suite_game(void);      /* install, uninstall, library patching    */
 void suite_online(int full);/* live digest, downloads, full sweep      */
 

@@ -131,13 +131,26 @@ void err_set(char *err, size_t errsz, const char *fmt, ...)
     va_end(ap);
 }
 
-void time_now_iso8601(char *out, size_t outsz)
+/* Formats a point in time the way the digest and the state file write them. */
+static void time_iso8601(time_t when, char *out, size_t outsz)
 {
-    time_t now = time(NULL);
-    struct tm *utc = gmtime(&now);
+    struct tm *utc = gmtime(&when);
 
     if (!utc || strftime(out, outsz, "%Y-%m-%dT%H:%M:%SZ", utc) == 0)
         snprintf(out, outsz, "1970-01-01T00:00:00Z");   /* clock unavailable */
+}
+
+void time_now_iso8601(char *out, size_t outsz)
+{
+    time_iso8601(time(NULL), out, outsz);
+}
+
+void time_ago_iso8601(int hours, char *out, size_t outsz)
+{
+    time_t now = time(NULL);
+    time_t then = now - (time_t)hours * 3600;
+
+    time_iso8601(then < 0 ? 0 : then, out, outsz);
 }
 
 void str_list_push(str_list *list, char *s)

@@ -28,6 +28,7 @@ tabber [options] [command]
   remove CODE      Delete the downloaded files of the custom tab CODE
   install CODE     Install the custom tab CODE into the game (fetching it if needed)
   uninstall CODE   Restore the game's original files, undoing an install
+  upgrade          Update tabber itself to the newest release
   bind LIST        Give the players in LIST (e.g. 1,2) the first one's controls
   unbind [LIST]    Restore the controls 'bind' changed, or clear LIST's
   check            Verify the game library matches the recorded state
@@ -36,6 +37,8 @@ tabber [options] [command]
   -b, --bare       Machine-readable output: paths or tab-separated fields only
   -v, --verbose    Print extra detail
   -o, --offline    Skip the automatic digest refresh, use the cached copy
+      --no-update-check
+                   Do not look for a newer tabber on this run
   -c, --force-compress
                    Gzip the savefile put in place, when the game reads gzip
       --cloud-mode MODE
@@ -71,7 +74,7 @@ exercises the real code rather than a copy of it. It runs in three tiers:
 
 | Tier | Needs | Covers |
 | --- | --- | --- |
-| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, Steam Cloud, palettes, in-game texts, player controls, install/uninstall/patching against a stand-in game |
+| offline (default) | nothing | strings, paths, JSON, KeyValues, MD5, ZIP, DEFLATE both ways, gzip, state file, server resolution, savefile swapping, Steam Cloud, palettes, in-game texts, player controls, replacing the running binary, install/uninstall/patching against a stand-in game |
 | `--online` | the network | downloading the live digest, fetching a tab and verifying it |
 | `--full` | the network | downloading and verifying **every** published tab |
 
@@ -129,6 +132,7 @@ cover.
 | `src/palettes.c/.h` | The palettes a tab bundles: names, the game's limit, copying them in and out |
 | `src/loc.c/.h`   | The game's own texts (`loc.txt`): replacing them per language, and putting them back |
 | `src/keys.c/.h`  | The player controls (`keys.vars`): binding several players to one set of keys |
+| `src/update.c/.h` | Updating tabber itself: release manifests, versions, replacing the running binary |
 | `src/save.c/.h`  | Archiving and swapping the savefile |
 | `src/cloud.c/.h` | The savefile's copies in Steam Cloud, per Steam account |
 | `src/gzip.c/.h`  | Reading and writing gzip streams (RFC 1952), for gzipped savefiles |
@@ -144,8 +148,11 @@ cover.
 | `src/platform.c/.h` | OS abstraction: filesystem, environment, Windows registry, UTF-8 paths |
 | `src/util.c/.h`  | Allocation, string, buffer and error helpers |
 | `src/version.h`  | Program name and version |
+| `src/resource.h` | Files built into the binary |
+| `src/resource_save.c` | The fresh savefile as bytes; generated, do not edit |
 | `test/`          | The test suite (see above) |
-| `res/`           | Files that ship with the tool: the fresh savefile |
+| `res/`           | The source of the embedded files: the fresh savefile |
+| `tools/`         | Release-time scripts: embedding a resource, writing a manifest |
 
 ## Environment
 
@@ -155,10 +162,12 @@ cover.
 | `TABBER_GAME_DIR` | Use this N++ installation directory instead of asking Steam |
 | `TABBER_PERSONAL_DIR` | Use this N++ personal directory instead of the usual per-platform one |
 | `TABBER_STEAM_DIR` | Use this Steam directory instead of the one found in the registry (this is where the cloud saves are) |
-| `TABBER_FRESH_SAVE` | Use this archive as the fresh savefile instead of the shipped one |
+| `TABBER_FRESH_SAVE` | Use this archive as the fresh savefile instead of the built-in one |
+| `TABBER_EXE` | Treat this file as the running executable when updating, so a swap can be rehearsed on a copy |
+| `TABBER_UPDATED` | Set on the process an update restarts, so it does not go looking again |
 
-Both are meant for tests and for unusual setups (a portable copy, a game Steam
-does not know about); neither is needed in normal use.
+These are meant for tests and for unusual setups (a portable copy, a game Steam
+does not know about); none is needed in normal use.
 
 ## How the directories are found
 
@@ -364,8 +373,10 @@ installers used, so both can be used on the same machine:
 
 Installing archives the live save as `nprofile_original.zip` and puts the tab's
 own `nprofile_<code>.zip` in its place — or, the first time a tab is played,
-the fresh save tabber ships (`res/nprofile.zip`, beside the executable, with
-a gzipped save inside).
+the fresh save tabber ships. That one is built into the executable
+(`src/resource_save.c`, generated from `res/nprofile.zip`, with a gzipped save
+inside), so there is nothing to ship beside the binary; a `res/nprofile.zip` on
+disk still wins if there is one, which is what `TABBER_FRESH_SAVE` uses.
 Uninstalling is the same trade the other way round, and if there is no
 `nprofile_original.zip` to come back to, the shipped save stands in for it. The
 archives are ordinary ZIPs holding one entry named after the file that went in,
@@ -797,10 +808,126 @@ it empty.
 one member per setting it overwrote (see [the controls](#the-controls)), and
 `unbind` empties it the same way.
 
+`update` remembers the last look for a newer tabber, so ordinary commands are
+not held up by one more than once a day (see
+[updating tabber](#updating-tabber)):
+
+```json
+"update": {
+  "check": true,
+  "last_check": "2026-08-24T18:00:00Z",
+  "latest": "0.3.0",
+  "declined": null
+}
+```
+
+`check` set to false turns the automatic look off altogether; `declined` is the
+version the user said no to, which is why the offer comes once per release
+rather than once a day.
+
 The file is edited in place rather than regenerated: keys this version does not
 know about, and fields it does not own, survive a rewrite. If it is missing it
 is created; if it is unreadable the tool says so, carries on, and leaves it
 alone rather than overwriting whatever is in there.
+
+## Updating tabber
+
+Releases live on [GitHub Releases](https://github.com/edelkas/tabber/releases).
+Each one carries a plain executable per platform — tabber is a single file,
+with the fresh savefile built into it — and a `manifest.json` describing them:
+
+```json
+{
+  "version": "0.3.0",
+  "date": "2026-09-01T12:00:00Z",
+  "notes": "What changed, in a line or three.",
+  "page": "https://github.com/edelkas/tabber/releases/tag/v0.3.0",
+  "builds": {
+    "windows-x64": { "url": "https://github.com/edelkas/tabber/releases/download/v0.3.0/tabber-0.3.0-windows-x64.exe",
+                     "size": 371712, "md5": "..." }
+  }
+}
+```
+
+The manifest is read from `.../releases/latest/download/manifest.json`, a URL
+GitHub always points at the newest release, so a check is one small download
+and no API call — nothing to rate-limit and nothing whose schema is not ours.
+The per-build URLs are pinned to their own tag instead, so a release published
+half way through a download cannot hand out a mismatched pair.
+
+The build is chosen by `<os>-<arch>` (`windows-x64`, `linux-x64`,
+`macos-arm64`), falling back to the bare system name for a release that ships
+one build per platform. A release with no build we can run is still reported —
+knowing there is a newer version is the point — with a pointer to the page.
+
+Versions are compared numerically, field by field, so `0.10.0` is above
+`0.9.0`; a leading `v` is ignored, a missing field counts as zero, and
+`1.0.0-rc1` sorts below `1.0.0`.
+
+### Replacing a running program
+
+The whole thing rests on one fact: a running executable cannot be written to or
+deleted, but it **can be renamed** — on Windows as much as on Unix, where the
+process simply keeps running from the file under its new name. So there is no
+helper process and no batch file:
+
+1. the new binary is written beside the old one, as `tabber.exe.new`
+2. `tabber.exe` is renamed to `tabber.exe.old`
+3. `tabber.exe.new` takes the name `tabber.exe`
+4. the displaced binary is deleted on the next run, once nothing has it open
+
+Staging beside the running binary is deliberate: the swap is a rename, and a
+rename is only atomic — on Windows, only possible at all — within one
+filesystem. If the executable's folder is not writable (tabber in
+`Program Files` without administrator rights, say) that is reported before
+anything is downloaded.
+
+Nothing is swapped until the download matches both promises the manifest makes,
+its **size** and its **MD5**. And nothing is kept until the new binary proves
+it runs: it is started with `--self-check <version>` and has to exit cleanly
+from the very version the manifest named. A file that verified perfectly can
+still be a build that will not run on this machine, and that is the only way to
+find out. If it fails, the old binary goes straight back.
+
+### When it looks
+
+`tabber upgrade` checks and installs in one go, without asking: it was asked
+for by name.
+
+Every other command checks too, but quietly and **at most once every 24 hours**,
+with the result kept in `config.json`. On a terminal a newer version is offered
+(`Update now? [Y/n]`), and saying yes updates and then re-runs the command that
+was typed, on the new version. Anywhere else — a pipe, a script, `--bare` — it
+prints one line to stderr naming `tabber upgrade` and gets out of the way.
+Saying no is remembered for that version, so the question comes once per
+release rather than once per day, and a check that fails is silent: GitHub
+being unreachable is not this command's problem. `--offline` and
+`--no-update-check` skip it, and `"update": { "check": false }` in
+`config.json` turns it off for good.
+
+### Cutting a release
+
+```
+python tools/make_manifest.py 0.3.0 --notes "What changed."     --build windows-x64=dist/tabber-0.3.0-windows-x64.exe     --build linux-x64=dist/tabber-0.3.0-linux-x64     --out dist/manifest.json
+```
+
+Bump `TABBER_VERSION` in `src/version.h`, build each platform, run that, then
+tag `v0.3.0` and attach every binary **and** `manifest.json` to the release.
+The first release is the odd one out, since nothing can update to it from
+nothing; publish it, then test the path from it to the next.
+
+`UPDATE_MANIFEST_URL` and `TABBER_VERSION` can both be overridden at build time
+(`-DTABBER_VERSION='"0.9.0"'`), which is how an update is rehearsed against a
+staging release before any of it is public.
+
+### What this does and does not protect
+
+HTTPS and the MD5 cover a corrupted download and a network that tampers with
+one. They do **not** cover a compromised GitHub account: whoever could replace
+the binary could rewrite the manifest that describes it. Real protection there
+means signing the manifest with a key that never touches CI and checking the
+signature in the tool — worth doing, and not a reason to hold up the first
+release.
 
 ## Status
 
@@ -817,5 +944,6 @@ alone rather than overwriting whatever is in there.
 - [x] Install custom palettes
 - [x] Replace in-game texts
 - [x] Bind several players' controls together (`bind` / `unbind`, or at the tab's request)
+- [x] Update tabber itself from GitHub Releases (`upgrade`)
 - [ ] Optional extras
 - [ ] DearImGui front-end

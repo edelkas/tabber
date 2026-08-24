@@ -74,6 +74,11 @@
 #define CJK_PALETTES         "palettes"   /* folders an install created    */
 #define CJK_STRINGS          "strings"    /* in-game texts replaced, at the root */
 #define CJK_KEYBINDINGS      "keybindings"/* controls changed, likewise          */
+#define CJK_UPDATE           "update"     /* what the last version check found   */
+#define CJK_CHECK            "check"      /* whether to look at all              */
+#define CJK_LAST_CHECK       "last_check"
+#define CJK_LATEST           "latest"     /* newest version the check has seen   */
+#define CJK_DECLINED         "declined"   /* version the user said no to         */
 
 typedef struct {
     json_value *root;   /* whole document, "tabs" included */
@@ -161,5 +166,28 @@ const json_value *config_get_strings(config *cfg);
  */
 void config_set_keybindings(config *cfg, json_value *record);
 const json_value *config_get_keybindings(config *cfg);
+
+/* ---- Looking for a newer tabber ---------------------------------------- */
+
+/* Whether the user has left the check switched on. Absent means yes. */
+int config_update_enabled(config *cfg);
+
+/*
+ * Whether the last check was at least `hours` ago, or has never happened.
+ * Timestamps are fixed-width UTC, so this is a string comparison.
+ */
+int config_update_due(config *cfg, int hours);
+
+/* Records that a check just happened, and the version it found. */
+void config_update_checked(config *cfg, const char *latest);
+
+/* The newest version a check has seen, or NULL when none has. */
+const char *config_update_latest(config *cfg);
+
+/* Whether the user has already said no to this particular version. */
+int config_update_declined(config *cfg, const char *version);
+
+/* Remembers that they did, so they are asked once per version, not per day. */
+void config_update_decline(config *cfg, const char *version);
 
 #endif /* TABBER_CONFIG_H */

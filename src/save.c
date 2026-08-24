@@ -4,6 +4,7 @@
 
 #include "gzip.h"
 #include "platform.h"
+#include "resource.h"
 #include "save.h"
 #include "util.h"
 #include "zip.h"
@@ -27,12 +28,11 @@ static int dir_is_writable(const char *dir)
  * prefix, as the old installers did, and its CRC-32 is checked on the way out,
  * so a damaged archive is caught here rather than at the game's next launch.
  */
-static int archive_extract_save(const char *path, unsigned char **out, size_t *len_out,
-                                char *err, size_t errsz)
+static int extract_save_bytes(const char *what, const void *data, size_t len,
+                              unsigned char **out, size_t *len_out,
+                              char *err, size_t errsz)
 {
     char sub[TB_ERR_LEN];
-    char *data;
-    size_t len;
     zip_archive zip;
     const zip_entry *entry;
     unsigned char *save;
@@ -40,35 +40,47 @@ static int archive_extract_save(const char *path, unsigned char **out, size_t *l
     *out = NULL;
     *len_out = 0;
 
-    data = plat_read_file(path, &len);
-    if (!data) {
-        err_set(err, errsz, "cannot read '%s'", path);
-        return -1;
-    }
     if (zip_open(&zip, data, len, sub, sizeof sub) != 0) {
-        err_set(err, errsz, "'%s': %s", path, sub);
-        free(data);
+        err_set(err, errsz, "'%s': %s", what, sub);
         return -1;
     }
 
     entry = zip_find_prefix(&zip, SAVE_ENTRY_PREFIX);
     if (!entry) {
-        err_set(err, errsz, "'%s' holds no '%s' file", path, SAVE_ENTRY_PREFIX "*");
+        err_set(err, errsz, "'%s' holds no '%s' file", what, SAVE_ENTRY_PREFIX "*");
         zip_close(&zip);
-        free(data);
         return -1;
     }
 
     save = zip_read(&zip, entry, sub, sizeof sub);
     if (!save)
-        err_set(err, errsz, "'%s': %s", path, sub);
+        err_set(err, errsz, "'%s': %s", what, sub);
     else
         *len_out = entry->uncomp_size;
 
     *out = save;
     zip_close(&zip);
-    free(data);
     return save ? 0 : -1;
+}
+
+/* The same, for one of the archives on disk. */
+static int archive_extract_save(const char *path, unsigned char **out, size_t *len_out,
+                                char *err, size_t errsz)
+{
+    char *data;
+    size_t len;
+    int rc;
+
+    data = plat_read_file(path, &len);
+    if (!data) {
+        err_set(err, errsz, "cannot read '%s'", path);
+        *out = NULL;
+        *len_out = 0;
+        return -1;
+    }
+    rc = extract_save_bytes(path, data, len, out, len_out, err, errsz);
+    free(data);
+    return rc;
 }
 
 /*
@@ -231,19 +243,22 @@ int save_plan_build(const npp_paths *paths, const char *code, int installing,
     if (!plat_is_file(plan->source_path)) {
         char *fresh = save_fresh_path();
 
-        if (!fresh) {
-            err_set(err, errsz, "'%s' is not there and tabber's own '%s%c%s' could not be "
-                                "found either, so there is no savefile to put in place",
-                    plan->source_path, SAVE_RES_DIR, PATH_SEP, SAVE_FRESH_ZIP);
-            goto done;
-        }
+        /* A copy on disk wins, so a portable install can carry its own; the
+         * one built into the executable is what a plain download uses, and is
+         * always there. */
         free(plan->source_path);
-        plan->source_path = fresh;
+        plan->source_path = fresh ? fresh : str_dup(SAVE_FRESH_BUILTIN);
+        plan->from_builtin = fresh == NULL;
         plan->used_fresh = 1;
     }
 
-    if (archive_extract_save(plan->source_path, &data, &data_len, err, errsz) != 0)
+    if (plan->from_builtin) {
+        if (extract_save_bytes(plan->source_path, RES_FRESH_SAVE, RES_FRESH_SAVE_LEN,
+                               &data, &data_len, err, errsz) != 0)
+            goto done;
+    } else if (archive_extract_save(plan->source_path, &data, &data_len, err, errsz) != 0) {
         goto done;
+    }
     if (data_len == 0) {
         err_set(err, errsz, "the savefile in '%s' is empty", plan->source_path);
         goto done;
@@ -398,6 +413,7 @@ int save_plan_apply(save_plan *plan, save_report *report, char *err, size_t errs
     snprintf(report->save_path, sizeof report->save_path, "%s", plan->save_path);
     report->save_bytes = plan->save_len;
     report->used_fresh = plan->used_fresh;
+    report->from_builtin = plan->from_builtin;
     report->gzipped = gz_is_gzip(plan->save, plan->save_len);
     report->compressed = plan->compressed;
     return 0;

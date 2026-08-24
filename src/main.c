@@ -25,6 +25,7 @@
 #include "save.h"
 #include "server.h"
 #include "tabs.h"
+#include "update.h"
 #include "util.h"
 #include "version.h"
 
@@ -65,6 +66,7 @@ typedef struct {
     palette_collision palettes;  /* what to do when a palette name is taken */
     int keep_palettes;           /* leave the tab's palettes behind on uninstall */
     loc_langs languages;         /* which languages of the in-game texts to write */
+    int no_update_check;         /* do not look for a newer tabber this run */
 } options;
 
 /* Turns the command line into what install and uninstall take. */
@@ -94,6 +96,7 @@ static void print_usage(FILE *out)
         "  remove CODE      Delete the downloaded files of the custom tab CODE\n"
         "  install CODE     Install the custom tab CODE into the game (fetching it if needed)\n"
         "  uninstall CODE   Restore the game's original files, undoing an install\n"
+        "  upgrade          Update tabber itself to the newest release\n"
         "  bind LIST        Give the players in LIST (e.g. 1,2) the first one's controls\n"
         "  unbind [LIST]    Restore the controls 'bind' changed, or clear LIST's\n"
         "  check            Verify the game library matches the recorded state\n"
@@ -103,6 +106,8 @@ static void print_usage(FILE *out)
         "  -b, --bare       Machine-readable output: paths or tab-separated fields only\n"
         "  -v, --verbose    Print extra detail\n"
         "  -o, --offline    Skip the automatic digest refresh, use the cached copy\n"
+        "      --no-update-check\n"
+        "                   Do not look for a newer tabber on this run\n"
         "  -c, --force-compress\n"
         "                   Gzip the savefile put in place, when the game reads gzip\n"
         "      --cloud-mode MODE\n"
@@ -435,7 +440,8 @@ static void print_save_step(const save_report *save)
     else
         log_step("savefile", "there was none to archive");
     log_step("", "%s written from %s%s", save->save_path, save->source_path,
-             save->used_fresh ? " (the fresh save tabber ships)" : "");
+             save->used_fresh && !save->from_builtin
+                 ? " (the fresh save tabber ships)" : "");
     if (save->compressed)
         log_step("", "gzipped on the way in, %lu bytes", (unsigned long)save->save_bytes);
     if (save->removed_path[0])
@@ -1138,6 +1144,220 @@ done:
     return rc;
 }
 
+/* ---- upgrade ----------------------------------------------------------- */
+
+/* Asks a yes/no question, with yes as the answer for someone who just hits
+ * return. No answer at all — a closed input — is not a yes. */
+static int confirm(const char *question)
+{
+    char line[32];
+
+    printf("%s [Y/n] ", question);
+    fflush(stdout);
+    if (!fgets(line, sizeof line, stdin))
+        return 0;
+    return line[0] == '\n' || line[0] == 'y' || line[0] == 'Y';
+}
+
+/* What a release says about itself, in the shape of the other reports. */
+static void print_release(const update_info *info)
+{
+    log_step("installed", "%s (%s, %s)", TABBER_VERSION, PLAT_NAME, UPDATE_BUILD_KEY);
+    log_step("latest", "%s%s%s", info->version,
+             info->date[0] ? ", released " : "", info->date);
+    if (info->notes && info->notes[0])
+        log_step("notes", "%s", info->notes);
+    if (info->page && info->page[0])
+        log_step("page", "%s", info->page);
+}
+
+/*
+ * Downloads a release and puts it in place of the running binary. Returns 0
+ * when tabber has been replaced, -1 when nothing changed. `exe_out`, when
+ * given, receives the path the new binary now answers to — which is not
+ * something to go asking the system for afterwards: on Linux a process's own
+ * path follows the file it was started from, and that file has just been
+ * renamed out of the way.
+ */
+static int apply_upgrade(const update_info *info, char **exe_out)
+{
+    char err[TB_ERR_LEN];
+    update_plan plan;
+
+    if (exe_out)
+        *exe_out = NULL;
+
+    printf("Downloading " TABBER_NAME " %s...\n", info->version);
+    if (update_plan_build(info, &plan, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": the update was not applied: %s\n", err);
+        return -1;
+    }
+    log_step("download", "%lu bytes, MD5 %s (ok)", (unsigned long)plan.bytes, info->md5);
+
+    if (update_plan_apply(&plan, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": the update was not applied: %s\n", err);
+        update_plan_free(&plan);
+        return -1;
+    }
+    log_step("replaced", "%s", plan.exe);
+    log_step("checked", "the new binary runs and reports %s", plan.version);
+    log_step("previous", "kept as %s until the next run", plan.aside);
+
+    if (exe_out)
+        *exe_out = str_dup(plan.exe);
+    update_plan_free(&plan);
+    printf(TABBER_NAME " %s is in place.\n", info->version);
+    return 0;
+}
+
+/* Remembers that a check just happened, so the next run does not repeat it. */
+static void record_check(const update_info *info, const char *declined)
+{
+    char err[TB_ERR_LEN];
+    config *cfg = config_load(err, sizeof err);
+
+    if (!cfg)
+        return;
+    config_update_checked(cfg, info->version);
+    if (declined)
+        config_update_decline(cfg, declined);
+    config_save(cfg, err, sizeof err);
+    config_free(cfg);
+}
+
+static int cmd_upgrade(const options *opts)
+{
+    char err[TB_ERR_LEN];
+    update_info info;
+    int rc;
+
+    if (opts->offline) {
+        fprintf(stderr, TABBER_NAME ": --offline cannot be combined with 'upgrade'\n");
+        return EXIT_USAGE;
+    }
+
+    printf("Checking for a newer " TABBER_NAME "...\n");
+    if (update_check(&info, err, sizeof err) != 0) {
+        fprintf(stderr, TABBER_NAME ": the newest release could not be looked up: %s\n"
+                        "Releases are listed at %s\n", err, UPDATE_RELEASES_URL);
+        return EXIT_FAILED;
+    }
+    print_release(&info);
+    record_check(&info, NULL);
+
+    if (!info.newer) {
+        printf("You already have the newest release.\n");
+        rc = EXIT_OK;
+    } else if (!info.url) {
+        fprintf(stderr, TABBER_NAME ": that release ships no build for %s, so it cannot "
+                        "be installed from here; see %s\n", UPDATE_BUILD_KEY, info.page);
+        rc = EXIT_FAILED;
+    } else {
+        /* Asked for by name, so it goes ahead without asking again. */
+        rc = apply_upgrade(&info, NULL) == 0 ? EXIT_OK : EXIT_FAILED;
+    }
+
+    update_info_free(&info);
+    return rc;
+}
+
+/*
+ * The check that runs before an ordinary command: at most once a day, never
+ * when the output is being piped somewhere, and never fatal. Returns 1 when
+ * tabber replaced itself and handed the original command to the new binary,
+ * in which case *status is what to exit with.
+ */
+static int check_for_update(const options *opts, const char *command,
+                            int argc, char **argv, int *status)
+{
+    char err[TB_ERR_LEN];
+    config *cfg;
+    update_info info;
+    char *guard, *exe = NULL;
+    int upgraded = 0, restarted = 0;
+
+    if (opts->offline || opts->no_update_check || opts->bare)
+        return 0;
+    if (command && !strcmp(command, "upgrade"))
+        return 0;                    /* that command does this properly */
+
+    /* The restarted process must not go looking all over again. */
+    guard = plat_getenv(UPDATE_ENV_GUARD);
+    if (guard) {
+        free(guard);
+        return 0;
+    }
+
+    /* A state file that will not load is a problem for the command itself to
+     * report, not for a courtesy check to fail on. */
+    cfg = config_load(err, sizeof err);
+    if (!cfg)
+        return 0;
+    if (!config_update_enabled(cfg) || !config_update_due(cfg, UPDATE_CHECK_HOURS)) {
+        config_free(cfg);
+        return 0;
+    }
+
+    if (update_check(&info, err, sizeof err) != 0) {
+        /*
+         * No network, or GitHub having a bad day. Not this command's problem —
+         * but the attempt is still recorded, or a machine that cannot reach
+         * GitHub at all would pay for a failed lookup on every command it runs
+         * instead of on one a day.
+         */
+        if (opts->verbose)
+            fprintf(stderr, TABBER_NAME ": the check for a newer version did not go "
+                            "through: %s\n", err);
+        config_update_checked(cfg, NULL);
+        config_save(cfg, err, sizeof err);
+        config_free(cfg);
+        return 0;
+    }
+    config_update_checked(cfg, info.version);
+
+    if (info.newer && !config_update_declined(cfg, info.version)) {
+        fprintf(stderr, "\n" TABBER_NAME " %s is available; you have "
+                        TABBER_VERSION ".\n", info.version);
+        if (info.notes && info.notes[0])
+            fprintf(stderr, "%s\n", info.notes);
+
+        if (!info.url) {
+            fprintf(stderr, "It ships no build for %s; see %s\n\n",
+                    UPDATE_BUILD_KEY, info.page);
+        } else if (!plat_is_interactive()) {
+            /* Piped or scripted: say it once and get out of the way. */
+            fprintf(stderr, "Run '" TABBER_NAME " upgrade' to install it.\n\n");
+        } else if (!confirm("Update now?")) {
+            config_update_decline(cfg, info.version);   /* once per version */
+        } else {
+            upgraded = apply_upgrade(&info, &exe) == 0;
+        }
+    }
+
+    config_save(cfg, err, sizeof err);
+    config_free(cfg);
+
+    /*
+     * The command the user actually typed still has to run, and now there is a
+     * newer tabber to run it. If the restart cannot be made, this process
+     * carries on with the code it was already running, which is no worse than
+     * not having updated at all.
+     */
+    if (upgraded) {
+        printf("Restarting...\n\n");
+        plat_setenv(UPDATE_ENV_GUARD, "1");
+        if (exe && plat_restart(exe, argv + 1, (size_t)(argc - 1), status) == 0)
+            restarted = 1;
+        else
+            fprintf(stderr, TABBER_NAME ": warning: the new version could not be "
+                            "started; carrying on with this one\n");
+    }
+    free(exe);
+
+    update_info_free(&info);
+    return restarted;
+}
+
 /* ---- remove ------------------------------------------------------------ */
 
 static int cmd_remove(const options *opts, const char *code)
@@ -1221,6 +1441,8 @@ static int run_command(const options *opts, const char *command, const char *arg
         return cmd_install(opts, argument);
     if (!strcmp(command, "uninstall"))
         return cmd_uninstall(opts, argument);
+    if (!strcmp(command, "upgrade"))
+        return cmd_upgrade(opts);
     if (!strcmp(command, "bind"))
         return cmd_bind(opts, argument);
     if (!strcmp(command, "unbind"))
@@ -1244,6 +1466,10 @@ int main(int argc, char **argv)
 
     plat_init();
 
+    /* A binary an earlier update moved aside can only be deleted once the run
+     * that was using it has ended, which is to say now. */
+    update_sweep();
+
     for (i = 1; i < argc; i++) {
         const char *arg = argv[i];
 
@@ -1259,6 +1485,18 @@ int main(int argc, char **argv)
             opts.verbose = 1;
         } else if (!strcmp(arg, "-o") || !strcmp(arg, "--offline")) {
             opts.offline = 1;
+        } else if (!strcmp(arg, "--no-update-check")) {
+            opts.no_update_check = 1;
+        } else if (!strcmp(arg, UPDATE_SELF_CHECK_ARG)) {
+            /*
+             * How a freshly installed binary proves it is what the manifest
+             * said it was: the old one runs this on the new one and keeps it
+             * only if it agrees. Undocumented on purpose — it is not a thing
+             * to type, it is a thing tabber asks itself.
+             */
+            const char *want = i + 1 < argc ? argv[++i] : "";
+
+            return strcmp(want, TABBER_VERSION) == 0 ? EXIT_OK : EXIT_FAILED;
         } else if (!strcmp(arg, "-c") || !strcmp(arg, "--force-compress")) {
             opts.compress = 1;
         } else if (!strncmp(arg, "--cloud-mode", 12)) {
@@ -1306,6 +1544,13 @@ int main(int argc, char **argv)
             fprintf(stderr, TABBER_NAME ": unexpected argument '%s'\n", arg);
             return EXIT_USAGE;
         }
+    }
+
+    /* Before the command, so that saying yes to an update means the command
+     * runs on the new version rather than the one being replaced. */
+    if (check_for_update(&opts, command, argc, argv, &rc)) {
+        loc_langs_free(&opts.languages);
+        return rc;                   /* the new binary ran it; pass on its verdict */
     }
 
     rc = run_command(&opts, command, argument);

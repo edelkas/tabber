@@ -259,6 +259,73 @@ const json_value *config_get_keybindings(config *cfg)
     return record && record->type == JSON_OBJECT ? record : NULL;
 }
 
+/* ---- Looking for a newer tabber ---------------------------------------- */
+
+/* The "update" object, created empty the first time something records in it. */
+static json_value *update_record(config *cfg, int create)
+{
+    json_value *record = (json_value *)json_get(cfg->root, CJK_UPDATE);
+
+    if (record && record->type == JSON_OBJECT)
+        return record;
+    if (!create)
+        return NULL;
+    record = json_new_object();
+    json_object_set(cfg->root, CJK_UPDATE, record);
+    return record;
+}
+
+int config_update_enabled(config *cfg)
+{
+    return json_get_bool(update_record(cfg, 0), CJK_CHECK, 1);
+}
+
+int config_update_due(config *cfg, int hours)
+{
+    const char *last = json_get_string(update_record(cfg, 0), CJK_LAST_CHECK, NULL);
+    char cutoff[TB_TIMESTAMP_LEN + 1], now[TB_TIMESTAMP_LEN + 1];
+
+    if (!last || !last[0])
+        return 1;                    /* never looked */
+    time_ago_iso8601(hours, cutoff, sizeof cutoff);
+    time_now_iso8601(now, sizeof now);
+
+    /* A stamp from the future is a clock that was wrong when it was written:
+     * count that as due rather than never looking again. */
+    return strcmp(last, cutoff) <= 0 || strcmp(last, now) > 0;
+}
+
+void config_update_checked(config *cfg, const char *latest)
+{
+    json_value *record = update_record(cfg, 1);
+    char now[TB_TIMESTAMP_LEN + 1];
+
+    time_now_iso8601(now, sizeof now);
+    json_object_set(record, CJK_LAST_CHECK, json_new_string(now));
+    if (latest && latest[0])
+        json_object_set(record, CJK_LATEST, json_new_string(latest));
+}
+
+const char *config_update_latest(config *cfg)
+{
+    const char *latest = json_get_string(update_record(cfg, 0), CJK_LATEST, NULL);
+
+    return latest && latest[0] ? latest : NULL;
+}
+
+int config_update_declined(config *cfg, const char *version)
+{
+    const char *declined = json_get_string(update_record(cfg, 0), CJK_DECLINED, NULL);
+
+    return declined && version && strcmp(declined, version) == 0;
+}
+
+void config_update_decline(config *cfg, const char *version)
+{
+    json_object_set(update_record(cfg, 1), CJK_DECLINED,
+                    version ? json_new_string(version) : json_new_null());
+}
+
 int config_get_palettes(config *cfg, const char *code, str_list *out)
 {
     const json_value *array = json_get(config_find_tab(cfg, code), CJK_PALETTES);

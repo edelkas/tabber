@@ -53,6 +53,12 @@
 #define SAVE_FRESH_ZIP       SAVE_NAME ".zip"
 #define SAVE_RES_DIR         "res"
 
+/*
+ * ...which normally comes from inside the executable (see resource.h), and is
+ * named rather than pathed in reports, there being no file to point at.
+ */
+#define SAVE_FRESH_BUILTIN   "the fresh save built into tabber"
+
 /* Entry looked up inside any of those archives, as a prefix ("nprofile*"). */
 #define SAVE_ENTRY_PREFIX    SAVE_NAME
 
@@ -90,6 +96,7 @@ typedef struct {
     size_t save_bytes;
     int backed_up;           /* a save was archived                                    */
     int used_fresh;          /* the new save came from the shipped archive             */
+    int from_builtin;        /* ...the one inside the executable, not a file            */
     int gzipped;             /* the save was written gzipped                           */
     int compressed;          /* ...and tabber was the one that compressed it           */
 } save_report;
@@ -109,6 +116,7 @@ typedef struct {
     size_t backup_len;
     char *source_path;         /* archive the new save comes from          */
     int used_fresh;
+    int from_builtin;          /* it is the embedded one, so not a path    */
     unsigned char *save;       /* the new save, ready to write             */
     size_t save_len;
     char *save_path;           /* where it goes                            */
@@ -117,7 +125,11 @@ typedef struct {
     int applied;               /* the new save is on disk                  */
 } save_plan;
 
-/* Path of the fresh save tabber ships, or NULL when it cannot be found. */
+/*
+ * Path of a fresh save on disk, or NULL when there is none: the environment
+ * override first, then res/ beside the executable. Without one the copy built
+ * into the binary is used, so this returning NULL is the ordinary case.
+ */
 char *save_fresh_path(void);
 
 /*

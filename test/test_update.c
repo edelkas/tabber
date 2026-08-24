@@ -1,0 +1,407 @@
+/*
+ * test_update.c - Updating tabber itself.
+ *
+ * The swap is the part worth testing hardest, and it is testable for real: the
+ * binary being replaced is named by TABBER_EXE, so these tests point it at a
+ * copy of the test executable in scratch space and let the actual code rename
+ * it about. The self-check that follows a swap really does run the binary that
+ * was put in place, which is why a copy of a working executable is used as the
+ * "new version" and a file of rubbish as the broken one.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "config.h"
+#include "json.h"
+#include "md5.h"
+#include "platform.h"
+#include "test.h"
+#include "update.h"
+#include "util.h"
+#include "version.h"
+
+/* A manifest naming a build for whatever platform the suite is running on. */
+#define MANIFEST_FMT \
+    "{\n" \
+    "  \"version\": \"%s\",\n" \
+    "  \"date\": \"2026-09-01T12:00:00Z\",\n" \
+    "  \"notes\": \"Something changed.\",\n" \
+    "  \"page\": \"https://example.invalid/releases/tag/v%s\",\n" \
+    "  \"builds\": {\n" \
+    "    \"" UPDATE_BUILD_KEY "\": { \"url\": \"https://example.invalid/tabber\",\n" \
+    "                      \"size\": %lu, \"md5\": \"%s\" }\n" \
+    "  }\n" \
+    "}\n"
+
+/* ---- Versions ---------------------------------------------------------- */
+
+static void test_versions(void)
+{
+    test_case("versions compare the way a human reads them");
+
+    CHECK(update_version_compare("0.3.0", "0.2.0") > 0, "0.3.0 is above 0.2.0");
+    CHECK(update_version_compare("0.2.0", "0.3.0") < 0, "and 0.2.0 below it");
+    CHECK(update_version_compare("1.0.0", "1.0.0") == 0, "a version equals itself");
+
+    /* The one that string comparison gets wrong. */
+    CHECK(update_version_compare("0.10.0", "0.9.0") > 0, "0.10.0 is above 0.9.0");
+    CHECK(update_version_compare("1.0.10", "1.0.9") > 0, "...and 1.0.10 above 1.0.9");
+
+    CHECK(update_version_compare("v0.3.0", "0.3.0") == 0, "a leading v is ignored");
+    CHECK(update_version_compare("1.2", "1.2.0") == 0, "a missing field reads as zero");
+    CHECK(update_version_compare("2", "1.9.9") > 0, "even when most of them are missing");
+
+    CHECK(update_version_compare("1.0.0", "1.0.0-rc1") > 0,
+          "a release is above its own run-up");
+    CHECK(update_version_compare("1.0.0-rc1", "1.0.0-rc1") == 0,
+          "and a pre-release equals itself");
+
+    CHECK(update_version_compare("0.0.0", TABBER_VERSION) < 0,
+          "the version this was built as is above 0.0.0");
+}
+
+/* ---- The manifest ------------------------------------------------------ */
+
+static void test_manifest(void)
+{
+    char err[TB_ERR_LEN];
+    update_info info;
+    char *text;
+
+    test_case("a release manifest is read");
+
+    text = str_fmt(MANIFEST_FMT, "99.0.0", "99.0.0", 12UL,
+                   "0123456789abcdef0123456789abcdef");
+    if (CHECK(update_manifest_parse(text, &info, err, sizeof err) == 0,
+              "the manifest parses (%s)", err)) {
+        CHECK_STR(info.version, "99.0.0", "the version is read");
+        CHECK_STR(info.date, "2026-09-01T12:00:00Z", "so is the date");
+        CHECK_STR(info.notes, "Something changed.", "and the notes");
+        CHECK(info.newer, "99.0.0 is newer than what this was built as");
+        CHECK_STR(info.url, "https://example.invalid/tabber", "the build is ours");
+        CHECK_NUM(info.size, 12, "with its size");
+        update_info_free(&info);
+    }
+    free(text);
+
+    /* The same release, but the one already installed. */
+    text = str_fmt(MANIFEST_FMT, TABBER_VERSION, TABBER_VERSION, 12UL,
+                   "0123456789abcdef0123456789abcdef");
+    if (CHECK(update_manifest_parse(text, &info, err, sizeof err) == 0,
+              "a manifest of the running version parses (%s)", err)) {
+        CHECK(!info.newer, "and is not newer than itself");
+        update_info_free(&info);
+    }
+    free(text);
+
+    test_case("...and a manifest that cannot be trusted is refused");
+
+    CHECK(update_manifest_parse("{ not json", &info, err, sizeof err) != 0,
+          "something that is not JSON is refused");
+    CHECK(update_manifest_parse("{ \"notes\": \"hi\" }", &info, err, sizeof err) != 0,
+          "so is one that names no version");
+
+    /* A build with no size or no hash cannot be checked, so it is not taken. */
+    text = str_fmt(MANIFEST_FMT, "99.0.0", "99.0.0", 0UL,
+                   "0123456789abcdef0123456789abcdef");
+    CHECK(update_manifest_parse(text, &info, err, sizeof err) != 0,
+          "a build with no size is refused");
+    free(text);
+    text = str_fmt(MANIFEST_FMT, "99.0.0", "99.0.0", 12UL, "tooshort");
+    CHECK(update_manifest_parse(text, &info, err, sizeof err) != 0,
+          "and so is one with no usable MD5");
+    free(text);
+
+    test_case("...and a release with nothing we can run is still reported");
+
+    if (CHECK(update_manifest_parse(
+                  "{ \"version\": \"99.0.0\", \"builds\": { \"vic20\": {} } }",
+                  &info, err, sizeof err) == 0,
+              "a manifest with no build for us parses (%s)", err)) {
+        CHECK(info.newer, "the newer version is still known");
+        CHECK(info.url == NULL, "but there is nothing to download");
+        CHECK_STR(info.page, UPDATE_RELEASES_URL, "and the releases page stands in");
+        update_info_free(&info);
+    }
+}
+
+/* ---- The swap ---------------------------------------------------------- */
+
+/* A world holding a stand-in for the running executable. */
+typedef struct {
+    char *dir;         /* scratch directory                       */
+    char *exe;         /* the "running" binary, a copy of this one */
+    char *staged;      /* what an update writes beside it          */
+    char *aside;       /* where the old one goes                   */
+    unsigned char *working;   /* bytes of a binary that really runs */
+    size_t working_len;
+} world;
+
+/* Builds `info` so that `data` is exactly what it promises. */
+static void describe(update_info *info, const char *version,
+                     const void *data, size_t len)
+{
+    memset(info, 0, sizeof(*info));
+    snprintf(info->version, sizeof info->version, "%s", version);
+    info->url = str_dup("https://example.invalid/tabber");
+    info->size = len;
+    md5_hex(data, len, info->md5);
+}
+
+static int world_build(world *w, const char *name)
+{
+    char *self;
+
+    memset(w, 0, sizeof(*w));
+    w->dir = test_dir(name);
+
+    /* The test binary is a real, working executable of this very version, so
+     * a copy of it is both the "old" tabber and a valid "new" one. */
+    self = plat_exe_path();
+    w->working = self ? (unsigned char *)plat_read_file(self, &w->working_len) : NULL;
+    free(self);
+    if (!CHECK(w->working != NULL && w->working_len > 0,
+               "the test binary can be read, to stand in for tabber"))
+        return -1;
+
+    w->exe = path_join(w->dir, "tabber_stand_in" TEST_EXE_SUFFIX);
+    w->staged = str_fmt("%s%s", w->exe, UPDATE_NEW_SUFFIX);
+    w->aside = str_fmt("%s%s", w->exe, UPDATE_OLD_SUFFIX);
+    test_write_bytes(w->exe, w->working, w->working_len);
+    plat_make_executable(w->exe);
+    test_setenv(UPDATE_ENV_EXE, w->exe);
+    return 0;
+}
+
+static void world_free(world *w)
+{
+    test_setenv(UPDATE_ENV_EXE, NULL);
+    free(w->dir);
+    free(w->exe);
+    free(w->staged);
+    free(w->aside);
+    free(w->working);
+}
+
+/* Whether the stand-in is byte for byte the binary it started as. */
+static int exe_is_intact(world *w)
+{
+    size_t len = 0;
+    unsigned char *now = test_read_bytes(w->exe, &len);
+    int same = now && len == w->working_len && memcmp(now, w->working, len) == 0;
+
+    free(now);
+    return same;
+}
+
+static void test_swap(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    update_info info;
+    update_plan plan;
+
+    test_case("the new binary takes the old one's place");
+    if (world_build(&w, "update_swap") != 0) { world_free(&w); return; }
+
+    describe(&info, TABBER_VERSION, w.working, w.working_len);
+    if (CHECK(update_plan_stage(&info, w.working, w.working_len, &plan,
+                                err, sizeof err) == 0,
+              "the download is staged (%s)", err)) {
+        CHECK(plat_is_file(w.staged), "beside the binary it will replace");
+        CHECK(exe_is_intact(&w), "which is untouched until it is applied");
+
+        if (CHECK(update_plan_apply(&plan, err, sizeof err) == 0,
+                  "and applied (%s)", err)) {
+            CHECK(exe_is_intact(&w), "the new binary is in place");
+            CHECK(plat_is_file(w.aside), "the old one was moved aside, not deleted");
+            CHECK(!plat_is_file(w.staged), "and nothing is left staged");
+        }
+        update_plan_free(&plan);
+    }
+    update_info_free(&info);
+
+    /* The leftover is only removable once the run that displaced it has gone,
+     * which for a test is straight away. */
+    update_sweep();
+    CHECK(!plat_is_file(w.aside), "the sweep clears the displaced binary");
+    CHECK(plat_is_file(w.exe), "and leaves the one in use alone");
+
+    world_free(&w);
+}
+
+static void test_refusals(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    update_info info;
+    update_plan plan;
+
+    test_case("a download that is not what was promised is refused");
+    if (world_build(&w, "update_refuse") != 0) { world_free(&w); return; }
+
+    /* Right hash, wrong length. */
+    describe(&info, "99.0.0", w.working, w.working_len);
+    info.size = w.working_len + 1;
+    CHECK(update_plan_stage(&info, w.working, w.working_len, &plan,
+                            err, sizeof err) != 0,
+          "a download of the wrong size is refused");
+    CHECK(strstr(err, "bytes") != NULL, "and the sizes are named (%s)", err);
+    update_info_free(&info);
+
+    /* Right length, wrong hash: one byte of the binary altered in flight. */
+    describe(&info, "99.0.0", w.working, w.working_len);
+    {
+        unsigned char *tampered = xmalloc(w.working_len);
+
+        memcpy(tampered, w.working, w.working_len);
+        tampered[w.working_len / 2] ^= 0xff;
+        CHECK(update_plan_stage(&info, tampered, w.working_len, &plan,
+                                err, sizeof err) != 0,
+              "a single altered byte is caught by the MD5");
+        free(tampered);
+    }
+    update_info_free(&info);
+
+    CHECK(!plat_is_file(w.staged), "neither left anything on disk");
+    CHECK(exe_is_intact(&w), "and the binary in use is untouched");
+    world_free(&w);
+}
+
+static void test_broken_binary_is_rolled_back(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    update_info info;
+    update_plan plan;
+    static const char rubbish[] = "MZ this is not a program at all, only bytes";
+
+    test_case("a new binary that will not run is taken straight back out");
+    if (world_build(&w, "update_broken") != 0) { world_free(&w); return; }
+
+    /* It matches the manifest perfectly; it simply is not a program. That is
+     * exactly what the self-check after the swap is for. */
+    describe(&info, TABBER_VERSION, rubbish, sizeof rubbish - 1);
+    if (CHECK(update_plan_stage(&info, rubbish, sizeof rubbish - 1, &plan,
+                                err, sizeof err) == 0,
+              "it stages, being just what the manifest described (%s)", err)) {
+        CHECK(update_plan_apply(&plan, err, sizeof err) != 0,
+              "but applying it fails, because it does not run");
+        CHECK(exe_is_intact(&w), "and the binary that did run is back in place");
+        CHECK(!plan.applied, "the plan knows it was undone");
+        update_plan_free(&plan);
+    }
+    update_info_free(&info);
+    world_free(&w);
+}
+
+static void test_wrong_version_is_rolled_back(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    update_info info;
+    update_plan plan;
+
+    test_case("...and so is one that is not the version it claimed to be");
+    if (world_build(&w, "update_wrong_version") != 0) { world_free(&w); return; }
+
+    /* A binary that runs perfectly well, described as a version it is not:
+     * the manifest and the download agree with each other and both are wrong,
+     * which only asking the binary itself can catch. */
+    describe(&info, "99.0.0", w.working, w.working_len);
+    if (CHECK(update_plan_stage(&info, w.working, w.working_len, &plan,
+                                err, sizeof err) == 0,
+              "it stages (%s)", err)) {
+        CHECK(update_plan_apply(&plan, err, sizeof err) != 0,
+              "applying it fails: it reports " TABBER_VERSION ", not 99.0.0");
+        CHECK(exe_is_intact(&w), "and the binary is back as it was");
+        update_plan_free(&plan);
+    }
+    update_info_free(&info);
+    world_free(&w);
+}
+
+static void test_undo(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    update_info info;
+    update_plan plan;
+
+    test_case("an applied update can still be taken back");
+    if (world_build(&w, "update_undo") != 0) { world_free(&w); return; }
+
+    describe(&info, TABBER_VERSION, w.working, w.working_len);
+    if (CHECK(update_plan_stage(&info, w.working, w.working_len, &plan,
+                                err, sizeof err) == 0,
+              "staged (%s)", err) &&
+        CHECK(update_plan_apply(&plan, err, sizeof err) == 0, "applied (%s)", err)) {
+        update_plan_undo(&plan);
+        CHECK(exe_is_intact(&w), "the old binary is back under its own name");
+        CHECK(!plat_is_file(w.aside), "and nothing is left aside");
+        update_plan_free(&plan);
+    }
+    update_info_free(&info);
+    world_free(&w);
+}
+
+/* ---- When to look ------------------------------------------------------ */
+
+static void test_when_to_check(void)
+{
+    char err[TB_ERR_LEN];
+    char *dir = test_dir("update_state");
+    config *cfg;
+
+    test_case("a check is remembered, and not repeated all day");
+    test_use_root(dir);
+
+    cfg = config_load(err, sizeof err);
+    if (CHECK(cfg != NULL, "the state file loads (%s)", err)) {
+        CHECK(config_update_enabled(cfg), "checking is on unless it is turned off");
+        CHECK(config_update_due(cfg, UPDATE_CHECK_HOURS),
+              "and a check is due when none has ever run");
+        CHECK(config_update_latest(cfg) == NULL, "nothing has been seen yet");
+
+        config_update_checked(cfg, "99.0.0");
+        CHECK(!config_update_due(cfg, UPDATE_CHECK_HOURS),
+              "once one has run, the next is not due");
+        CHECK(config_update_due(cfg, 0), "though it is if nothing is allowed to age");
+        CHECK_STR(config_update_latest(cfg), "99.0.0", "and what it found is kept");
+
+        CHECK(!config_update_declined(cfg, "99.0.0"), "nothing is declined yet");
+        config_update_decline(cfg, "99.0.0");
+        CHECK(config_update_declined(cfg, "99.0.0"), "saying no to a version sticks");
+        CHECK(!config_update_declined(cfg, "99.1.0"),
+              "but only to that one: a later release asks again");
+
+        /* All of it has to survive the trip through the file. */
+        CHECK(config_save(cfg, err, sizeof err) == 0, "the state file saves (%s)", err);
+        config_free(cfg);
+
+        cfg = config_load(err, sizeof err);
+        if (CHECK(cfg != NULL, "and loads again (%s)", err)) {
+            CHECK(!config_update_due(cfg, UPDATE_CHECK_HOURS), "the check is still fresh");
+            CHECK(config_update_declined(cfg, "99.0.0"), "and the refusal is remembered");
+            config_free(cfg);
+        }
+    }
+
+    free(dir);
+}
+
+/* ---- Suite ------------------------------------------------------------- */
+
+void suite_update(void)
+{
+    test_suite("update");
+    test_versions();
+    test_manifest();
+    test_swap();
+    test_refusals();
+    test_broken_binary_is_rolled_back();
+    test_wrong_version_is_rolled_back();
+    test_undo();
+    test_when_to_check();
+}

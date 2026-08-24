@@ -53,6 +53,13 @@ unsigned long crc32_bytes(const void *data, size_t len);
 /* Current UTC time as an ISO 8601 timestamp, the format the digest uses. */
 void time_now_iso8601(char *out, size_t outsz);
 
+/*
+ * The same, `hours` in the past. Timestamps in this format are fixed-width
+ * UTC, so strcmp orders them: a stamp that compares below this one is older
+ * than `hours`, which is all "is it time to check again?" needs.
+ */
+void time_ago_iso8601(int hours, char *out, size_t outsz);
+
 /* ---- Growable list of owned strings ------------------------------------ */
 
 typedef struct {

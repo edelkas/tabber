@@ -32,15 +32,13 @@ else
   LDLIBS += -lcurl
 endif
 
-all: $(TARGET) $(OBJDIR)/res/nprofile.zip
+all: $(TARGET)
 
 $(TARGET): $(MAINOBJ) $(LIBOBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-# The fresh savefile ships beside the executable, as it will when packaged.
-$(OBJDIR)/res/nprofile.zip: res/nprofile.zip | $(OBJDIR)
-	mkdir -p $(OBJDIR)/res
-	cp $< $@
+# The fresh savefile is built into the binary (src/resource_save.c), so the
+# executable is the whole program: nothing has to ship beside it.
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<

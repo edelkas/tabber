@@ -41,14 +41,51 @@ void plat_init(void);
 /* Value of environment variable `name`, or NULL when unset/empty. */
 char *plat_getenv(const char *name);
 
+/*
+ * Sets one for this process and anything it starts afterwards, which is how a
+ * restart tells the new binary that it is the restarted one. Returns 0 on
+ * success; a NULL value clears the variable.
+ */
+int plat_setenv(const char *name, const char *value);
+
 /* The current user's home directory, or NULL if it cannot be determined. */
 char *plat_home_dir(void);
 
 /* The user's "Documents" folder (relocation-aware on Windows). */
 char *plat_documents_dir(void);
 
+/* The running executable itself, or NULL if it cannot be found. Caller frees. */
+char *plat_exe_path(void);
+
 /* Directory holding the running executable, or NULL if it cannot be found. */
 char *plat_exe_dir(void);
+
+/* ---- Running other programs -------------------------------------------- */
+
+/*
+ * Marks a file as runnable. A no-op on Windows, where the extension decides;
+ * elsewhere it is 0755, since a binary unpacked from a ZIP arrives without it.
+ */
+int plat_make_executable(const char *path);
+
+/* Whether both ends of the console are a terminal, so a prompt makes sense. */
+int plat_is_interactive(void);
+
+/*
+ * Runs `exe` with `args` (which does not include the program name) and waits
+ * for it. Returns 0 with *status set to its exit code, or -1 when it could not
+ * be started at all.
+ */
+int plat_run_and_wait(const char *exe, char *const *args, size_t count, int *status);
+
+/*
+ * Hands this process over to `exe`, which is what an update does once the new
+ * binary is in place. On POSIX the image is replaced and this never returns;
+ * Windows has no such call, so a child is started and waited for, and *status
+ * receives the exit code for the caller to exit with. Returns -1 when the
+ * program could not be started, in which case nothing happened.
+ */
+int plat_restart(const char *exe, char *const *args, size_t count, int *status);
 
 /* Overrides the tool's root directory; mainly for tests and portable setups. */
 #define TABBER_ENV_HOME "TABBER_HOME"

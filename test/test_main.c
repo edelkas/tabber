@@ -14,7 +14,9 @@
 #include "platform.h"
 #include "save.h"
 #include "test.h"
+#include "update.h"
 #include "util.h"
+#include "version.h"
 #include "zip.h"
 
 #ifdef _WIN32
@@ -398,6 +400,17 @@ int main(int argc, char **argv)
     plat_init();
 
     /*
+     * The update tests use a copy of this very binary as a stand-in for
+     * tabber, and the swap they exercise ends by asking the binary it just
+     * put in place what version it is. Answering the way tabber does is what
+     * makes that check real rather than simulated — and it is answered first,
+     * before any scratch directory is touched, since this runs inside a test
+     * that is using them.
+     */
+    if (argc == 3 && !strcmp(argv[1], UPDATE_SELF_CHECK_ARG))
+        return strcmp(argv[2], TABBER_VERSION) == 0 ? 0 : 1;
+
+    /*
      * Point the personal folder at scratch space before anything runs: no
      * lookup can then reach the real one, whatever a test forgets to set.
      */
@@ -430,6 +443,7 @@ int main(int argc, char **argv)
     suite_palettes();
     suite_loc();
     suite_keys();
+    suite_update();
     suite_game();
     if (online)
         suite_online(full);
@@ -441,6 +455,7 @@ int main(int argc, char **argv)
     test_setenv(TABBER_ENV_GAME_DIR, NULL);
     test_setenv(TABBER_ENV_PERSONAL_DIR, NULL);
     test_setenv(TABBER_ENV_FRESH_SAVE, NULL);
+    test_setenv(UPDATE_ENV_EXE, NULL);
     test_cleanup();
 
     printf("\n%d checks, %d failure(s): %s\n",
