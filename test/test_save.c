@@ -16,6 +16,7 @@
 #include "gzip.h"
 #include "paths.h"
 #include "platform.h"
+#include "resource.h"
 #include "save.h"
 #include "test.h"
 #include "util.h"
@@ -644,34 +645,26 @@ static void test_old_installer_archives(void)
 static void test_shipped_save(void)
 {
     char err[TB_ERR_LEN];
-    char *path;
-    unsigned char *raw, *save;
-    size_t raw_len = 0;
+    const unsigned char *raw;
+    unsigned char *save;
+    size_t raw_len;
     zip_archive zip;
     const zip_entry *entry;
 
     test_case("the savefile tabber ships");
     test_use_fresh_save(NULL);
 
-    /* Look for it where a built tree keeps it: beside the executable. The
-     * test binary sits one level deeper, in its own folder. */
-    {
-        char *exe = plat_exe_dir();
-        char *parent = path_dirname(exe ? exe : ".");
-
-        test_use_root(parent);
-        free(exe);
-        free(parent);
-    }
-    path = save_fresh_path();
-    if (!path) {
-        printf("      (not built into this tree, skipped)\n");
-        return;
-    }
-
-    raw = test_read_bytes(path, &raw_len);
-    CHECK(raw != NULL, "it can be read");
-    if (raw && zip_open(&zip, raw, raw_len, err, sizeof err) == 0) {
+    /*
+     * Straight out of the executable, where it now lives. There is no file to
+     * go looking for, so there is nothing to skip either: this used to hunt
+     * for res/nprofile.zip beside the binary and quietly test nothing when a
+     * tree was built without it.
+     */
+    raw = RES_FRESH_SAVE;
+    raw_len = RES_FRESH_SAVE_LEN;
+    CHECK(raw_len > 0, "it is built into the binary (%lu bytes)",
+          (unsigned long)raw_len);
+    if (zip_open(&zip, raw, raw_len, err, sizeof err) == 0) {
         entry = zip_find_prefix(&zip, SAVE_ENTRY_PREFIX);
         CHECK(entry != NULL, "it holds a savefile");
         if (entry) {
@@ -739,12 +732,9 @@ static void test_shipped_save(void)
             free(save);
         }
         zip_close(&zip);
-    } else if (raw) {
+    } else {
         CHECK(0, "it is a valid archive: %s", err);
     }
-
-    free(raw);
-    free(path);
 }
 
 /* ---- Steam Cloud ------------------------------------------------------- */
