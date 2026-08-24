@@ -524,7 +524,7 @@ static void test_install_refusals(void)
     world w;
     const npp_tab *tab;
     install_report report;
-    char *path, *before;
+    char *path;
 
     test_case("an install that cannot go ahead");
     world_build(&w, "game_refuse");
@@ -540,19 +540,6 @@ static void test_install_refusals(void)
     install_report_free(&report);
     check_library(&w, LIB_OFFICIAL_URI, "the library was not touched");
     test_write(path, "original " TAB_LEVEL_FILE);
-    free(path);
-
-    /* A backup from an install that was never undone. The pristine original
-     * behind it must not be overwritten. */
-    path = str_fmt("%s%c%s%s", w.levels, PATH_SEP, TAB_LEVEL_FILE, INSTALL_BACKUP_SUFFIX);
-    test_write(path, "a precious original");
-    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) != 0,
-          "install is refused when a backup already exists");
-    install_report_free(&report);
-    before = test_read(path);
-    CHECK_STR(before, "a precious original", "the existing backup is intact");
-    free(before);
-    plat_remove_file(path);
     free(path);
 
     /* A library that is already patched. */
@@ -571,7 +558,8 @@ static void test_install_refusals(void)
     }
     CHECK(tab_install(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) != 0,
           "install is refused when the library is already patched");
-    CHECK(strstr(err, "not in a clean state") != NULL, "the check catches it first");
+    CHECK(strstr(err, "already points at") != NULL,
+          "because the library already names a tab (%s)", err);
     install_report_free(&report);
     {
         char *text = game_file(&w, TAB_LEVEL_FILE);
@@ -615,13 +603,19 @@ static void test_uninstall_refusals(void)
           "install for the next checks (%s)", err);
     install_report_free(&installed);
 
-    /* A backup has gone missing: restoring would leave the game short. */
+    /*
+     * A backup has gone missing and the vanilla mappack cannot be had either:
+     * its download in the fixture points at the dead port. With nothing left
+     * to restore from, the uninstall is refused — and only then.
+     */
     path = str_fmt("%s%c%s%s", w.levels, PATH_SEP, TAB_CHALLENGE, INSTALL_BACKUP_SUFFIX);
     text = test_read(path);
     plat_remove_file(path);
+    CHECK(!tab_is_downloaded(INSTALL_ORIGINALS_CODE), "the originals are not in the store");
     CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) != 0,
-          "uninstall is refused when a backup is missing");
-    CHECK(strstr(err, TAB_CHALLENGE) != NULL, "the file without a backup is named");
+          "uninstall is refused when a backup is missing and cannot be replaced");
+    CHECK(strstr(err, INSTALL_BACKUP_SUFFIX) != NULL,
+          "and says what it was looking for (%s)", err);
     uninstall_report_free(&report);
     /* Nothing may have been half-restored. */
     {
@@ -677,15 +671,21 @@ static void test_health_mismatches(void)
     config_save(cfg, err, sizeof err);
     config_free(cfg);
 
-    /* Patched, but nothing is recorded as installed. */
+    /*
+     * Patched, with nothing recorded as installed. That is not drift but the
+     * signature of an installer that came before tabber, so it passes — and
+     * says which tab it found, since uninstalling has to work from here.
+     */
     CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
           "install (%s)", err);
     install_report_free(&installed);
     cfg = config_load(err, sizeof err);
     config_set_uninstalled(cfg, 0, TAB_CODE);   /* forget it on purpose */
     lib_check(cfg, w.dig, &w.paths, &health, err, sizeof err);
-    CHECK(!health.healthy, "an unrecorded install is caught");
-    CHECK(strstr(health.detail, "no tab is recorded") != NULL, "...and explained");
+    CHECK(health.healthy, "an install nothing recorded is accepted: %s", health.detail);
+    CHECK(health.unrecorded, "...and marked as one we did not make");
+    CHECK_STR(health.lib_code, TAB_CODE, "the library says which tab it is");
+    CHECK_STR(health.state_code, "", "though nothing is on record");
     config_free(cfg);
 
     /* A library pointing somewhere we do not know at all. */
@@ -1029,6 +1029,249 @@ static void test_controls_without_a_bindings_file(void)
     world_free(&w);
 }
 
+/*
+ * The installers that came before tabber kept no backups: they shipped the
+ * originals and wrote them back. So an "OG" file may be missing when a tab is
+ * installed, and may be there when none is, and neither may be read as proof
+ * of anything. The originals then come from the vanilla mappack.
+ */
+
+/* Puts the vanilla mappack in the store, holding `body` for each file. */
+static void world_add_originals(world *w, const char *body)
+{
+    char *root = tab_dir_path(INSTALL_ORIGINALS_CODE);
+    char *levels = path_join(root, DIGEST_DEFAULT_LEVELS_DIR);
+    char *path;
+
+    (void)w;
+    path = path_join(levels, TAB_LEVEL_FILE);
+    test_write(path, body);
+    free(path);
+    path = path_join(levels, TAB_CHALLENGE);
+    test_write(path, body);
+    free(path);
+    free(levels);
+    free(root);
+}
+
+/* The 'OG' file of one of the game's files. Caller frees. */
+static char *backup_path(world *w, const char *name)
+{
+    return str_fmt("%s%c%s%s", w->levels, PATH_SEP, name, INSTALL_BACKUP_SUFFIX);
+}
+
+static void test_install_over_a_stale_backup(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    install_report report;
+    char *path, *text;
+
+    test_case("a backup left behind by an older installer is not in the way");
+    world_build(&w, "game_stale_backup");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    /*
+     * What an install by tabber followed by an uninstall by an older one
+     * leaves: the game's own file back in place, and our backup of it still
+     * sitting there. The library says no tab is installed, which is what
+     * makes the backup a leftover rather than somebody's only original.
+     */
+    path = backup_path(&w, TAB_LEVEL_FILE);
+    test_write(path, "a leftover from last time");
+
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) == 0,
+          "the install goes ahead (%s)", err);
+    CHECK_NUM(report.stale_backups.count, 1, "and says one backup was already there");
+    if (report.stale_backups.count)
+        CHECK_STR(report.stale_backups.items[0], TAB_LEVEL_FILE, "naming which");
+
+    text = test_read(path);
+    CHECK_STR(text, "original " TAB_LEVEL_FILE,
+              "the backup now holds the file that was really there");
+    free(text);
+    text = game_file(&w, TAB_LEVEL_FILE);
+    CHECK_STR(text, TAB_LEVEL_BODY, "and the tab's copy is installed over it");
+    free(text);
+
+    install_report_free(&report);
+    free(path);
+    world_free(&w);
+}
+
+static void test_uninstall_without_backups(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    install_report installed;
+    uninstall_report report;
+    char *path, *text;
+
+    test_case("an uninstall falls back to the vanilla mappack for what has no backup");
+    world_build(&w, "game_no_backup");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
+          "install first (%s)", err);
+    install_report_free(&installed);
+
+    /* One backup goes missing, as if that file had been installed by an older
+     * installer, which kept none. The vanilla mappack is in the store. */
+    path = backup_path(&w, TAB_CHALLENGE);
+    plat_remove_file(path);
+    world_add_originals(&w, "the vanilla file");
+
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) == 0,
+          "the uninstall goes ahead (%s)", err);
+    CHECK_NUM(report.restored_count, 2, "both files are restored");
+    CHECK_NUM(report.from_backups, 1, "one from its own backup");
+    CHECK_NUM(report.from_originals, 1, "and one from the vanilla mappack");
+    CHECK_STR(report.originals_code, INSTALL_ORIGINALS_CODE, "which is named");
+    CHECK(!report.fetched_originals, "already in the store, so nothing was downloaded");
+
+    text = game_file(&w, TAB_LEVEL_FILE);
+    CHECK_STR(text, "original " TAB_LEVEL_FILE, "the backed-up file is its own original");
+    free(text);
+    text = game_file(&w, TAB_CHALLENGE);
+    CHECK_STR(text, "the vanilla file", "the other is the vanilla mappack's copy");
+    free(text);
+
+    check_library(&w, LIB_OFFICIAL_URI, "the library points at the official server again");
+    uninstall_report_free(&report);
+    free(path);
+    world_free(&w);
+}
+
+static void test_uninstall_with_no_backups_at_all(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    install_report installed;
+    uninstall_report report;
+    char *path;
+    size_t i;
+    static const char *names[] = { TAB_LEVEL_FILE, TAB_CHALLENGE };
+
+    test_case("...even when there is no backup at all, as an old installer leaves it");
+    world_build(&w, "game_old_install");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
+          "install first (%s)", err);
+    install_report_free(&installed);
+
+    /* Every backup gone: the game now looks exactly as an older installer
+     * would have left it, with the tab in place and no copy of anything. */
+    for (i = 0; i < sizeof names / sizeof *names; i++) {
+        path = backup_path(&w, names[i]);
+        plat_remove_file(path);
+        free(path);
+    }
+    world_add_originals(&w, "the vanilla file");
+
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) == 0,
+          "the uninstall still goes ahead (%s)", err);
+    CHECK_NUM(report.from_backups, 0, "nothing came from a backup");
+    CHECK_NUM(report.from_originals, 2, "both files came from the vanilla mappack");
+
+    for (i = 0; i < sizeof names / sizeof *names; i++) {
+        char *text = game_file(&w, names[i]);
+        CHECK_STR(text, "the vanilla file", "the game has its own file back");
+        free(text);
+    }
+
+    uninstall_report_free(&report);
+    world_free(&w);
+}
+
+/* Points the library at `uri` without going through an install. */
+static void patch_library(world *w, const char *uri)
+{
+    char err[TB_ERR_LEN];
+    str_list known = {0};
+    lib_image img;
+    config *cfg = config_load(err, sizeof err);
+
+    server_known_uris(cfg, w->dig, &known);
+    if (lib_open(&w->paths, &known, &img, err, sizeof err) == 0) {
+        CHECK(lib_write_uri(&img, uri, err, sizeof err) == 0,
+              "the library can be patched by hand (%s)", err);
+        lib_close(&img);
+    } else {
+        CHECK(0, "the library opens (%s)", err);
+    }
+    str_list_free(&known);
+    config_free(cfg);
+}
+
+/*
+ * The whole point of the fallback: a tab that an older installer put in, taken
+ * out by tabber. Nothing of that install is ours — no backups, no state file
+ * entry — and the only evidence it happened at all is the patched library.
+ */
+static void test_uninstall_an_old_installers_work(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    uninstall_report report;
+    lib_health health;
+    config *cfg;
+    char *path, *text;
+
+    test_case("a tab an older installer put in can be taken out by this one");
+    world_build(&w, "game_old_installer");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    /* The game as that installer leaves it: its files in place, no backup of
+     * anything, the library redirected, and the state file none the wiser. */
+    path = path_join(w.levels, TAB_LEVEL_FILE);
+    test_write(path, TAB_LEVEL_BODY);
+    free(path);
+    path = path_join(w.levels, TAB_CHALLENGE);
+    test_write(path, TAB_CHALLENGE_BODY);
+    free(path);
+    patch_library(&w, EXPECTED_PATCH);
+    world_add_originals(&w, "the vanilla file");
+
+    /* That state is recognised rather than reported as damage. */
+    cfg = config_load(err, sizeof err);
+    lib_check(cfg, w.dig, &w.paths, &health, err, sizeof err);
+    CHECK(health.healthy, "the game passes the library check (%s)", health.detail);
+    CHECK(health.unrecorded, "as an install nothing here recorded");
+    config_free(cfg);
+
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) == 0,
+          "and it uninstalls (%s)", err);
+    CHECK_NUM(report.from_backups, 0, "there was no backup to restore from");
+    CHECK_NUM(report.from_originals, 2, "so both files came from the vanilla mappack");
+
+    text = game_file(&w, TAB_LEVEL_FILE);
+    CHECK_STR(text, "the vanilla file", "the level file is the game's own again");
+    free(text);
+    text = game_file(&w, TAB_CHALLENGE);
+    CHECK_STR(text, "the vanilla file", "and so is the challenge file");
+    free(text);
+    check_library(&w, LIB_OFFICIAL_URI, "the library points at the official server again");
+
+    /* And now tabber knows about the tab, which it did not before. */
+    cfg = config_load(err, sizeof err);
+    CHECK(config_find_tab(cfg, TAB_CODE) != NULL, "the tab has a state entry now");
+    lib_check(cfg, w.dig, &w.paths, &health, err, sizeof err);
+    CHECK(health.healthy && !health.unrecorded, "and the game is plainly clean");
+    config_free(cfg);
+
+    uninstall_report_free(&report);
+    world_free(&w);
+}
+
 static void test_codes(void)
 {
     static const char *bad[] = { "..", "../..", "a/b", "a\\b", ".", "me t", "", NULL };
@@ -1063,5 +1306,9 @@ void suite_game(void)
     test_texts_from_the_old_installer();
     test_controls_bound_by_the_tab();
     test_controls_without_a_bindings_file();
+    test_install_over_a_stale_backup();
+    test_uninstall_without_backups();
+    test_uninstall_with_no_backups_at_all();
+    test_uninstall_an_old_installers_work();
     test_codes();
 }

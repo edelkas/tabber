@@ -272,14 +272,16 @@ read into memory before any of it is written:
 | The library check passes | the game is not in a state we recognise |
 | No other tab installed | another tab is in place |
 | Every file the tab replaces exists in the game | the game is missing files |
-| No `OG` backup exists yet | a previous install was never undone |
+| No `OG` backup name is taken by a folder | a rename would fail part way through |
 | The game folder accepts writes | permissions, or the game is running |
 | The library still carries the official URI, once | it looks patched already |
 | The new URI fits in the original's length | the server address is too long |
 | The game's text table is readable | `loc.txt` is missing, or is not the game's |
 
 That last one matters: without it, installing over an existing backup would
-overwrite a pristine original with a modded file. If a rename or write still
+overwrite a pristine original with a modded file. An `OG` **file** that is
+already there is a different matter, and no longer refuses the install: see
+[the older installers](#the-older-installers). If a rename or write still
 fails part-way through, the files already done are rolled back, so a failed
 install leaves the game folder exactly as it was.
 
@@ -319,9 +321,17 @@ that with what `config.json` says is installed:
 | --- | --- | --- |
 | nothing installed | official URI | healthy |
 | tab X installed | 3rd party URI ending in `/X` | healthy |
-| nothing installed | 3rd party URI | a tab is installed that we do not know about |
+| nothing installed | 3rd party URI ending in `/X` | healthy: X is installed, by something that was not tabber |
 | tab X installed | official URI | no tab is really installed |
 | tab X installed | URI ending in `/Y` | the game is serving a different tab |
+| either | a URI from nowhere we know | patched by another tool |
+
+The third row is the one worth dwelling on. A tab in the game that tabber has
+no record of is not damage: it is what an installer that came before tabber
+leaves, since none of them kept any state. So it passes, `check` names the tab
+it found, and uninstalling it works — see
+[the older installers](#the-older-installers). Installing over it is still
+refused, because the library already names a tab.
 
 The verdict is written to `state.library` in `config.json` every time the check
 runs, and the check runs automatically before every install and uninstall, so
@@ -731,7 +741,6 @@ Both checks run before anything moves, and either aborts the whole thing:
 | --- | --- |
 | The library check passes | the game is not in a state we recognise |
 | Every file the tab installed is in the game folder | the tab does not look installed |
-| Every one of them has its `OG` backup | restoring would leave the game short of files |
 | The library carries a 3rd party URI | no tab appears to be installed |
 | That URI names this very tab | the game is serving a different tab |
 
@@ -763,6 +772,43 @@ Afterwards `installed` goes back to false and `uninstall_date` is stamped, while
 
 Backups left in the game folder that were not part of this tab are reported as
 warnings, since they point at an older install or a tab whose file list changed.
+
+### The older installers
+
+The installers that came before tabber worked differently: they kept no copy of
+anything, and put the game back by writing out the original files they shipped
+themselves. Both halves of that matter here, because it means an `OG` file
+proves nothing in either direction:
+
+- **A tab installed by one of those has no backups.** So a missing `OG` is not
+  proof that nothing is installed, and an uninstall may not refuse over it.
+- **A tab uninstalled by one of those leaves ours behind.** So an `OG` sitting
+  in the folder is not proof that something *is* installed, and an install may
+  not refuse over it either.
+
+Installing therefore overwrites a backup that is already there, and says so.
+That is safe because of what has been established by then: the library check
+has already found the game pointing at the official server, which is what
+settles whether a tab is installed — the backups never were. The file beside
+the leftover is the game's own, so the backup being rewritten from it is a
+correction, not a loss.
+
+Uninstalling restores from the backups where they exist, and falls back for the
+rest to the same place the old installers got them: the first mappack in the
+digest (`met`) **is** the vanilla game, so its files are the originals. Only
+the files the installed tab actually replaced are needed, usually a handful. If
+that mappack is not in the local store it is downloaded on the spot, and only
+if that fails too — nothing left to restore from — is the uninstall refused.
+
+```
+SI.txtOG  is there    ->  renamed back over SI.txt
+Scodes.txt has none   ->  written from tabs/met/Levels/Scodes.txt
+neither               ->  refused, and nothing is touched
+```
+
+Which files came from where is in the report, and a download that had to happen
+is named. Everything is worked out before the first byte is written, the
+download included, so a failure part way still leaves the game as it was.
 
 ## State
 

@@ -385,6 +385,19 @@ const char *TEST_DIGEST_JSON =
 "      \"disk\": { \"size\": 2, \"level_files\": [\"S.txt\"],\n"
 "                  \"challenge_files\": [], \"palettes\": [] },\n"
 "      \"properties\": {}, \"stats\": {}\n"
+"    },\n"
+"    {\n"
+/* The vanilla game, where an uninstall takes its originals from when no
+ * backup was kept. Its download points at the dead port, so a test that
+ * lets it try to fetch fails at once without leaving the machine. */
+"      \"attributes\": { \"id\": 2, \"name\": \"Metanet\", \"code\": \"met\",\n"
+"                        \"authors\": \"Metanet\", \"date\": \"2015-07-30T00:00:00.000Z\",\n"
+"                        \"version\": 1, \"enabled\": true },\n"
+"      \"download\": { \"link\": \"http://" TEST_DEAD_HOST ":9/met.zip\",\n"
+"                      \"size\": 1, \"md5\": \"0\" },\n"
+"      \"disk\": { \"size\": 2, \"level_files\": [\"SI.txt\"],\n"
+"                  \"challenge_files\": [\"Scodes.txt\"], \"palettes\": [] },\n"
+"      \"properties\": {}, \"stats\": {}\n"
 "    }\n"
 "  ],\n"
 "  \"server\": { \"host\": \"" TEST_DEAD_HOST "\", \"port\": 9 },\n"
@@ -398,6 +411,10 @@ int main(int argc, char **argv)
     int online = 0, full = 0, i;
 
     plat_init();
+
+    /* Unbuffered, so a crash cannot swallow the name of the test that caused
+     * it: the last line printed is the last thing that ran. */
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     /*
      * The update tests use a copy of this very binary as a stand-in for

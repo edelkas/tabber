@@ -81,11 +81,12 @@ char *lib_build_uri(const server_addr *addr, const char *code, size_t budget,
 
 typedef struct {
     int healthy;
+    int unrecorded;                    /* a tab is in that we did not put in */
     lib_state state;                   /* what the library carries          */
     char uri[LIB_URI_MAX];             /* the URI found, if any             */
     char lib_code[TAB_CODE_MAX_LEN + 1];   /* tab the library points at     */
     char state_code[TAB_CODE_MAX_LEN + 1]; /* tab config.json says is in    */
-    char detail[TB_ERR_LEN];           /* why it is unhealthy, if it is not */
+    char detail[TB_ERR_LEN];           /* what is wrong, or what is unusual */
 } lib_health;
 
 /*

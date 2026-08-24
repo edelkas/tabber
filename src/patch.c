@@ -251,9 +251,18 @@ int lib_check(config *cfg, const digest *dig, const npp_paths *paths,
                 "the server URI appears %d times in the library, expected once",
                 img.occurrences);
     } else if (!has_installed && img.state == LIB_PATCHED) {
+        /*
+         * A tab is installed that this tabber did not install: the mark of an
+         * installer that came before it, which kept no state of its own. That
+         * is a state to recognise rather than a fault to report — uninstalling
+         * has to work from here, which is the whole point of being able to
+         * read what the older installers left behind.
+         */
         err_set(out->detail, sizeof out->detail,
-                "the library is patched for '%s' but no tab is recorded as installed",
-                img.code[0] ? img.code : "?");
+                "the library is patched for '%s', which nothing here recorded "
+                "installing; an older installer left it", img.code[0] ? img.code : "?");
+        out->unrecorded = 1;
+        out->healthy = 1;
     } else if (has_installed && img.state == LIB_ORIGINAL) {
         err_set(out->detail, sizeof out->detail,
                 "'%s' is recorded as installed but the library still points at the "

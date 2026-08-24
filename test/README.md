@@ -17,7 +17,7 @@ Run it with `build.bat test` (Windows) or `make test` (Linux, macOS). Add
 | `test_loc.c` | The game's own texts: which languages are written, the state record, restoring, and the ones the old installer left behind |
 | `test_keys.c` | Binding players' controls together, restoring them, the list a tab's digest entry asks for, and the fallback for controls nothing recorded |
 | `test_update.c` | Comparing versions, reading a release manifest, and replacing the running binary |
-| `test_game.c` | Install, uninstall, library patching, the controls a tab asks to have bound, and both health checks |
+| `test_game.c` | Install, uninstall, library patching, the controls a tab asks to have bound, compatibility with the older installers' backups, and both health checks |
 | `test_online.c` | The live server, the live digest, fetching a tab, the full catalogue sweep |
 | `fixture_zip.c` | A 462-byte ZIP embedded as bytes |
 

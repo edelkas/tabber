@@ -180,7 +180,7 @@ static void test_json_parsing(void)
         return;
 
     tabs = json_get(root, "tabs");
-    CHECK_NUM(json_count(tabs), 2, "tab count");
+    CHECK_NUM(json_count(tabs), 3, "tab count");
     first = json_at(tabs, 0);
     CHECK_STR(json_get_string(json_get(first, "attributes"), "code", "?"), "tst",
               "nested lookup");

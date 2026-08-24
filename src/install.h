@@ -7,8 +7,28 @@
  * The game ignores those, and uninstalling is then a matter of deleting the
  * tab's files and renaming the originals back.
  *
+ * The installers that came before tabber did it differently: they kept no
+ * copy of anything, and put the game back by writing out the originals they
+ * shipped themselves. So an "OG" file proves nothing in either direction — a
+ * tab installed by one of those has none, and one uninstalled by one of those
+ * leaves ours behind — and neither an install nor an uninstall may read
+ * anything into their presence or absence:
+ *
+ *   - Installing overwrites a backup that is already there. By then the
+ *     library check has established that no tab is installed, which makes any
+ *     "OG" file a leftover rather than somebody's only original.
+ *   - Uninstalling restores from the backups when they are there, and falls
+ *     back to the game's own files for those that are not. Those come from the
+ *     first mappack in the digest (INSTALL_ORIGINALS_CODE), which is the
+ *     vanilla game, downloaded on the spot if it is not in the store already.
+ *     Only when that cannot be had either is an uninstall refused.
+ *
  * Only one custom tab can be installed at a time, so an install is refused
- * while another one is in place (see install_detect).
+ * while another one is in place (see install_detect); that verdict comes from
+ * the state file and the library, never from the backups. A library patched
+ * for a tab the state file has never heard of is one of those installs, not a
+ * fault: the library check says so (see lib_health.unrecorded) and an
+ * uninstall goes ahead on the strength of it.
  *
  * Every check runs before the first rename, and any failure mid-way is rolled
  * back, so an aborted install leaves the game folder as it was.
@@ -46,6 +66,12 @@
 /* Appended to an original game file while a tab is installed. */
 #define INSTALL_BACKUP_SUFFIX   "OG"
 
+/*
+ * The mappack whose files are the game's own: the first one in the digest.
+ * Where an original comes from when no backup of it was kept.
+ */
+#define INSTALL_ORIGINALS_CODE  "met"
+
 /* Written and deleted to confirm the game folder accepts changes. */
 #define INSTALL_PROBE_FILE      ".tabber-write-test"
 
@@ -69,6 +95,7 @@ typedef struct {
     char *tab_levels_dir;       /* where they came from                    */
     size_t installed_count;     /* files replaced                          */
     str_list skipped;           /* tab files the game does not support     */
+    str_list stale_backups;     /* 'OG' files that were already there      */
     char server_uri[128];       /* what the library now points at          */
     char server_source[32];     /* where that address came from            */
     server_health health;       /* whether that server answered            */
@@ -104,6 +131,10 @@ void install_report_free(install_report *report);
 typedef struct {
     char *game_levels_dir;      /* folder that was restored                */
     size_t restored_count;      /* originals put back                      */
+    size_t from_backups;        /* ...of which came from an 'OG' file      */
+    size_t from_originals;      /* ...and from the vanilla mappack         */
+    int fetched_originals;      /* which had to be downloaded first        */
+    char originals_code[16];    /* the mappack they came from, empty if none */
     str_list skipped;           /* shipped files the game does not support */
     str_list leftovers;         /* other backups still in the game folder  */
     char server_uri[128];       /* the URI the library points at again     */

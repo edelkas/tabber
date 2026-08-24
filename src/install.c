@@ -24,6 +24,8 @@ typedef struct {
     char *backup;   /* target + "OG", the original set aside */
     char *data;     /* contents, read before any change     */
     size_t len;
+    char *original; /* the game's own copy, when no backup was kept */
+    size_t original_len;
 } install_file;
 
 void install_options_init(install_options *opts)
@@ -151,6 +153,7 @@ static void install_files_free(install_file *files, size_t count)
         free(files[i].target);
         free(files[i].backup);
         free(files[i].data);
+        free(files[i].original);
     }
     free(files);
 }
@@ -179,7 +182,7 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     const char *levels_name = digest_levels_dir(dig);
     const json_value *cfg_node = digest_config(dig);
     str_list supported = {0}, entries = {0}, missing = {0}, conflicts = {0};
-    str_list known = {0};
+    str_list blocked = {0}, known = {0};
     install_file *files = NULL;
     size_t count = 0, i, done = 0;
     char *game_dir = NULL, *tab_dir = NULL, *tab_root = NULL, *patch_uri = NULL;
@@ -262,12 +265,11 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
             continue;
         }
 
+        memset(&files[count], 0, sizeof files[count]);
         files[count].name = str_dup(name);
         files[count].source = src_path;
         files[count].target = path_join(game_dir, name);
         files[count].backup = str_fmt("%s%s", files[count].target, INSTALL_BACKUP_SUFFIX);
-        files[count].data = NULL;
-        files[count].len = 0;
         count++;
     }
 
@@ -280,7 +282,9 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     for (i = 0; i < count; i++) {
         if (!plat_is_file(files[i].target))
             str_list_push(&missing, str_dup(files[i].name));
-        else if (plat_is_file(files[i].backup) || plat_is_dir(files[i].backup))
+        else if (plat_is_dir(files[i].backup))
+            str_list_push(&blocked, str_dup(files[i].name));
+        else if (plat_is_file(files[i].backup))
             str_list_push(&conflicts, str_dup(files[i].name));
     }
     if (missing.count > 0) {
@@ -290,12 +294,13 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         free(names);
         goto done;
     }
-    if (conflicts.count > 0) {
-        char *names = list_to_text(&conflicts);
-        err_set(err, errsz, "backups already exist for %u file(s): %s. "
-                            "A previous installation was not undone; restore those "
-                            "'%s' files before installing",
-                (unsigned)conflicts.count, names, INSTALL_BACKUP_SUFFIX);
+    if (blocked.count > 0) {
+        /* A folder under a backup's name is nobody's doing but the user's,
+         * and the rename would fail on it half way through the install. */
+        char *names = list_to_text(&blocked);
+        err_set(err, errsz, "%u backup name(s) are taken by a folder: %s. "
+                            "Move those '%s' folders out of the game before installing",
+                (unsigned)blocked.count, names, INSTALL_BACKUP_SUFFIX);
         free(names);
         goto done;
     }
@@ -326,6 +331,15 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
                             "expected exactly once", img.occurrences);
         goto done;
     }
+
+    /*
+     * The library says no tab is installed, so any backup already sitting in
+     * the folder is a leftover — from an install that an older installer, or
+     * a hand, undid without clearing it — and the file beside it is the
+     * game's own. Overwriting it is right, and saying so is only fair.
+     */
+    report->stale_backups = conflicts;
+    memset(&conflicts, 0, sizeof conflicts);
 
     /* The address to point the game at, and the URI that will replace the
      * official one. Both have to be settled before anything is written. */
@@ -504,6 +518,7 @@ done:
     str_list_free(&entries);
     str_list_free(&missing);
     str_list_free(&conflicts);
+    str_list_free(&blocked);
     str_list_free(&known);
     free(patch_uri);
     free(game_dir);
@@ -514,6 +529,7 @@ done:
 
 void install_report_free(install_report *report)
 {
+    str_list_free(&report->stale_backups);
     cloud_report_free(&report->cloud);
     palette_report_free(&report->palettes);
     loc_report_free(&report->strings);
@@ -586,6 +602,72 @@ static void collect_leftover_backups(const char *game_dir, const str_list *handl
     str_list_free(&entries);
 }
 
+/*
+ * Reads the game's own copies of the files that have no "OG" backup. Those are
+ * the ones an installer that predates tabber replaced without keeping a copy of
+ * anything; the first mappack in the digest *is* the vanilla game, so its files
+ * are the originals, and it is downloaded here if the store does not have it
+ * already. Returns 0 with `files[i].original` filled in for every file that
+ * needs it, or -1 with a reason in `err` and nothing changed on disk.
+ */
+static int load_originals(const digest *dig, install_file *files, size_t count,
+                          size_t wanted, uninstall_report *report,
+                          char *err, size_t errsz)
+{
+    char sub[TB_ERR_LEN];
+    const npp_tab *originals = digest_find(dig, INSTALL_ORIGINALS_CODE);
+    char *root, *dir;
+    size_t i;
+    int rc = -1;
+
+    if (!originals) {
+        err_set(err, errsz, "%u of the tab's file(s) have no '%s' backup, and the "
+                            "digest has no '%s' mappack to take the originals from",
+                (unsigned)wanted, INSTALL_BACKUP_SUFFIX, INSTALL_ORIGINALS_CODE);
+        return -1;
+    }
+    snprintf(report->originals_code, sizeof report->originals_code, "%s",
+             originals->code);
+
+    if (!tab_is_downloaded(originals->code)) {
+        tab_report fetched;
+
+        if (tab_fetch(dig, originals, &fetched, sub, sizeof sub) != 0) {
+            err_set(err, errsz, "%u of the tab's file(s) have no '%s' backup, and the "
+                                "game's own copies could not be downloaded: %s",
+                    (unsigned)wanted, INSTALL_BACKUP_SUFFIX, sub);
+            return -1;
+        }
+        tab_report_free(&fetched);
+        report->fetched_originals = 1;
+    }
+
+    root = tab_dir_path(originals->code);
+    dir = path_join(root, digest_levels_dir(dig));
+    for (i = 0; i < count; i++) {
+        char *source;
+
+        if (plat_is_file(files[i].backup))
+            continue;                    /* its own backup is right there */
+        source = path_join(dir, files[i].name);
+        files[i].original = plat_read_file(source, &files[i].original_len);
+        if (!files[i].original) {
+            err_set(err, errsz, "'%s' has no '%s' backup, and the '%s' mappack has no "
+                                "copy of it either at '%s'", files[i].name,
+                    INSTALL_BACKUP_SUFFIX, originals->code, source);
+            free(source);
+            goto done;
+        }
+        free(source);
+    }
+    rc = 0;
+
+done:
+    free(dir);
+    free(root);
+    return rc;
+}
+
 int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
                   const install_options *opts_in, uninstall_report *report,
                   char *err, size_t errsz)
@@ -654,12 +736,10 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
 
     files = xmalloc(wanted.count * sizeof(*files));
     for (i = 0; i < wanted.count; i++) {
+        memset(&files[count], 0, sizeof files[count]);
         files[count].name = str_dup(wanted.items[i]);
         files[count].target = path_join(game_dir, wanted.items[i]);
         files[count].backup = str_fmt("%s%s", files[count].target, INSTALL_BACKUP_SUFFIX);
-        files[count].source = NULL;
-        files[count].data = NULL;
-        files[count].len = 0;
         count++;
     }
 
@@ -675,14 +755,6 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         err_set(err, errsz, "%u of the tab's file(s) are not in the game folder: %s. "
                             "Is this tab really installed?",
                 (unsigned)missing.count, names);
-        free(names);
-        goto done;
-    }
-    if (no_backup.count > 0) {
-        char *names = list_to_text(&no_backup);
-        err_set(err, errsz, "%u original(s) are missing their '%s' backup: %s. "
-                            "Restoring them would leave the game without those files",
-                (unsigned)no_backup.count, INSTALL_BACKUP_SUFFIX, names);
         free(names);
         goto done;
     }
@@ -723,6 +795,16 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     }
     snprintf(patched_uri, sizeof patched_uri, "%s", img.uri);
+
+    /*
+     * --- The originals that were never backed up, from the vanilla mappack.
+     * This is the one step that may reach the network, and it happens here:
+     * after the library has confirmed that this tab really is the one that is
+     * installed, and before a single file is written.
+     */
+    if (no_backup.count > 0 &&
+        load_originals(dig, files, count, no_backup.count, report, err, errsz) != 0)
+        goto done;
 
     /* --- The savefile swap, worked out before anything is written --- */
     if (save_plan_build(paths, tab->code, 0, opts.save_flags, &save, err, errsz) != 0)
@@ -783,16 +865,34 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     }
 
     for (i = 0; i < count; i++) {
-        if (plat_replace_file(files[i].backup, files[i].target) != 0) {
-            err_set(err, errsz, "cannot restore '%s' from '%s'; is the game running?",
-                    files[i].target, files[i].backup);
+        int ok;
+
+        if (files[i].original) {
+            /* Nothing was set aside for this one, so the game's own copy is
+             * written straight over the tab's, as the old installers did. */
+            ok = plat_write_file(files[i].target, files[i].original,
+                                 files[i].original_len) == 0;
+            if (ok)
+                report->from_originals++;
+        } else {
+            ok = plat_replace_file(files[i].backup, files[i].target) == 0;
+            if (ok)
+                report->from_backups++;
+        }
+
+        if (!ok) {
+            err_set(err, errsz, "cannot restore '%s'; is the game running?",
+                    files[i].target);
             /* Put back what was already restored: move the original aside
-             * again, rewrite the tab's copy, and re-point the library. */
+             * again where there was one, rewrite the tab's copy, and re-point
+             * the library. */
             while (restored-- > 0) {
-                plat_replace_file(files[restored].target, files[restored].backup);
+                if (!files[restored].original)
+                    plat_replace_file(files[restored].target, files[restored].backup);
                 plat_write_file(files[restored].target, files[restored].data,
                                 files[restored].len);
             }
+            report->from_backups = report->from_originals = 0;
             lib_write_uri(&img, patched_uri, cfg_err, sizeof cfg_err);
             save_plan_undo(&save);
             goto done;

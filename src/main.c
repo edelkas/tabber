@@ -727,6 +727,9 @@ static int cmd_install(const options *opts, const char *code)
     log_step("installed", "%lu file(s), %lu skipped",
              (unsigned long)report.installed_count, (unsigned long)report.skipped.count);
     log_step("originals", "kept alongside with the '%s' suffix", INSTALL_BACKUP_SUFFIX);
+    if (report.stale_backups.count)
+        log_step("", "%lu of them replaced a leftover backup from an earlier install",
+                 (unsigned long)report.stale_backups.count);
     log_step("library", "queries redirected to %s (from %s)",
              report.server_uri, report.server_source);
     if (report.health.reachable)
@@ -804,6 +807,10 @@ static int cmd_check(const options *opts)
     log_step("points at", "%s", health.uri[0] ? health.uri : "(nothing recognisable)");
     log_step("recorded", "%s", health.state_code[0] ? health.state_code : "no tab installed");
     if (health.healthy) {
+        /* Passed, but worth saying when the tab in the game is not one of
+         * ours: uninstalling it will work, and may take a download first. */
+        if (health.unrecorded)
+            log_step("note", "%s", health.detail);
         printf("Library check passed.\n");
         rc = EXIT_OK;
     } else {
@@ -933,6 +940,17 @@ static int cmd_uninstall(const options *opts, const char *code)
 
     log_step("target", "%s", report.game_levels_dir);
     log_step("restored", "%lu original file(s)", (unsigned long)report.restored_count);
+    if (report.from_originals) {
+        /* The rest of them had no backup, which is what an install by one of
+         * the older installers leaves behind. */
+        char originals[TAB_CODE_MAX_LEN + 1];
+
+        code_upper(originals, sizeof originals, report.originals_code);
+        log_step("", "%lu from an '%s' backup, %lu from the %s tab%s",
+                 (unsigned long)report.from_backups, INSTALL_BACKUP_SUFFIX,
+                 (unsigned long)report.from_originals, originals,
+                 report.fetched_originals ? ", downloaded just now" : "");
+    }
     log_step("library", "queries point back at %s", report.server_uri);
     print_palette_step(&report.palettes, opts->palettes, 0);
     print_loc_step(&report.strings, 0);
