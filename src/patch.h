@@ -27,6 +27,14 @@
 #define LIB_OFFICIAL_URI    "https://dojo.nplusplus.ninja"
 #define LIB_URI_BUDGET      (sizeof(LIB_OFFICIAL_URI) - 1)
 
+/*
+ * The developer credit the game renders, which the older installers replaced
+ * with the tab's author. Same story as the URI: a plain string overwritten in
+ * place, its own length the budget, and the original written back to undo it.
+ */
+#define LIB_CREDIT_ORIGINAL "Metanet Software"
+#define LIB_CREDIT_BUDGET   (sizeof(LIB_CREDIT_ORIGINAL) - 1)
+
 /* Longest URI text we keep around, padding excluded. */
 #define LIB_URI_MAX         128
 
@@ -68,6 +76,28 @@ void lib_close(lib_image *img);
  * not fit. This is the only function here that changes the file.
  */
 int lib_write_uri(const lib_image *img, const char *uri, char *err, size_t errsz);
+
+/*
+ * An author as the credit can carry it: the game's font has nothing outside
+ * ASCII, so everything else is dropped — which is what the older installers
+ * did — and what is left is trimmed to the budget. NULL when nothing usable
+ * remains. Caller frees.
+ */
+char *lib_credit_text(const char *authors);
+
+/* Whether the credit still reads what the game shipped with. */
+int lib_credit_is_original(const lib_image *img);
+
+/*
+ * Overwrites the credit with `replacement`, NUL-padded. The string can only be
+ * found by what it says, so `current` is what it is expected to say now: the
+ * original when a tab is going in, the tab's author when one is coming out.
+ * Returns 0, or -1 with a reason when the credit is not there, is there more
+ * than once, or cannot be written. None of those stops the game working, so
+ * callers report them rather than fail on them.
+ */
+int lib_write_credit(lib_image *img, const char *current, const char *replacement,
+                     char *err, size_t errsz);
 
 /*
  * Builds the URI to patch in: the server, then "/" and the tab code. Keeps the

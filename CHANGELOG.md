@@ -1,5 +1,15 @@
 # Changelog
 
+## [[0.1.1] 2026-08-25](https://github.com/edelkas/tabber/releases/tag/v0.1.1)
+
+True backwards compatibility with old installers accomplished. Two things were missing:
+
+- Old installers didn't back up level and challenge files, so they aren't required anymore.
+- Tabber now patches the credit line as well, which shows up as the level authors.
+
+It should now be possible to install a tab with an old installer and uninstall it with Tabber.
+The opposite direction doesn't work though, because Tabber has new functionality that old installers aren't aware of.
+
 ## [[0.1.0] 2026-08-24](https://github.com/edelkas/tabber/releases/tag/v0.1.0)
 
 Initial release. CLI for now, GUI planned.

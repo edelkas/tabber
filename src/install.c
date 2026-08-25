@@ -186,6 +186,7 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     install_file *files = NULL;
     size_t count = 0, i, done = 0;
     char *game_dir = NULL, *tab_dir = NULL, *tab_root = NULL, *patch_uri = NULL;
+    char *credit = NULL;
     char cfg_err[TB_ERR_LEN];
     config *state = NULL;
     lib_image img;
@@ -449,8 +450,25 @@ int tab_install(const digest *dig, const npp_tab *tab, const npp_paths *paths,
         goto done;
     }
 
+    /*
+     * --- And the credit the game shows, which the older installers replaced
+     * too. Purely cosmetic, so a library that does not carry it where we look
+     * is worth reporting and no more.
+     */
+    credit = lib_credit_text(tab->authors);
+    if (credit) {
+        if (lib_write_credit(&img, LIB_CREDIT_ORIGINAL, credit,
+                             cfg_err, sizeof cfg_err) == 0)
+            snprintf(report->credit, sizeof report->credit, "%s", credit);
+        else
+            err_set(report->warning, sizeof report->warning,
+                    "the game's credit line was left as it is: %s", cfg_err);
+    }
+
     /* --- And the savefile: the vanilla one filed away, the tab's put in --- */
     if (save_plan_apply(&save, &report->save, err, errsz) != 0) {
+        if (report->credit[0])
+            lib_write_credit(&img, credit, LIB_CREDIT_ORIGINAL, cfg_err, sizeof cfg_err);
         lib_write_uri(&img, LIB_OFFICIAL_URI, cfg_err, sizeof cfg_err);
         keys_plan_undo(&bindings);
         loc_plan_undo(&strings);
@@ -520,6 +538,7 @@ done:
     str_list_free(&conflicts);
     str_list_free(&blocked);
     str_list_free(&known);
+    free(credit);
     free(patch_uri);
     free(game_dir);
     free(tab_dir);
@@ -862,6 +881,24 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
     if (lib_write_uri(&img, LIB_OFFICIAL_URI, err, errsz) != 0) {
         save_plan_undo(&save);
         goto done;
+    }
+
+    /*
+     * The credit goes back to the game's own, unless it never left: a tab
+     * installed before tabber knew about the credit, or by something that did
+     * not touch it, leaves it already reading Metanet's name.
+     */
+    if (!lib_credit_is_original(&img)) {
+        char *credit = lib_credit_text(tab->authors);
+
+        if (credit && lib_write_credit(&img, credit, LIB_CREDIT_ORIGINAL,
+                                       cfg_err, sizeof cfg_err) == 0)
+            report->credit_restored = 1;
+        else
+            err_set(report->warning, sizeof report->warning,
+                    "the game's credit line still reads the tab's author: %s",
+                    credit ? cfg_err : "this tab names no author we can use");
+        free(credit);
     }
 
     for (i = 0; i < count; i++) {

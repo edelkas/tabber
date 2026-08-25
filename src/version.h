@@ -10,7 +10,7 @@
  * not exist yet.
  */
 #ifndef TABBER_VERSION
-#define TABBER_VERSION  "0.1.0"
+#define TABBER_VERSION  "0.1.1"
 #endif
 
 #endif /* TABBER_VERSION_H */

@@ -100,6 +100,7 @@ typedef struct {
     char *personal;    /* the fake personal folder, holding the savefile */
     char *fresh;       /* the fresh savefile tabber would ship           */
     char *cloud;       /* the fake Steam Cloud folder of one account     */
+    char *pristine_library;   /* a copy of the library as the game shipped it */
     digest *dig;
     npp_paths paths;
 } world;
@@ -190,6 +191,10 @@ static void world_build(world *w, const char *name)
         free(app);
     }
 
+    /* A copy of the untouched library, so a round trip can be judged on the
+     * whole file rather than on the strings we happen to look at. */
+    w->pristine_library = path_join(w->root, "npp.dll.pristine");
+
     w->dig = digest_load(err, sizeof err);
     CHECK(w->dig != NULL, "the digest fixture loads (%s)", w->dig ? "" : err);
     CHECK(npp_find_game_dirs(&w->paths, err, sizeof err) == 0,
@@ -197,6 +202,14 @@ static void world_build(world *w, const char *name)
     CHECK(npp_find_personal_dir(&w->paths, err, sizeof err) == 0,
           "so is its personal folder (%s)", err);
     w->library = lib_path(&w->paths);
+    {
+        size_t len = 0;
+        unsigned char *image = test_read_bytes(w->library, &len);
+
+        if (image)
+            test_write_bytes(w->pristine_library, image, len);
+        free(image);
+    }
 }
 
 static void world_free(world *w)
@@ -213,6 +226,7 @@ static void world_free(world *w)
     free(w->personal);
     free(w->fresh);
     free(w->cloud);
+    free(w->pristine_library);
 }
 
 /* The savefile Steam is holding, unwrapped. Caller frees. */
@@ -1272,6 +1286,233 @@ static void test_uninstall_an_old_installers_work(void)
     world_free(&w);
 }
 
+/* What the library's credit region currently reads. Caller frees. */
+static char *library_credit(world *w)
+{
+    size_t len = 0;
+    char *data = (char *)test_read_bytes(w->library, &len);
+    char *found = NULL;
+    size_t i;
+
+    /* The credit sits between a NUL and its own padding, so the text right
+     * after the URI's terminator is it. */
+    for (i = 0; data && i + 1 < len; i++) {
+        if (data[i] == 0 && data[i + 1] != 0 && data[i + 1] != 'A' && data[i + 1] != 'B') {
+            found = str_dup(data + i + 1);
+            break;
+        }
+    }
+    free(data);
+    return found;
+}
+
+/*
+ * The older installers also replaced the developer credit the game renders
+ * with the tab's author, so tabber does the same and puts it back.
+ */
+/*
+ * The credit can only be found by what it says, so the guards that keep a
+ * chance match from being written over are the whole safety of it.
+ */
+static void test_credit_refusals(void)
+{
+    char err[TB_ERR_LEN];
+    char *dir = test_dir("credit_guards");
+    char *path = path_join(dir, "fake.dll");
+    lib_image img;
+    byte_buf blob = {0};
+    size_t i;
+
+    test_case("a credit that cannot be told apart is not written over");
+
+    /* Filler, then "Nobody" twice: which one is the credit is unknowable. */
+    for (i = 0; i < 32; i++)
+        buf_append(&blob, "A", 1);
+    buf_append(&blob, "\0", 1);
+    buf_append(&blob, "Nobody", 6);
+    for (i = 0; i < 16; i++)
+        buf_append(&blob, "\0", 1);
+    buf_append(&blob, "Nobody", 6);
+    for (i = 0; i < 16; i++)
+        buf_append(&blob, "\0", 1);
+
+    memset(&img, 0, sizeof img);
+    img.path = path;
+    img.size = blob.len;
+    img.data = buf_finish(&blob, NULL);
+    test_write_bytes(path, img.data, img.size);
+
+    CHECK(lib_write_credit(&img, "Nobody", "Someone", err, sizeof err) != 0,
+          "two of them is one too many");
+    CHECK(strstr(err, "2 times") != NULL, "and it says how many (%s)", err);
+    free(img.data);
+
+    /* One occurrence, but in the middle of something else: no NUL in front. */
+    memset(&blob, 0, sizeof blob);
+    for (i = 0; i < 32; i++)
+        buf_append(&blob, "A", 1);
+    buf_append(&blob, "Nobody", 6);
+    for (i = 0; i < 16; i++)
+        buf_append(&blob, "\0", 1);
+    img.size = blob.len;
+    img.data = buf_finish(&blob, NULL);
+    test_write_bytes(path, img.data, img.size);
+
+    CHECK(lib_write_credit(&img, "Nobody", "Someone", err, sizeof err) != 0,
+          "a match inside another string is refused");
+    CHECK(strstr(err, "part of") != NULL, "and it says why (%s)", err);
+    free(img.data);
+
+    /* A NUL in front, but a neighbour close behind that we would clobber. */
+    memset(&blob, 0, sizeof blob);
+    for (i = 0; i < 32; i++)
+        buf_append(&blob, "A", 1);
+    buf_append(&blob, "\0", 1);
+    buf_append(&blob, "Nobody", 6);
+    buf_append(&blob, "\0", 1);
+    buf_append(&blob, "and the next string", 19);
+    buf_append(&blob, "\0", 1);
+    img.size = blob.len;
+    img.data = buf_finish(&blob, NULL);
+    test_write_bytes(path, img.data, img.size);
+
+    CHECK(lib_write_credit(&img, "Nobody", "Someone", err, sizeof err) != 0,
+          "a neighbour inside the region is refused");
+    CHECK(strstr(err, "overwritten") != NULL, "and it says why (%s)", err);
+    free(img.data);
+
+    free(path);
+    free(dir);
+}
+
+static void test_credit_line(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    install_report installed;
+    uninstall_report removed;
+    char *text;
+
+    test_case("the game's credit line names the tab's author while it is installed");
+    world_build(&w, "game_credit");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    text = library_credit(&w);
+    CHECK_STR(text, LIB_CREDIT_ORIGINAL, "a clean game credits its own developer");
+    free(text);
+
+    CHECK(tab_install(w.dig, tab, &w.paths, NULL, &installed, err, sizeof err) == 0,
+          "install succeeds (%s)", err);
+    CHECK_STR(installed.credit, "Nobody", "the report names the credit written");
+    text = library_credit(&w);
+    CHECK_STR(text, "Nobody", "and the library carries the tab's author");
+    free(text);
+
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &removed, err, sizeof err) == 0,
+          "uninstall succeeds (%s)", err);
+    CHECK(removed.credit_restored, "the credit is reported as put back");
+    text = library_credit(&w);
+    CHECK_STR(text, LIB_CREDIT_ORIGINAL, "and the developer is credited again");
+    free(text);
+
+    /* Byte for byte: the padding behind a shorter author has to go back too. */
+    CHECK(test_files_equal(w.library, w.pristine_library),
+          "the library is the file it was before any of it");
+
+    install_report_free(&installed);
+    uninstall_report_free(&removed);
+    world_free(&w);
+}
+
+static void test_credit_of_an_old_installers_work(void)
+{
+    char err[TB_ERR_LEN];
+    world w;
+    const npp_tab *tab;
+    uninstall_report report;
+    char *text;
+
+    test_case("...and one an older installer wrote is put back too");
+    world_build(&w, "game_credit_old");
+    tab = world_tab(&w, TAB_CODE);
+    if (!tab || !w.dig) { world_free(&w); return; }
+
+    /* The game as an older installer leaves it: files in place, library
+     * patched, credit replaced, and nothing recorded. */
+    {
+        char *path = path_join(w.levels, TAB_LEVEL_FILE);
+        test_write(path, TAB_LEVEL_BODY);
+        free(path);
+        path = path_join(w.levels, TAB_CHALLENGE);
+        test_write(path, TAB_CHALLENGE_BODY);
+        free(path);
+    }
+    patch_library(&w, EXPECTED_PATCH);
+    {
+        char err2[TB_ERR_LEN];
+        str_list known = {0};
+        lib_image img;
+        config *cfg = config_load(err2, sizeof err2);
+
+        server_known_uris(cfg, w.dig, &known);
+        if (lib_open(&w.paths, &known, &img, err2, sizeof err2) == 0) {
+            CHECK(lib_write_credit(&img, LIB_CREDIT_ORIGINAL, "Nobody",
+                                   err2, sizeof err2) == 0,
+                  "the credit can be replaced by hand (%s)", err2);
+            lib_close(&img);
+        }
+        str_list_free(&known);
+        config_free(cfg);
+    }
+    world_add_originals(&w, "the vanilla file");
+
+    CHECK(tab_uninstall(w.dig, tab, &w.paths, NULL, &report, err, sizeof err) == 0,
+          "the uninstall goes ahead (%s)", err);
+    CHECK(report.credit_restored, "and the credit is put back");
+    text = library_credit(&w);
+    CHECK_STR(text, LIB_CREDIT_ORIGINAL, "though nothing recorded changing it");
+    free(text);
+
+    uninstall_report_free(&report);
+    world_free(&w);
+}
+
+static void test_credit_text(void)
+{
+    char *text;
+
+    test_case("an author is trimmed to what the game can draw");
+
+    text = lib_credit_text("Nobody");
+    CHECK_STR(text, "Nobody", "plain ASCII comes through as it is");
+    free(text);
+
+    /* The real case: the font has no Unicode, so the rest is dropped. */
+    /* Split so the hex escape ends where it should: \x eats every hex digit
+     * that follows it, and "drive" starts with one. */
+    text = lib_credit_text("flux\xcd\xa2\xc9\x95" "drive");
+    CHECK_STR(text, "fluxdrive", "anything outside ASCII is dropped");
+    free(text);
+
+    text = lib_credit_text("A ridiculously long list of authors");
+    CHECK_STR(text, "A ridiculously l", "a long one is cut to the room there is");
+    CHECK(text == NULL || strlen(text) <= LIB_CREDIT_BUDGET, "never past the budget");
+    free(text);
+
+    /* Cutting can land on a space, which would look like a mistake in game. */
+    text = lib_credit_text("Somebody Else's Team");
+    CHECK_STR(text, "Somebody Else's", "and a cut that ends on a space loses it");
+    free(text);
+
+    CHECK(lib_credit_text("") == NULL, "an empty author is nothing to write");
+    CHECK(lib_credit_text(NULL) == NULL, "nor is none at all");
+    text = lib_credit_text("\xe4\xb8\x96\xe7\x95\x8c");
+    CHECK(text == NULL, "nor one the font cannot draw a single letter of");
+    free(text);
+}
+
 static void test_codes(void)
 {
     static const char *bad[] = { "..", "../..", "a/b", "a\\b", ".", "me t", "", NULL };
@@ -1310,5 +1551,9 @@ void suite_game(void)
     test_uninstall_without_backups();
     test_uninstall_with_no_backups_at_all();
     test_uninstall_an_old_installers_work();
+    test_credit_text();
+    test_credit_refusals();
+    test_credit_line();
+    test_credit_of_an_old_installers_work();
     test_codes();
 }

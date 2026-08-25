@@ -128,7 +128,7 @@ cover.
 | `src/digest.c/.h`| The custom tab catalogue: fetch, cache, parse, look up |
 | `src/tabs.c/.h`  | Downloading, verifying and unpacking a custom tab |
 | `src/install.c/.h` | Installing a custom tab into the game |
-| `src/patch.c/.h` | Redirecting the game's server queries, and the library health check |
+| `src/patch.c/.h` | Redirecting the game's server queries, the developer credit, and the library health check |
 | `src/palettes.c/.h` | The palettes a tab bundles: names, the game's limit, copying them in and out |
 | `src/loc.c/.h`   | The game's own texts (`loc.txt`): replacing them per language, and putting them back |
 | `src/keys.c/.h`  | The player controls (`keys.vars`): binding several players to one set of keys |
@@ -311,6 +311,34 @@ would otherwise not fit — necessary for an address literal, since
 `http://45.32.150.168:8126/ctp` is 29 bytes against a budget of 28.
 
 The official URI must appear exactly once, or the install is refused.
+
+
+### The developer credit
+
+The library carries one more string worth changing, and the older installers
+changed it: the developer credit the game renders, `Metanet Software`. While a
+tab is installed it names the tab's author instead, and uninstalling puts
+Metanet's name back.
+
+```
+Metanet Software   ->   fluxdrive\0\0\0\0\0\0\0
+```
+
+Same rules as the URI: overwritten in place, NUL-padded, never longer than the
+original's 16 bytes. The author comes from the digest, reduced to what the
+game can draw — its font has nothing outside ASCII, so everything else is
+dropped, which is exactly what the old installers did (`flux͢ɕdrive` becomes
+`fluxdrive`, and the two write the same bytes). A cut that lands on a space
+loses it, so the credit never ends mid-gap.
+
+Unlike the URI, the credit has no known set of values to search for, so it is
+found by what it currently says: the original when a tab is going in, the
+tab's author when one is coming out. That is enough to undo an install made by
+an older installer, since both derive the same text from the same digest. Three
+things have to hold before sixteen bytes are overwritten — the text occurs
+exactly once, a NUL sits in front of it, and nothing but padding sits behind
+it — and if any fails the credit is left alone and reported. It is cosmetic, so
+it never fails an install or an uninstall.
 
 ## The library check
 
@@ -809,6 +837,14 @@ neither               ->  refused, and nothing is touched
 Which files came from where is in the report, and a download that had to happen
 is named. Everything is worked out before the first byte is written, the
 download included, so a failure part way still leaves the game as it was.
+
+Only that direction works. An install made by *tabber* cannot be undone by an
+older installer, because those write the 3rd party server's raw address into
+the library and look for that same string again to undo it, whereas tabber
+writes the host name (see [redirecting the server](#redirecting-the-server)).
+The string they search for is not there, so they refuse. Upgrading to tabber is
+a one-way step, which is why it keeps the ability to clean up after them and
+not the other way round.
 
 ## State
 

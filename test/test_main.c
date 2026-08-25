@@ -312,8 +312,10 @@ char *test_fake_game(const char *dir)
 
     /*
      * A stand-in library: filler, the official URI exactly once followed by a
-     * NUL, then more filler. The filler is a single repeated character so it
-     * cannot accidentally contain a URI we search for.
+     * NUL, then the developer credit laid out as the real one is — a NUL in
+     * front, padding behind — then more filler. The filler is a single
+     * repeated character so it cannot accidentally contain a URI or a credit
+     * we search for.
      */
     paths.install_dir = install;
     library = lib_path(&paths);
@@ -326,6 +328,9 @@ char *test_fake_game(const char *dir)
         buf_append(&blob, "A", 1);
     buf_append(&blob, LIB_OFFICIAL_URI, sizeof(LIB_OFFICIAL_URI) - 1);
     buf_append(&blob, "\0", 1);
+    buf_append(&blob, LIB_CREDIT_ORIGINAL, sizeof(LIB_CREDIT_ORIGINAL) - 1);
+    for (i = 0; i < 4; i++)
+        buf_append(&blob, "\0", 1);
     for (i = 0; i < 1024; i++)
         buf_append(&blob, "B", 1);
     plat_write_file(library, blob.data, blob.len);

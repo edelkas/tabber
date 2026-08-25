@@ -39,6 +39,9 @@
  * has several players' controls bound to one set of keys (see keys.h), which
  * uninstalling undoes.
  *
+ * The library's developer credit is replaced with the tab's author as well,
+ * the way the older installers did it, and put back on the way out.
+ *
  * The savefile is swapped too (see save.h): the one in place is archived and
  * the tab's own — or the fresh one tabber ships — is put in its stead, and the
  * copies Steam Cloud keeps of it are dealt with afterwards (see cloud.h).
@@ -96,6 +99,7 @@ typedef struct {
     size_t installed_count;     /* files replaced                          */
     str_list skipped;           /* tab files the game does not support     */
     str_list stale_backups;     /* 'OG' files that were already there      */
+    char credit[64];            /* the title screen's new credit, if changed */
     char server_uri[128];       /* what the library now points at          */
     char server_source[32];     /* where that address came from            */
     server_health health;       /* whether that server answered            */
@@ -135,6 +139,7 @@ typedef struct {
     size_t from_originals;      /* ...and from the vanilla mappack         */
     int fetched_originals;      /* which had to be downloaded first        */
     char originals_code[16];    /* the mappack they came from, empty if none */
+    int credit_restored;        /* the title screen says Metanet again      */
     str_list skipped;           /* shipped files the game does not support */
     str_list leftovers;         /* other backups still in the game folder  */
     char server_uri[128];       /* the URI the library points at again     */

@@ -732,6 +732,8 @@ static int cmd_install(const options *opts, const char *code)
                  (unsigned long)report.stale_backups.count);
     log_step("library", "queries redirected to %s (from %s)",
              report.server_uri, report.server_source);
+    if (report.credit[0])
+        log_step("credit", "the game now credits '%s'", report.credit);
     if (report.health.reachable)
         log_step("server", "%s answered HTTP %d", report.health.url, report.health.status);
     else
@@ -952,6 +954,8 @@ static int cmd_uninstall(const options *opts, const char *code)
                  report.fetched_originals ? ", downloaded just now" : "");
     }
     log_step("library", "queries point back at %s", report.server_uri);
+    if (report.credit_restored)
+        log_step("credit", "the game credits '%s' again", LIB_CREDIT_ORIGINAL);
     print_palette_step(&report.palettes, opts->palettes, 0);
     print_loc_step(&report.strings, 0);
     print_keys_step(&report.bindings);
