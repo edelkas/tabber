@@ -40,6 +40,10 @@
 #include "paths.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* The game's string table, in the assets folder beside the levels. */
 #define LOC_FILE_NAME       "loc.txt"
 
@@ -182,5 +186,9 @@ void loc_plan_free(loc_plan *plan);
  * passes to the caller, and the plan gives it up.
  */
 json_value *loc_plan_take_record(loc_plan *plan);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_LOC_H */

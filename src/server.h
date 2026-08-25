@@ -21,6 +21,10 @@
 #include "net.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* The 3rd party server, and the address to fall back on if its name expires. */
 #define SERVER_DEFAULT_HOST     "outte.ovh"
 #define SERVER_DEFAULT_PORT     8126
@@ -106,5 +110,9 @@ int server_check(config *cfg, const digest *dig, server_health *out);
 
 /* The same probe against an address that has already been resolved. */
 int server_probe(const server_addr *addr, server_source source, server_health *out);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_SERVER_H */

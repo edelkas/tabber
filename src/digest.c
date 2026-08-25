@@ -189,3 +189,30 @@ const npp_tab *digest_find(const digest *dig, const char *code)
     }
     return NULL;
 }
+
+/* ---- Display ----------------------------------------------------------- */
+
+void digest_code_upper(char *out, size_t outsz, const char *code)
+{
+    size_t i;
+
+    if (!out || outsz == 0)
+        return;
+    snprintf(out, outsz, "%s", code ? code : "");
+    for (i = 0; out[i]; i++) {
+        if (out[i] >= 'a' && out[i] <= 'z')
+            out[i] = (char)(out[i] - 'a' + 'A');
+    }
+}
+
+void digest_date_short(char *out, size_t outsz, const char *iso)
+{
+    if (!out || outsz == 0)
+        return;
+    /* Anything shorter than the date itself is not one, so it is shown whole
+     * rather than cut in a place that would read as a different date. */
+    if (iso && strlen(iso) >= DIGEST_DATE_LEN)
+        snprintf(out, outsz, "%.*s", DIGEST_DATE_LEN, iso);
+    else
+        snprintf(out, outsz, "%s", iso ? iso : "");
+}

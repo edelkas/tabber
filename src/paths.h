@@ -14,6 +14,10 @@
 
 #include "platform.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* ---- Steam identifiers and layout -------------------------------------- */
 
 #define NPP_STEAM_APPID         "230270"                 /* N++'s Steam app ID */
@@ -113,5 +117,9 @@ int npp_find_personal_dir(npp_paths *paths, char *err, size_t errsz);
 
 /* Release every string owned by `paths` and zero it. */
 void npp_paths_free(npp_paths *paths);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_PATHS_H */

@@ -2,7 +2,7 @@
  * digest.h - The custom tab catalogue.
  *
  * A JSON digest published alongside the mappacks lists every supported custom
- * tab. It is cached next to the executable so the tool still works offline,
+ * tab. It is cached in the tool's folder so the tool still works offline,
  * and refreshed from the network once per session (see digest_ensure_fresh).
  */
 #ifndef TABBER_DIGEST_H
@@ -11,6 +11,10 @@
 #include <stddef.h>
 
 #include "json.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * Source of the digest. The canonical page is
@@ -22,7 +26,7 @@
 #define DIGEST_URL          "https://raw.githubusercontent.com/edelkas/inne/master/db/mappacks/digest.json"
 #endif
 
-/* On-disk cache, kept next to the executable. */
+/* On-disk cache, kept in the tool's folder. */
 #define DIGEST_FILENAME     "digest.json"
 #define DIGEST_TMP_SUFFIX   ".tmp"     /* staging name for atomic replacement */
 
@@ -63,6 +67,18 @@ typedef struct {
     const json_value *node;    /* full entry, for the download/disk/... keys */
 } npp_tab;
 
+/*
+ * Column headers of a tab listing, and buffers wide enough for the two cells
+ * that are not shown verbatim. Both front-ends list the same four fields under
+ * the same names, so the names live here rather than in either of them.
+ */
+#define COL_CODE            "CODE"
+#define COL_NAME            "NAME"
+#define COL_AUTHORS         "AUTHOR(S)"
+#define COL_DATE            "RELEASED"
+#define DIGEST_CODE_BUF     16
+#define DIGEST_DATE_BUF     (DIGEST_DATE_LEN + 1)
+
 /* A parsed digest. Owns the JSON document its strings point into. */
 typedef struct {
     json_value *root;
@@ -85,6 +101,14 @@ digest *digest_load(char *err, size_t errsz);
 
 void digest_free(digest *dig);
 
+/*
+ * The two fields a listing does not show as stored: the code goes up, as the
+ * game shows it, and the date keeps its "YYYY-MM-DD" part. Both truncate to
+ * fit and always terminate; a NULL input gives an empty string.
+ */
+void digest_code_upper(char *out, size_t outsz, const char *code);
+void digest_date_short(char *out, size_t outsz, const char *iso);
+
 /* Path of the on-disk cache. Caller frees. */
 char *digest_cache_path(void);
 
@@ -98,5 +122,9 @@ const npp_tab *digest_find(const digest *dig, const char *code);
 const json_value *digest_config(const digest *dig);
 const char *digest_levels_dir(const digest *dig);
 const char *digest_palettes_dir(const digest *dig);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_DIGEST_H */

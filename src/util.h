@@ -10,6 +10,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Recommended size for the caller-provided error buffers used across the tool. */
 #define TB_ERR_LEN 512
 
@@ -114,5 +118,9 @@ void buf_append(byte_buf *buf, const void *data, size_t len);
 char *buf_finish(byte_buf *buf, size_t *len_out);
 
 void buf_free(byte_buf *buf);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_UTIL_H */

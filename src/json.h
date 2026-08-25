@@ -11,6 +11,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum {
     JSON_NULL,
     JSON_BOOL,
@@ -76,5 +80,9 @@ void json_array_append(json_value *array, json_value *value);
  * member per line, matching the style of the files we read. Caller frees.
  */
 char *json_serialize(const json_value *value, int pretty);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_JSON_H */

@@ -56,6 +56,10 @@
 #include "json.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define CONFIG_FILENAME      "config.json"
 #define CONFIG_TMP_SUFFIX    ".tmp"
 
@@ -189,5 +193,9 @@ int config_update_declined(config *cfg, const char *version);
 
 /* Remembers that they did, so they are asked once per version, not per day. */
 void config_update_decline(config *cfg, const char *version);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_CONFIG_H */

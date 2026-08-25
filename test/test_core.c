@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "digest.h"
 #include "json.h"
 #include "kv.h"
 #include "md5.h"
@@ -69,6 +70,48 @@ static void test_strings(void)
     CHECK_NUM(str_display_width("Filip"), 5, "width of plain ASCII");
     CHECK_NUM(str_display_width("Filip\xE2\x9C\x9D"), 6, "width counts U+271D once");
     CHECK_NUM(strlen("Filip\xE2\x9C\x9D"), 8, "...though it is 8 bytes");
+}
+
+/*
+ * The two cells a tab listing does not show as stored. Both front-ends print
+ * these, so a change to either shows up in the CLI and the GUI at once.
+ */
+static void test_tab_columns(void)
+{
+    char out[DIGEST_CODE_BUF];
+    char date[DIGEST_DATE_BUF];
+    char tight[3];
+
+    test_case("tab columns");
+
+    digest_code_upper(out, sizeof out, "ziv");
+    CHECK_STR(out, "ZIV", "the code is shown as the game shows it");
+    digest_code_upper(out, sizeof out, "ZIV");
+    CHECK_STR(out, "ZIV", "one already upper is left alone");
+    digest_code_upper(out, sizeof out, "nv1");
+    CHECK_STR(out, "NV1", "a digit in it survives");
+    digest_code_upper(out, sizeof out, NULL);
+    CHECK_STR(out, "", "no code gives an empty cell, not a crash");
+
+    /* Truncation must still terminate: these go straight into a printf. */
+    digest_code_upper(tight, sizeof tight, "ziv");
+    CHECK_STR(tight, "ZI", "a code too long for the buffer is cut, not run on");
+
+    digest_date_short(date, sizeof date, "2015-07-30T00:00:00.000Z");
+    CHECK_STR(date, "2015-07-30", "a timestamp keeps its date");
+    digest_date_short(date, sizeof date, "2015-07-30");
+    CHECK_STR(date, "2015-07-30", "a bare date is already what we want");
+    CHECK_NUM(DIGEST_DATE_BUF, DIGEST_DATE_LEN + 1,
+              "the buffer holds a whole date and its terminator");
+
+    /* Anything shorter than a date is not one, so it is shown whole rather
+     * than cut somewhere that would read as a different date. */
+    digest_date_short(date, sizeof date, "2015-07");
+    CHECK_STR(date, "2015-07", "something shorter is shown as it is");
+    digest_date_short(date, sizeof date, "");
+    CHECK_STR(date, "", "an empty date stays empty");
+    digest_date_short(date, sizeof date, NULL);
+    CHECK_STR(date, "", "no date gives an empty cell");
 }
 
 static void test_buffers(void)
@@ -405,6 +448,7 @@ void suite_core(void)
 {
     test_suite("core");
     test_strings();
+    test_tab_columns();
     test_buffers();
     test_paths();
     test_canonical();

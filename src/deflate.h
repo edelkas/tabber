@@ -16,6 +16,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Fixed by the format: the window, and what counts as a match. */
 #define DEFLATE_WINDOW       32768u
 #define DEFLATE_MIN_MATCH    3
@@ -46,5 +50,9 @@
  * is what the rest of the tool does too. Caller frees.
  */
 unsigned char *deflate_raw(const void *data, size_t len, size_t *out_len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_DEFLATE_H */

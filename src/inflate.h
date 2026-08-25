@@ -10,6 +10,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Decompresses `src_len` bytes into a buffer of exactly `dst_len` bytes.
  * Returns 0 on success, -1 on failure with a reason in `err`. Producing fewer
@@ -17,5 +21,9 @@
  */
 int inflate_raw(const void *src, size_t src_len, void *dst, size_t dst_len,
                 char *err, size_t errsz);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_INFLATE_H */

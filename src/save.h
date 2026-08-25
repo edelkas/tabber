@@ -43,6 +43,10 @@
 #include "paths.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* The savefile and its archives, all in N++'s personal folder. */
 #define SAVE_NAME            "nprofile"
 #define SAVE_GZ_NAME         SAVE_NAME ".gz"
@@ -127,8 +131,9 @@ typedef struct {
 
 /*
  * Path of a fresh save on disk, or NULL when there is none: the environment
- * override first, then res/ beside the executable. Without one the copy built
- * into the binary is used, so this returning NULL is the ordinary case.
+ * override first, then res/ in the tool's folder, then res/ beside the
+ * executable. Without one the copy built into the binary is used, so this
+ * returning NULL is the ordinary case.
  */
 char *save_fresh_path(void);
 
@@ -157,5 +162,9 @@ int save_plan_apply(save_plan *plan, save_report *report, char *err, size_t errs
 int save_plan_undo(save_plan *plan);
 
 void save_plan_free(save_plan *plan);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_SAVE_H */

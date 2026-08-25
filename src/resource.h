@@ -12,8 +12,16 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* nprofile.zip: a ZIP holding one pristine savefile. */
 extern const unsigned char RES_FRESH_SAVE[];
 extern const size_t RES_FRESH_SAVE_LEN;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_RESOURCE_H */

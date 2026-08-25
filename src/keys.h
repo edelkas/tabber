@@ -38,6 +38,10 @@
 #include "paths.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* The bindings file, beside the savefile in the personal directory. */
 #define KEYS_FILE_NAME      "keys.vars"
 
@@ -163,5 +167,9 @@ void keys_plan_undo(keys_plan *plan);
 json_value *keys_plan_take_record(keys_plan *plan);
 
 void keys_plan_free(keys_plan *plan);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_KEYS_H */

@@ -176,9 +176,9 @@ char *save_fresh_path(void)
         free(override);
     }
 
-    /* It ships with the program, so the executable's own folder is where it
-     * belongs; the tool's root is tried first for portable layouts, and the
-     * two are the same folder unless TABBER_HOME says otherwise. */
+    /* The tool's root first, which is where a copy dropped in by hand
+     * belongs; then the executable's own folder, since a portable install may
+     * carry its res/ beside the binary. */
     path = fresh_under(plat_app_root());
     return path ? path : fresh_under(plat_exe_dir());
 }

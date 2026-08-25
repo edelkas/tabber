@@ -46,6 +46,10 @@
 #include "paths.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Digest key naming the palettes a tab bundles, under its "disk" object. */
 #define PJK_PALETTES         "palettes"
 
@@ -184,5 +188,9 @@ int palettes_remove(const digest *dig, const npp_paths *paths, const str_list *n
 
 /* The palettes a tab bundles, as the digest lists them. */
 void palettes_bundled(const npp_tab *tab, str_list *out);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_PALETTES_H */

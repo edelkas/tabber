@@ -7,6 +7,7 @@ rem   build.bat x86            ...32-bit, into build\x86
 rem   build.bat test           build and run the test suite (offline tiers)
 rem   build.bat x86 test       ...the 32-bit build's own suite
 rem   build.bat test online    build and run everything, network included
+rem   build.bat gui            also build the graphical front-end
 setlocal
 cd /d "%~dp0"
 
@@ -28,6 +29,27 @@ set "SOURCES=src\main.c %LIBSRC%"
 set "TESTSRC=test\test_main.c test\test_core.c test\test_archive.c test\test_state.c test\test_save.c test\test_palettes.c test\test_loc.c test\test_keys.c test\test_update.c test\test_game.c test\test_online.c test\fixture_zip.c"
 set "CFLAGS=/nologo /W4 /O2 /std:c11 /D_CRT_SECURE_NO_WARNINGS"
 
+rem ---- The graphical front-end -----------------------------------------------
+rem Dear ImGui and GLFW are built from their sources under vendor\, not linked
+rem against a prebuilt library: a .lib is per-compiler and per-architecture, and
+rem this tree already has two architectures and three operating systems to keep
+rem happy. GLFW picks its backend from a define, one per platform.
+set "IMGUIDIR=vendor\imgui"
+set "GLFWDIR=vendor\glfw"
+set "IMGUISRC=%IMGUIDIR%\imgui.cpp %IMGUIDIR%\imgui_draw.cpp %IMGUIDIR%\imgui_tables.cpp %IMGUIDIR%\imgui_widgets.cpp %IMGUIDIR%\imgui_demo.cpp %IMGUIDIR%\backends\imgui_impl_glfw.cpp %IMGUIDIR%\backends\imgui_impl_opengl3.cpp"
+set "GLFWSRC=%GLFWDIR%\src\context.c %GLFWDIR%\src\init.c %GLFWDIR%\src\input.c %GLFWDIR%\src\monitor.c %GLFWDIR%\src\platform.c %GLFWDIR%\src\vulkan.c %GLFWDIR%\src\window.c %GLFWDIR%\src\egl_context.c %GLFWDIR%\src\osmesa_context.c %GLFWDIR%\src\null_init.c %GLFWDIR%\src\null_monitor.c %GLFWDIR%\src\null_window.c %GLFWDIR%\src\null_joystick.c"
+set "GLFWSRC=%GLFWSRC% %GLFWDIR%\src\win32_init.c %GLFWDIR%\src\win32_joystick.c %GLFWDIR%\src\win32_module.c %GLFWDIR%\src\win32_monitor.c %GLFWDIR%\src\win32_thread.c %GLFWDIR%\src\win32_time.c %GLFWDIR%\src\win32_window.c %GLFWDIR%\src\wgl_context.c"
+
+rem /utf-8 because both libraries carry UTF-8 string literals, and MSVC reads a
+rem source file in the system codepage unless told otherwise.
+set "GUIINC=/I src /I %IMGUIDIR% /I %IMGUIDIR%\backends /I %GLFWDIR%\include"
+set "GUIFLAGS=/nologo /W4 /O2 /utf-8 /EHsc /D_CRT_SECURE_NO_WARNINGS %GUIINC%"
+
+rem Vendored code is compiled quietly: its warnings are upstream's to fix, and
+rem at /W4 they would bury ours. Our own GUI code stays at /W4 like the rest.
+set "VENDORFLAGS=/nologo /W1 /O2 /utf-8 /EHsc /D_CRT_SECURE_NO_WARNINGS /D_GLFW_WIN32 /DUNICODE /D_UNICODE %GUIINC%"
+set "GUILIBS=opengl32.lib gdi32.lib user32.lib shell32.lib"
+
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"
 
 rem A compiler on PATH is only the right one if it targets what was asked for;
@@ -46,6 +68,7 @@ echo Built %OUTDIR%\tabber.exe (%ARCH%)
 rem The fresh savefile is built into the binary (src\resource_save.c), so the
 rem executable is the whole program: nothing has to ship beside it.
 
+if /i "%1"=="gui" goto :build_gui
 if /i not "%1"=="test" exit /b 0
 
 if not exist "%OUTDIR%\test" mkdir "%OUTDIR%\test"
@@ -61,6 +84,29 @@ if /i "%2"=="full" (
     "%OUTDIR%\test\test_tabber.exe"
 )
 exit /b %errorlevel%
+
+rem ---------------------------------------------------------------------------
+:build_gui
+rem Three object trees, because two of these sources are called platform.c:
+rem GLFW has one and so do we, and two files of that name cannot share a /Fo
+rem directory. Keeping them apart keeps their warning levels apart too.
+if not exist "%OUTDIR%\gui\lib" mkdir "%OUTDIR%\gui\lib"
+if not exist "%OUTDIR%\gui\vendor" mkdir "%OUTDIR%\gui\vendor"
+
+rem The tool's own code, compiled exactly as the CLI compiles it. The GUI is a
+rem second front-end onto the same library, not a second copy of it.
+cl %CFLAGS% /c /Fo%OUTDIR%\gui\lib\ %LIBSRC%
+if errorlevel 1 exit /b 1
+
+cl %VENDORFLAGS% /c /Fo%OUTDIR%\gui\vendor\ %IMGUISRC% %GLFWSRC%
+if errorlevel 1 exit /b 1
+
+rem The libraries WinHTTP and the registry need come from the pragmas in
+rem net.c and platform.c, the same way the CLI gets them.
+cl %GUIFLAGS% /Fe%OUTDIR%\tabber-gui.exe /Fo%OUTDIR%\gui\ gui\main.cpp %OUTDIR%\gui\lib\*.obj %OUTDIR%\gui\vendor\*.obj /link %GUILIBS%
+if errorlevel 1 exit /b 1
+echo Built %OUTDIR%\tabber-gui.exe (%ARCH%)
+exit /b 0
 
 rem ---------------------------------------------------------------------------
 :setup_msvc

@@ -11,6 +11,10 @@
 
 #include "version.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* User agent sent with every request. */
 #define NET_USER_AGENT      TABBER_NAME "/" TABBER_VERSION
 
@@ -44,5 +48,9 @@ int net_probe(const char *url, int timeout_secs, int *status, char *err, size_t 
  * "resolves", and a machine with no network at all reports failure.
  */
 int net_host_resolves(const char *host);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_NET_H */

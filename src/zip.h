@@ -14,6 +14,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Compression methods we understand. */
 #define ZIP_METHOD_STORE    0
 #define ZIP_METHOD_DEFLATE  8
@@ -79,5 +83,9 @@ int zip_name_is_safe(const char *name);
  */
 unsigned char *zip_create_stored(const char *name, const void *data, size_t len,
                                  size_t *out_len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_ZIP_H */

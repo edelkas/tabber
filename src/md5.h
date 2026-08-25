@@ -10,6 +10,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define MD5_DIGEST_LEN 16
 #define MD5_HEX_LEN    32   /* characters, excluding the terminator */
 
@@ -25,5 +29,9 @@ void md5_final(md5_ctx *ctx, unsigned char digest[MD5_DIGEST_LEN]);
 
 /* One-shot digest of a buffer, written as lowercase hex. */
 void md5_hex(const void *data, size_t len, char out[MD5_HEX_LEN + 1]);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_MD5_H */

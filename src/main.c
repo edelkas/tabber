@@ -35,11 +35,7 @@
 #define LABEL_INSTALL   "Installation dir:   "
 #define LABEL_PERSONAL  "Personal dir:       "
 
-/* Column headers and layout of the `list` table. */
-#define COL_CODE        "CODE"
-#define COL_NAME        "NAME"
-#define COL_AUTHORS     "AUTHOR(S)"
-#define COL_DATE        "RELEASED"
+/* Layout of the `list` table; its column headers are in digest.h. */
 #define COL_GAP         2      /* spaces between columns          */
 #define COL_NAME_MAX    32     /* longer values are ellipsised    */
 #define COL_AUTHORS_MAX 28
@@ -254,27 +250,6 @@ static void print_rule(size_t width, int last)
         printf("%*s", COL_GAP, "");
 }
 
-/* Uppercases the 3-letter tab code for display, as the game shows it. */
-static void code_upper(char *out, size_t outsz, const char *code)
-{
-    size_t i;
-
-    snprintf(out, outsz, "%s", code ? code : "");
-    for (i = 0; out[i]; i++) {
-        if (out[i] >= 'a' && out[i] <= 'z')
-            out[i] = (char)(out[i] - 'a' + 'A');
-    }
-}
-
-/* Keeps the "YYYY-MM-DD" part of an ISO 8601 timestamp. */
-static void date_short(char *out, size_t outsz, const char *iso)
-{
-    if (iso && strlen(iso) >= DIGEST_DATE_LEN)
-        snprintf(out, outsz, "%.*s", DIGEST_DATE_LEN, iso);
-    else
-        snprintf(out, outsz, "%s", iso ? iso : "");
-}
-
 static int cmd_list(const options *opts)
 {
     char err[TB_ERR_LEN];
@@ -325,12 +300,13 @@ static int cmd_list(const options *opts)
     }
 
     for (i = 0; i < dig->tab_count; i++) {
-        char code[16], name[256], authors[256], date[32];
+        char code[DIGEST_CODE_BUF], name[256], authors[256];
+        char date[DIGEST_DATE_BUF];
 
-        code_upper(code, sizeof code, dig->tabs[i].code);
+        digest_code_upper(code, sizeof code, dig->tabs[i].code);
         fit_column(name, sizeof name, dig->tabs[i].name, COL_NAME_MAX);
         fit_column(authors, sizeof authors, dig->tabs[i].authors, COL_AUTHORS_MAX);
-        date_short(date, sizeof date, dig->tabs[i].date);
+        digest_date_short(date, sizeof date, dig->tabs[i].date);
 
         if (opts->bare) {
             printf("%s\t%s\t%s\t%s\n", code, name, authors, date);
@@ -395,7 +371,7 @@ static int cmd_fetch(const options *opts, const char *code)
         return EXIT_NOT_FOUND;
     }
 
-    code_upper(upper, sizeof upper, tab->code);
+    digest_code_upper(upper, sizeof upper, tab->code);
     printf("Fetching %s (%s)...\n", upper, tab->name);
 
     if (tab_fetch(dig, tab, &report, err, sizeof err) != 0) {
@@ -674,7 +650,7 @@ static int cmd_install(const options *opts, const char *code)
         digest_free(dig);
         return EXIT_NOT_FOUND;
     }
-    code_upper(upper, sizeof upper, tab->code);
+    digest_code_upper(upper, sizeof upper, tab->code);
 
     /* The game's own folders, installation and personal: the savefile swap
      * needs the second one, so a missing one stops the install here. */
@@ -695,7 +671,7 @@ static int cmd_install(const options *opts, const char *code)
         goto done;
     }
     if (install_detect(state, &paths, installed_code, sizeof installed_code)) {
-        code_upper(other, sizeof other, installed_code);
+        digest_code_upper(other, sizeof other, installed_code);
         config_free(state);
         if (!strcmp(other, upper))
             fprintf(stderr, TABBER_NAME ": %s is already installed\n", upper);
@@ -909,7 +885,7 @@ static int cmd_uninstall(const options *opts, const char *code)
         digest_free(dig);
         return EXIT_NOT_FOUND;
     }
-    code_upper(upper, sizeof upper, tab->code);
+    digest_code_upper(upper, sizeof upper, tab->code);
 
     /* Both folders again: the savefile has to be swapped back too. */
     if (npp_find_game_dirs(&paths, err, sizeof err) != 0 ||
@@ -947,7 +923,7 @@ static int cmd_uninstall(const options *opts, const char *code)
          * the older installers leaves behind. */
         char originals[TAB_CODE_MAX_LEN + 1];
 
-        code_upper(originals, sizeof originals, report.originals_code);
+        digest_code_upper(originals, sizeof originals, report.originals_code);
         log_step("", "%lu from an '%s' backup, %lu from the %s tab%s",
                  (unsigned long)report.from_backups, INSTALL_BACKUP_SUFFIX,
                  (unsigned long)report.from_originals, originals,
@@ -1410,7 +1386,7 @@ static int cmd_remove(const options *opts, const char *code)
         name = tab->name;
     }
 
-    code_upper(upper, sizeof upper, code);
+    digest_code_upper(upper, sizeof upper, code);
     if (tab_remove(code, id, &report, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": %s could not be removed: %s\n", upper, err);
         digest_free(dig);

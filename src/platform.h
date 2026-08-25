@@ -13,6 +13,10 @@
 
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Native path separator. Windows accepts '/' as well, but we emit '\'. */
 #ifdef _WIN32
 #  define PATH_SEP      '\\'
@@ -237,5 +241,9 @@ typedef enum {
 char *plat_reg_read_str(plat_reg_hive hive, const char *subkey, const char *value);
 
 #endif /* _WIN32 */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_PLATFORM_H */

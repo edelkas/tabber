@@ -66,6 +66,10 @@
 #include "server.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Appended to an original game file while a tab is installed. */
 #define INSTALL_BACKUP_SUFFIX   "OG"
 
@@ -163,5 +167,9 @@ int tab_uninstall(const digest *dig, const npp_tab *tab, const npp_paths *paths,
                   char *err, size_t errsz);
 
 void uninstall_report_free(uninstall_report *report);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_INSTALL_H */

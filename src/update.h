@@ -40,6 +40,10 @@
 #include "md5.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Where the manifest lives. Overridable at build time
  * (-DUPDATE_MANIFEST_URL='"..."') to test against a staging release.
@@ -185,5 +189,9 @@ void update_plan_free(update_plan *plan);
  * while it is still running. Called once at startup; silent either way.
  */
 void update_sweep(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_UPDATE_H */

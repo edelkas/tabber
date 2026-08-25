@@ -15,6 +15,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Header: magic, method, flags, and the fixed part's length. */
 #define GZ_MAGIC_0          0x1F
 #define GZ_MAGIC_1          0x8B
@@ -51,5 +55,9 @@ unsigned char *gz_extract(const void *data, size_t len, size_t *out_len,
  */
 unsigned char *gz_compress(const void *data, size_t len, const char *name,
                            size_t *out_len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_GZIP_H */

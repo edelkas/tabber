@@ -23,6 +23,10 @@
 #include "tabs.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* The URI the game ships with. Its length is the budget for a patched one. */
 #define LIB_OFFICIAL_URI    "https://dojo.nplusplus.ninja"
 #define LIB_URI_BUDGET      (sizeof(LIB_OFFICIAL_URI) - 1)
@@ -127,5 +131,9 @@ typedef struct {
  */
 int lib_check(config *cfg, const digest *dig, const npp_paths *paths,
               lib_health *out, char *err, size_t errsz);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_PATCH_H */

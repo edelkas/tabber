@@ -12,6 +12,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct kv_node kv_node;
 struct kv_node {
     char *key;            /* NULL only for the synthetic root node */
@@ -36,5 +40,9 @@ const kv_node *kv_child(const kv_node *node, const char *key);
 
 /* String value of such a child, or NULL if missing or if it is a block. */
 const char *kv_value(const kv_node *node, const char *key);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_KV_H */

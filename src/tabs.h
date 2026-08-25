@@ -15,6 +15,10 @@
 #include "md5.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Local store: <directory of the executable>/tabs/<code>/ */
 #define TABS_DIR_NAME       "tabs"
 
@@ -92,5 +96,9 @@ int tab_is_downloaded(const char *code);
 /* Root of the local tab store, and the directory of one tab. Caller frees. */
 char *tabs_root_dir(void);
 char *tab_dir_path(const char *code);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_TABS_H */

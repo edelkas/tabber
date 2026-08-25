@@ -33,6 +33,10 @@
 #include "paths.h"
 #include "util.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* Steam's own layout, under its base folder. */
 #define CLOUD_USERDATA_DIR  "userdata"
 #define CLOUD_REMOTE_DIR    "remote"
@@ -81,5 +85,9 @@ int cloud_apply(const npp_paths *paths, cloud_mode mode,
                 cloud_report *report, char *err, size_t errsz);
 
 void cloud_report_free(cloud_report *report);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* TABBER_CLOUD_H */
