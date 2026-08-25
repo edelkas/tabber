@@ -1,5 +1,16 @@
 # Changelog
 
+## [[0.2.0] 2026-08-25](https://github.com/edelkas/tabber/releases/tag/v0.2.0)
+
+Major restructure of the directory tree. User files (custom tab store, configuration, etc)
+are now decoupled from the binary and stored in the standard local data folders:
+
+- **Windows**: `%LocalAppData%\Tabber`, i.e. `C:\Users\<Username>\AppData\Local\Tabber`.
+- **Linux**: `$XDG_DATA_HOME/tabber` or `~/.local/share/tabber`.
+- **macOS**: `~/Library/Application Support/Tabber`.
+
+Releases now also include a 32-bit Windows build.
+
 ## [[0.1.1] 2026-08-25](https://github.com/edelkas/tabber/releases/tag/v0.1.1)
 
 True backwards compatibility with old installers accomplished. Two things were missing:
