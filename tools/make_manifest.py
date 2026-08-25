@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Writes the manifest that tabber's `upgrade` command reads.
 
-Build one binary per platform, name them after the release, then:
+Build one binary per platform, name each after the platform it runs on, then:
 
     python tools/make_manifest.py 0.3.0 \\
         --notes "What changed, in a line or three." \\
-        --build windows-x64=dist/tabber-0.3.0-windows-x64.exe \\
-        --build linux-x64=dist/tabber-0.3.0-linux-x64 \\
-        --build macos-arm64=dist/tabber-0.3.0-macos-arm64 \\
+        --build windows-x64=dist/tabber-windows-x64.exe \\
+        --build linux-x64=dist/tabber-linux-x64 \\
+        --build macos-arm64=dist/tabber-macos-arm64 \\
         --out dist/manifest.json
 
 Then create the GitHub release tagged v0.3.0 and attach every binary along
@@ -18,6 +18,10 @@ the manifest itself is fetched from .../releases/latest/download/.
 The platform keys are what the tool asks for: "<os>-<arch>", with os one of
 windows, linux or macos, and arch one of x64, arm64 or x86. A key of just the
 os ("windows") also matches, for a release shipping one build per system.
+
+The file names carry no version, and should not: an upgrade keeps the name the
+binary already had on disk, so a version in it would be a lie the moment the
+first upgrade lands. The version is in the manifest and on the release page.
 """
 import argparse
 import datetime
@@ -36,6 +40,11 @@ def build_entry(repo, version, path):
         data = f.read()
     if not data:
         sys.exit("%s is empty" % path)
+    # An upgrade writes over the file the user already has, keeping its name,
+    # so a version baked into that name goes stale on the first upgrade.
+    if version in os.path.basename(path):
+        sys.stderr.write("warning: %s has the version in its name, which an "
+                         "upgrade will not update\n" % os.path.basename(path))
     return {
         "url": ASSET_URL.format(repo=repo, version=version,
                                 name=os.path.basename(path)),

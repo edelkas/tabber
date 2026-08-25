@@ -12,7 +12,7 @@
  *     "notes":   "What changed, in a line or three.",
  *     "page":    "https://github.com/edelkas/tabber/releases/tag/v0.3.0",
  *     "builds":  {
- *       "windows-x64": { "url": "https://.../tabber-0.3.0-windows-x64.exe",
+ *       "windows-x64": { "url": "https://.../tabber-windows-x64.exe",
  *                        "size": 371712, "md5": "..." }
  *     }
  *   }

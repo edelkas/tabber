@@ -925,7 +925,7 @@ with the fresh savefile built into it — and a `manifest.json` describing them:
   "notes": "What changed, in a line or three.",
   "page": "https://github.com/edelkas/tabber/releases/tag/v0.3.0",
   "builds": {
-    "windows-x64": { "url": "https://github.com/edelkas/tabber/releases/download/v0.3.0/tabber-0.3.0-windows-x64.exe",
+    "windows-x64": { "url": "https://github.com/edelkas/tabber/releases/download/v0.3.0/tabber-windows-x64.exe",
                      "size": 371712, "md5": "..." }
   }
 }
@@ -990,13 +990,23 @@ being unreachable is not this command's problem. `--offline` and
 ### Cutting a release
 
 ```
-python tools/make_manifest.py 0.3.0 --notes "What changed."     --build windows-x64=dist/tabber-0.3.0-windows-x64.exe     --build linux-x64=dist/tabber-0.3.0-linux-x64     --out dist/manifest.json
+python tools/make_manifest.py 0.3.0 --notes "What changed." \
+    --build windows-x64=dist/tabber-windows-x64.exe \
+    --build linux-x64=dist/tabber-linux-x64 \
+    --out dist/manifest.json
 ```
 
 Bump `TABBER_VERSION` in `src/version.h`, build each platform, run that, then
 tag `v0.3.0` and attach every binary **and** `manifest.json` to the release.
 The first release is the odd one out, since nothing can update to it from
 nothing; publish it, then test the path from it to the next.
+
+The asset names carry no version on purpose. An upgrade writes over the file
+that is already on disk and keeps whatever it is called, so a version in the
+name would be wrong from the first upgrade on — and few people rename a binary
+after updating it. The version lives in the manifest and on the release page,
+which is where the tool reads it from anyway; `make_manifest.py` says so if an
+asset is named after the release regardless.
 
 `UPDATE_MANIFEST_URL` and `TABBER_VERSION` can both be overridden at build time
 (`-DTABBER_VERSION='"0.9.0"'`), which is how an update is rehearsed against a
