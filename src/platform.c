@@ -143,6 +143,30 @@ char *plat_home_dir(void)
     return win_known_folder(&FOLDERID_Profile);
 }
 
+char *plat_data_dir(void)
+{
+    char *dir = win_known_folder(&FOLDERID_LocalAppData);
+    char *home, *appdata;
+
+    if (dir)
+        return dir;
+
+    dir = plat_getenv(WIN_ENV_LOCALAPPDATA);
+    if (dir)
+        return dir;
+
+    /* Fallback for the (unlikely) case both the shell API and the variable
+     * fail. Joined a step at a time so the separators come out native. */
+    home = plat_home_dir();
+    if (!home)
+        return NULL;
+    appdata = path_join(home, "AppData");
+    dir = path_join(appdata, "Local");
+    free(home);
+    free(appdata);
+    return dir;
+}
+
 char *plat_documents_dir(void)
 {
     char *docs = win_known_folder(&FOLDERID_Documents);
@@ -591,6 +615,33 @@ char *plat_home_dir(void)
     return NULL;
 }
 
+char *plat_data_dir(void)
+{
+    char *home, *dir;
+
+#ifndef __APPLE__
+    /* XDG names it outright, and an absolute path is the only usable answer:
+     * the spec says a relative one is to be ignored. */
+    dir = plat_getenv(XDG_ENV_DATA_HOME);
+    if (dir) {
+        if (dir[0] == '/')
+            return dir;
+        free(dir);
+    }
+#endif
+
+    home = plat_home_dir();
+    if (!home)
+        return NULL;
+#ifdef __APPLE__
+    dir = path_join(home, MACOS_APP_SUPPORT);
+#else
+    dir = path_join(home, XDG_DEFAULT_DATA_HOME);
+#endif
+    free(home);
+    return dir;
+}
+
 char *plat_documents_dir(void)
 {
     char *home = plat_home_dir();
@@ -993,16 +1044,92 @@ int plat_copy_tree(const char *src, const char *dst, size_t *files)
     return failures ? -1 : 0;
 }
 
+/* Moves one file, by rename where that works and by copy where it does not:
+ * the two directories can sit on different volumes. */
+static int move_one_file(const char *from, const char *to)
+{
+    char *data;
+    size_t len;
+    int rc;
+
+    if (plat_replace_file(from, to) == 0)
+        return 0;
+
+    data = plat_read_file(from, &len);
+    if (!data)
+        return -1;
+    rc = plat_write_file(to, data, len);
+    free(data);
+    if (rc == 0)
+        plat_remove_file(from);
+    return rc;
+}
+
+/* The same for a directory, for the same reason. */
+static int move_one_dir(const char *from, const char *to)
+{
+    if (plat_move_dir(from, to) == 0)
+        return 0;
+    if (plat_copy_tree(from, to, NULL) != 0)
+        return -1;
+    plat_remove_tree(from);
+    return 0;
+}
+
+int plat_move_entries(const char *from, const char *to,
+                      const char *const *names, size_t count, size_t *moved)
+{
+    size_t i;
+    int rc = 0;
+
+    if (!from || !to || !names)
+        return -1;
+
+    for (i = 0; i < count; i++) {
+        char *src = path_join(from, names[i]);
+        char *dst = path_join(to, names[i]);
+        int is_dir = plat_is_dir(src);
+
+        /* Nothing to move, or something already there to move onto: leave it. */
+        if ((!is_dir && !plat_is_file(src)) || plat_is_dir(dst) || plat_is_file(dst)) {
+            free(src);
+            free(dst);
+            continue;
+        }
+
+        if ((is_dir ? move_one_dir(src, dst) : move_one_file(src, dst)) != 0)
+            rc = -1;
+        else if (moved)
+            (*moved)++;
+
+        free(src);
+        free(dst);
+    }
+    return rc;
+}
+
 char *plat_app_root(void)
 {
     char *override = plat_getenv(TABBER_ENV_HOME);
-    char *dir;
+    char *data, *root, *dir;
 
     if (override) {
         if (plat_is_dir(override))
             return override;
-        free(override);   /* names nothing usable: fall back to the executable */
+        free(override);   /* names nothing usable: fall back to the default */
     }
+
+    /* The system's own place for this, so the binary can be moved, replaced
+     * or thrown away without the tab store and the record going with it. */
+    data = plat_data_dir();
+    if (data) {
+        root = path_join(data, TABBER_DATA_DIRNAME);
+        free(data);
+        if (plat_mkdir_p(root) == 0)
+            return root;
+        free(root);       /* unwritable: better beside the binary than nowhere */
+    }
+
     dir = plat_exe_dir();
     return dir ? dir : str_dup(".");
 }

@@ -20,8 +20,9 @@ The binary lands in `build/tabber[.exe]`. HTTP goes through WinHTTP on Windows
 The 32-bit build is a first-class one, not an afterthought: it is the same
 source with nothing conditional on the word size, and the whole suite is run
 against it. It keeps its own tree because the object files of the two are not
-interchangeable, and so is `build.bat x86 test`, with its own `config.json`
-beside its own executable. An architecture given to `build.bat` comes first and
+interchangeable, and so is `build.bat x86 test`. Both builds read the same
+[tool folder](#where-tabber-keeps-its-files), so whichever one is run sees the
+same tab store and the same record. An architecture given to `build.bat` comes first and
 everything after it reads as usual, so `build.bat x86 test online` is the
 32-bit run of what `build.bat test online` runs. A compiler already on `PATH`
 is used only if it targets what was asked for; otherwise the right `vcvars` is
@@ -165,7 +166,7 @@ cover.
 | `src/deflate.c/.h` | DEFLATE compressor (RFC 1951) |
 | `src/md5.c/.h`   | MD5 digest (RFC 1321), for download integrity |
 | `src/net.c/.h`   | HTTPS client: WinHTTP on Windows, libcurl elsewhere |
-| `src/platform.c/.h` | OS abstraction: filesystem, environment, Windows registry, UTF-8 paths |
+| `src/platform.c/.h` | OS abstraction: filesystem, environment, Windows registry, UTF-8 paths, the tool's own folder |
 | `src/util.c/.h`  | Allocation, string, buffer and error helpers |
 | `src/version.h`  | Program name and version |
 | `src/resource.h` | Files built into the binary |
@@ -178,7 +179,7 @@ cover.
 
 | Variable | Effect |
 | --- | --- |
-| `TABBER_HOME` | Use this directory as the tool's root instead of the executable's, for `config.json`, the cached digest and `tabs/` |
+| `TABBER_HOME` | Use this directory as the tool's root instead of the standard one, for `config.json`, the cached digest and `tabs/` |
 | `TABBER_GAME_DIR` | Use this N++ installation directory instead of asking Steam |
 | `TABBER_PERSONAL_DIR` | Use this N++ personal directory instead of the usual per-platform one |
 | `TABBER_STEAM_DIR` | Use this Steam directory instead of the one found in the registry (this is where the cloud saves are) |
@@ -217,7 +218,7 @@ what is actually on disk.
 The catalogue of supported custom tabs is a JSON digest published at
 [`db/mappacks/digest.json`](https://github.com/edelkas/inne/blob/master/db/mappacks/digest.json)
 (the tool fetches the `raw.githubusercontent.com` equivalent, since the blob URL
-serves HTML). It is cached as `digest.json` **next to the executable**.
+serves HTML). It is cached as `digest.json` in [the tool's own folder](#where-tabber-keeps-its-files).
 
 - The cache is refreshed from the network at most **once per session**, the
   first time something needs it — so `list` is up to date without `update`.
@@ -234,7 +235,7 @@ tool at a staging server.
 ## Fetching a custom tab
 
 `tabber fetch CODE` downloads the tab's ZIP from the link in the digest and
-unpacks it into `tabs/<code>/` **next to the executable**, preserving the
+unpacks it into `tabs/<code>/` in [the tool's own folder](#where-tabber-keeps-its-files), preserving the
 archive's own layout (`Levels/`, `Palettes/<name>/`, `AUTHORS`, `SCORES`).
 
 Everything is checked in memory, before a single byte reaches the disk:
@@ -866,10 +867,47 @@ The string they search for is not there, so they refuse. Upgrading to tabber is
 a one-way step, which is why it keeps the ability to clean up after them and
 not the other way round.
 
+## Where tabber keeps its files
+
+Everything the tool owns — `config.json`, the cached `digest.json` and the
+`tabs/` store — lives in one folder, the one each system sets aside for a
+program's per-user data:
+
+| System | Folder |
+| --- | --- |
+| Windows | `%LOCALAPPDATA%\Tabber` |
+| macOS | `~/Library/Application Support/Tabber` |
+| Linux, elsewhere | `$XDG_DATA_HOME/tabber`, or `~/.local/share/tabber` |
+
+Those are the places meant for exactly this: writable without asking, kept
+across sessions, and not swept up by anything. The point of using them is that
+the executable becomes disposable — it can be moved, renamed, replaced by an
+upgrade or thrown away and downloaded again, and the tab store, the record of
+what is installed and any settings stay where they are. It also keeps a build
+tree clean, since a binary run out of `build/` no longer scatters state beside
+itself.
+
+It is one folder per user, not per binary: the 32-bit and 64-bit builds share
+it, as do a copy in `build/` and one on the desktop. That is what makes the
+record trustworthy — only one tab can be installed at a time, and that fact is
+recorded in one place rather than in whichever folder the binary happened to be
+run from.
+
+- `TABBER_HOME` overrides it, when it names a directory that exists. Portable
+  setups and the test suite use this; nothing else needs it.
+- The folder is created on first use. If it cannot be — an unwritable or
+  undiscoverable data directory — the tool falls back to the executable's own
+  directory rather than failing, which is where everything used to live.
+- **Upgrading from 0.1.1 or earlier moves the old files over**, once, on the
+  first run. Anything already in the new folder wins and is never written over,
+  and an entry that cannot move is left where it is. The move is reported on
+  stderr. This matters mostly for `config.json`: which tab is installed is the
+  one thing an uninstall cannot work out on its own.
+
 ## State
 
-`config.json`, next to the executable, holds the tool's configuration and what
-it has done so far. Its `tabs` array carries one entry per tab the tool has
+`config.json`, in [the tool's own folder](#where-tabber-keeps-its-files), holds
+the tool's configuration and what it has done so far. Its `tabs` array carries one entry per tab the tool has
 touched:
 
 ```json

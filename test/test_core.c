@@ -167,6 +167,100 @@ static void test_canonical(void)
     free(base);
 }
 
+/* Whether `s` ends with `tail`, for checking the shape of a path. */
+static int ends_with(const char *s, const char *tail)
+{
+    size_t sl = strlen(s), tl = strlen(tail);
+    return sl >= tl && strcmp(s + sl - tl, tail) == 0;
+}
+
+static void test_app_root(void)
+{
+    char *root = test_dir("approot");
+    char *data = plat_data_dir();
+    char *got;
+
+    test_case("where the tool keeps its own files");
+
+    /* The system's data directory, which app_root puts the tool's folder
+     * inside of. Reading it changes nothing, so this is safe to ask for. */
+    if (CHECK(data != NULL, "the system has a per-user data directory")) {
+#ifdef _WIN32
+        CHECK(data[0] != '\0' && (data[1] == ':' || data[0] == '\\'),
+              "and names it absolutely (got '%s')", data);
+#else
+        CHECK(data[0] == '/', "and names it absolutely (got '%s')", data);
+#endif
+        CHECK(!ends_with(data, TABBER_DATA_DIRNAME),
+              "without the tool's own folder already on the end (got '%s')", data);
+    }
+
+    /* TABBER_HOME overrides it outright, which is what keeps this very suite
+     * out of the real one. */
+    test_use_root(root);
+    got = plat_app_root();
+    CHECK_STR(got, root, "TABBER_HOME names the root outright");
+    free(got);
+
+    free(data);
+    free(root);
+}
+
+static void test_move_entries(void)
+{
+    char *base = test_dir("adopt");
+    char *from = path_join(base, "old");
+    char *to = path_join(base, "new");
+    char *src_file = path_join(from, "config.json");
+    char *src_dir = path_join(from, "tabs");
+    char *src_kept = path_join(from, "digest.json");
+    char *dst_file = path_join(to, "config.json");
+    char *dst_dir_file = path_join(to, "tabs/ziv/SI.txt");
+    char *dst_kept = path_join(to, "digest.json");
+    char *inner = path_join(from, "tabs/ziv/SI.txt");
+    static const char *const names[] = { "config.json", "digest.json", "tabs" };
+    size_t moved = 0;
+    char *text;
+
+    test_case("state is moved to the root without writing over any");
+
+    plat_mkdir_p(to);
+    test_write(src_file, "{ \"tabs\": [] }");
+    test_write(inner, "levels");
+    test_write(src_kept, "old digest");
+    test_write(dst_kept, "the one already there");
+
+    CHECK(plat_move_entries(from, to, names, 3, &moved) == 0,
+          "the move reports success");
+    CHECK_NUM(moved, 2, "the file and the directory moved, the third did not");
+
+    text = test_read(dst_file);
+    CHECK_STR(text, "{ \"tabs\": [] }", "the file arrived");
+    free(text);
+    text = test_read(dst_dir_file);
+    CHECK_STR(text, "levels", "and so did the whole store, contents and all");
+    free(text);
+
+    /* The destination's own copy wins: an entry already there is never lost. */
+    text = test_read(dst_kept);
+    CHECK_STR(text, "the one already there", "what was already there is untouched");
+    free(text);
+    CHECK(plat_is_file(src_kept), "and the one that could not move is left behind");
+
+    CHECK(!plat_is_file(src_file), "what moved is gone from the old place");
+    CHECK(!plat_is_dir(src_dir), "the directory too");
+
+    /* Running it again has nothing left to do, and says so. */
+    moved = 0;
+    CHECK(plat_move_entries(from, to, names, 3, &moved) == 0,
+          "a second run succeeds");
+    CHECK_NUM(moved, 0, "having moved nothing");
+
+    free(base); free(from); free(to);
+    free(src_file); free(src_dir); free(src_kept);
+    free(dst_file); free(dst_dir_file); free(dst_kept); free(inner);
+}
+
 static void test_json_parsing(void)
 {
     char err[TB_ERR_LEN];
@@ -314,6 +408,8 @@ void suite_core(void)
     test_buffers();
     test_paths();
     test_canonical();
+    test_app_root();
+    test_move_entries();
     test_json_parsing();
     test_json_writing();
     test_kv();

@@ -69,8 +69,8 @@
 #define WIN_ENV_PROGFILES_X86   "ProgramFiles(x86)"
 #define WIN_ENV_PROGFILES       "ProgramFiles"
 #define STEAM_DEFAULT_DIRNAME   "Steam"
-#define XDG_ENV_DATA_HOME       "XDG_DATA_HOME"
-#define XDG_DEFAULT_DATA_HOME   ".local/share"                  /* relative to $HOME */
+/* XDG_ENV_DATA_HOME and XDG_DEFAULT_DATA_HOME come from platform.h: they are
+ * facts about the system, not about Steam, and the tool's own root uses them. */
 #define LINUX_STEAM_ALT_1       ".steam/steam"                   /* legacy symlinks */
 #define LINUX_STEAM_ALT_2       ".steam/root"
 #define LINUX_STEAM_FLATPAK     ".var/app/com.valvesoftware.Steam/data/Steam"

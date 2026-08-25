@@ -91,9 +91,39 @@ int plat_restart(const char *exe, char *const *args, size_t count, int *status);
 #define TABBER_ENV_HOME "TABBER_HOME"
 
 /*
+ * Where each system sets aside per-user application data, and what the tool
+ * calls its folder inside it. The name follows the local convention: capital
+ * on Windows and macOS, where it sits among other applications' capitalised
+ * folders, lower case under XDG, where everything else is.
+ */
+#define WIN_ENV_LOCALAPPDATA    "LOCALAPPDATA"
+#define MACOS_APP_SUPPORT       "Library/Application Support"  /* under $HOME */
+#define XDG_ENV_DATA_HOME       "XDG_DATA_HOME"
+#define XDG_DEFAULT_DATA_HOME   ".local/share"                 /* under $HOME */
+
+#ifdef _WIN32
+#  define TABBER_DATA_DIRNAME   "Tabber"
+#elif defined(__APPLE__)
+#  define TABBER_DATA_DIRNAME   "Tabber"
+#else
+#  define TABBER_DATA_DIRNAME   "tabber"
+#endif
+
+/*
+ * The system's per-user data directory, without the tool's folder on the end:
+ * %LOCALAPPDATA% on Windows, ~/Library/Application Support on macOS, and
+ * $XDG_DATA_HOME (or ~/.local/share) elsewhere. NULL if it cannot be worked
+ * out at all. Caller frees.
+ */
+char *plat_data_dir(void);
+
+/*
  * The tool's root: where config.json, the cached digest and the tab store
- * live. That is the executable's own directory, unless TABBER_ENV_HOME names
- * an existing directory. Caller frees.
+ * live. That is TABBER_DATA_DIRNAME under plat_data_dir(), created if it is
+ * not there yet, so the binary can be moved or replaced without its state
+ * following it around. TABBER_ENV_HOME overrides it when it names a directory
+ * that exists, and the executable's own directory stands in if the data
+ * directory cannot be found or made. Caller frees.
  */
 char *plat_app_root(void);
 
@@ -164,6 +194,17 @@ int plat_remove_tree(const char *path);
  * Returns 0 on success, -1 if any part of it could not be copied.
  */
 int plat_copy_tree(const char *src, const char *dst, size_t *files);
+
+/*
+ * Moves the entries named in `names` from one directory to another, files and
+ * directories alike, by rename where that works and by copy where it does not
+ * (the two can be on different volumes). An entry `from` does not have, or
+ * that `to` already has, is left alone: this never writes over anything.
+ * `moved` (optional) is incremented per entry actually moved. Returns 0 when
+ * everything that had to move did, -1 otherwise.
+ */
+int plat_move_entries(const char *from, const char *to,
+                      const char *const *names, size_t count, size_t *moved);
 
 /*
  * Absolute, symlink-free path with the on-disk spelling (letter case

@@ -1479,6 +1479,53 @@ static int run_command(const options *opts, const char *command, const char *arg
     return EXIT_USAGE;
 }
 
+/*
+ * Up to 0.1.1 the tool kept its files beside the executable. Anything still
+ * there is moved to the root used now, once, so upgrading does not lose the
+ * record of which tab is installed - the one thing an uninstall cannot work
+ * out for itself. Nothing already in the new root is written over, and an
+ * explicit TABBER_HOME is left to whoever set it.
+ */
+static void adopt_old_root(void)
+{
+    static const char *const state[] = {
+        CONFIG_FILENAME, DIGEST_FILENAME, TABS_DIR_NAME
+    };
+    char *home, *root, *exedir, *root_real, *exe_real;
+    size_t moved = 0;
+
+    home = plat_getenv(TABBER_ENV_HOME);
+    if (home) {
+        free(home);
+        return;
+    }
+
+    root = plat_app_root();
+    exedir = plat_exe_dir();
+    if (!root || !exedir) {
+        free(root);
+        free(exedir);
+        return;
+    }
+
+    /* Where the two are the same place there is nothing to move, and the
+     * spelling on disk is what settles that. */
+    root_real = plat_canonical_path(root);
+    exe_real = plat_canonical_path(exedir);
+    if (root_real && exe_real && strcmp(root_real, exe_real) != 0)
+        plat_move_entries(exedir, root, state,
+                          sizeof state / sizeof *state, &moved);
+
+    if (moved)
+        fprintf(stderr, TABBER_NAME ": moved %u item(s) that used to sit beside "
+                "the executable into %s\n", (unsigned)moved, root);
+
+    free(root);
+    free(exedir);
+    free(root_real);
+    free(exe_real);
+}
+
 int main(int argc, char **argv)
 {
     options opts = {0};
@@ -1491,6 +1538,7 @@ int main(int argc, char **argv)
     /* A binary an earlier update moved aside can only be deleted once the run
      * that was using it has ended, which is to say now. */
     update_sweep();
+    adopt_old_root();
 
     for (i = 1; i < argc; i++) {
         const char *arg = argv[i];
