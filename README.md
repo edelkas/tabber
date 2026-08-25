@@ -4,6 +4,47 @@ A cross-platform CLI tool (C99) to install custom tabs (mappacks) for the game
 **N++**. Work in progress; a DearImGui front-end is planned once the command
 line side is complete.
 
+## Table of contents
+
+- [Table of contents](#table-of-contents)
+- [Building](#building)
+- [Usage](#usage)
+- [Tests](#tests)
+- [Layout](#layout)
+- [Environment](#environment)
+- [How the directories are found](#how-the-directories-are-found)
+- [The digest](#the-digest)
+- [Fetching a custom tab](#fetching-a-custom-tab)
+- [Installing a tab](#installing-a-tab)
+- [Redirecting the server](#redirecting-the-server)
+   * [The developer credit](#the-developer-credit)
+- [The library check](#the-library-check)
+- [The server check](#the-server-check)
+- [The savefile](#the-savefile)
+   * [Compressed or not](#compressed-or-not)
+   * [What makes it safe](#what-makes-it-safe)
+- [Steam Cloud](#steam-cloud)
+- [The palettes](#the-palettes)
+   * [Names](#names)
+   * [The limit](#the-limit)
+   * [Undoing](#undoing)
+- [The in-game texts](#the-in-game-texts)
+   * [Which languages](#which-languages)
+   * [Putting them back](#putting-them-back)
+- [The controls](#the-controls)
+   * [Putting them back](#putting-them-back-1)
+   * [At the tab's own request](#at-the-tabs-own-request)
+- [Uninstalling](#uninstalling)
+   * [The older installers](#the-older-installers)
+- [Where tabber keeps its files](#where-tabber-keeps-its-files)
+- [State](#state)
+- [Updating tabber](#updating-tabber)
+   * [Replacing a running program](#replacing-a-running-program)
+   * [When it looks](#when-it-looks)
+   * [Cutting a release](#cutting-a-release)
+   * [What this does and does not protect](#what-this-does-and-does-not-protect)
+- [Status](#status)
+
 ## Building
 
 | Platform | Command | Notes |
