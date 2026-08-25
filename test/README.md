@@ -2,7 +2,9 @@
 
 Run it with `build.bat test` (Windows) or `make test` (Linux, macOS). Add
 `online` / `--online` for the tests that need the network, or `full` /
-`--full` to also sweep every published tab.
+`--full` to also sweep every published tab. `build.bat x86 test` runs the whole
+thing against the 32-bit build, which is released alongside the 64-bit one and
+so is expected to pass exactly the same checks.
 
 ## Files
 
@@ -16,7 +18,7 @@ Run it with `build.bat test` (Windows) or `make test` (Linux, macOS). Add
 | `test_palettes.c` | The baked palette names, collisions, the game's 256 limit, and copying palettes in and out |
 | `test_loc.c` | The game's own texts: which languages are written, the state record, restoring, and the ones the old installer left behind |
 | `test_keys.c` | Binding players' controls together, restoring them, the list a tab's digest entry asks for, and the fallback for controls nothing recorded |
-| `test_update.c` | Comparing versions, reading a release manifest, and replacing the running binary |
+| `test_update.c` | Comparing versions, picking this platform's build, reading a release manifest, and replacing the running binary |
 | `test_game.c` | Install, uninstall, library patching, the developer credit, the controls a tab asks to have bound, compatibility with the older installers' backups, and both health checks |
 | `test_online.c` | The live server, the live digest, fetching a tab, the full catalogue sweep |
 | `fixture_zip.c` | A 462-byte ZIP embedded as bytes |

@@ -8,13 +8,32 @@ line side is complete.
 
 | Platform | Command | Notes |
 | --- | --- | --- |
-| Windows (MSVC) | `build.bat` | Imports the MSVC environment automatically via `vswhere` |
+| Windows (MSVC), 64-bit | `build.bat` | Imports the MSVC environment automatically via `vswhere` |
+| Windows (MSVC), 32-bit | `build.bat x86` | The same, through `vcvars32`; lands in `build\x86\` |
 | Linux / macOS  | `make`      | Any C99 compiler; needs libcurl (`libcurl4-openssl-dev` or equivalent) |
 | Windows (MinGW)| `make`      | Links `advapi32`, `ole32`, `shell32`, `uuid`, `winhttp` |
 
 The binary lands in `build/tabber[.exe]`. HTTP goes through WinHTTP on Windows
 (no dependency) and libcurl elsewhere, both behind the two-function API in
 `src/net.h`.
+
+The 32-bit build is a first-class one, not an afterthought: it is the same
+source with nothing conditional on the word size, and the whole suite is run
+against it. It keeps its own tree because the object files of the two are not
+interchangeable, and so is `build.bat x86 test`, with its own `config.json`
+beside its own executable. An architecture given to `build.bat` comes first and
+everything after it reads as usual, so `build.bat x86 test online` is the
+32-bit run of what `build.bat test online` runs. A compiler already on `PATH`
+is used only if it targets what was asked for; otherwise the right `vcvars` is
+imported over it.
+
+Where the word size shows is in the places the system splits in two, and both
+are already handled for other reasons: a 32-bit process reads Steam's registry
+key through the WoW64 redirector, which lands on the same 32-bit view the
+64-bit build reaches by naming `Wow6432Node` outright, and `%ProgramFiles%`
+means the x86 folder to it, which is where Steam is anyway. Both are among the
+candidates each build already tries in turn, and every candidate has to look
+like Steam before it is believed.
 
 ## Usage
 
@@ -66,6 +85,7 @@ and warnings go to stderr, so stdout stays parseable.
 build.bat test          Windows: build and run the offline suite
 build.bat test online   ...including the tests that need the network
 build.bat test full     ...including the sweep over every published tab
+build.bat x86 test      ...any of the three against the 32-bit build
 make test / test-online / test-full     Linux and macOS
 ```
 
@@ -937,10 +957,18 @@ and no API call — nothing to rate-limit and nothing whose schema is not ours.
 The per-build URLs are pinned to their own tag instead, so a release published
 half way through a download cannot hand out a mismatched pair.
 
-The build is chosen by `<os>-<arch>` (`windows-x64`, `linux-x64`,
-`macos-arm64`), falling back to the bare system name for a release that ships
-one build per platform. A release with no build we can run is still reported —
-knowing there is a newer version is the point — with a pointer to the page.
+The build is chosen by `<os>-<arch>` (`windows-x64`, `windows-x86`,
+`linux-x64`, `macos-arm64`), falling back to the bare system name for a release
+that ships one build per platform. A release with no build we can run is still
+reported — knowing there is a newer version is the point — with a pointer to
+the page.
+
+Since Windows ships in two architectures, `"windows"` on its own is no longer
+a key to reach for there: a 32-bit tabber would match it and pull down the
+64-bit binary. That fails safely rather than quietly — the downloaded binary is
+run and asked its version before the old one is let go, and one that cannot run
+at all is put straight back — but it is a wasted download and an alarming
+report, so name both architectures.
 
 Versions are compared numerically, field by field, so `0.10.0` is above
 `0.9.0`; a leading `v` is ignored, a missing field counts as zero, and
@@ -992,6 +1020,7 @@ being unreachable is not this command's problem. `--offline` and
 ```
 python tools/make_manifest.py 0.3.0 --notes "What changed." \
     --build windows-x64=dist/tabber-windows-x64.exe \
+    --build windows-x86=dist/tabber-windows-x86.exe \
     --build linux-x64=dist/tabber-linux-x64 \
     --out dist/manifest.json
 ```

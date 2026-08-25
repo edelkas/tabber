@@ -34,6 +34,12 @@
     "  }\n" \
     "}\n"
 
+/* The same, cut down, with the one build under whatever key is passed in. */
+#define KEYED_MANIFEST_FMT \
+    "{ \"version\": \"99.0.0\", \"builds\": { \"%s\": " \
+    "{ \"url\": \"https://example.invalid/tabber\", \"size\": 12, " \
+    "\"md5\": \"0123456789abcdef0123456789abcdef\" } } }"
+
 /* ---- Versions ---------------------------------------------------------- */
 
 static void test_versions(void)
@@ -59,6 +65,44 @@ static void test_versions(void)
 
     CHECK(update_version_compare("0.0.0", TABBER_VERSION) < 0,
           "the version this was built as is above 0.0.0");
+}
+
+/* ---- The build key ----------------------------------------------------- */
+
+static void test_build_key(void)
+{
+    char err[TB_ERR_LEN];
+    update_info info;
+    char *text;
+
+    test_case("the build key names the system and the architecture");
+
+    CHECK_STR(UPDATE_BUILD_KEY, UPDATE_OS "-" UPDATE_ARCH,
+              "the key is the two of them, joined");
+    CHECK(strcmp(UPDATE_OS, "unknown") != 0, "the system is one we know");
+    CHECK(strcmp(UPDATE_ARCH, "unknown") != 0, "so is the architecture");
+
+    /* Windows ships x64 and x86 in the same release, so a build for the same
+     * system but another architecture must not read as ours: a 32-bit tabber
+     * that took the 64-bit binary would replace itself with one that cannot run.
+     */
+    text = str_fmt(KEYED_MANIFEST_FMT, UPDATE_OS "-etchasketch");
+    if (CHECK(update_manifest_parse(text, &info, err, sizeof err) == 0,
+              "a release built for another architecture parses (%s)", err)) {
+        CHECK(info.newer, "the newer version is known");
+        CHECK(info.url == NULL, "but its build is not taken for ours");
+        update_info_free(&info);
+    }
+    free(text);
+
+    /* The bare system still stands in, for a release with one build per OS. */
+    text = str_fmt(KEYED_MANIFEST_FMT, UPDATE_OS);
+    if (CHECK(update_manifest_parse(text, &info, err, sizeof err) == 0,
+              "a release keyed by the bare system parses (%s)", err)) {
+        CHECK(info.url != NULL, "and its build stands in for ours");
+        update_info_free(&info);
+    }
+    free(text);
 }
 
 /* ---- The manifest ------------------------------------------------------ */
@@ -397,6 +441,7 @@ void suite_update(void)
 {
     test_suite("update");
     test_versions();
+    test_build_key();
     test_manifest();
     test_swap();
     test_refusals();

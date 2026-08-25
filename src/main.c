@@ -1499,7 +1499,9 @@ int main(int argc, char **argv)
             print_usage(stdout);
             return EXIT_OK;
         } else if (!strcmp(arg, "-V") || !strcmp(arg, "--version")) {
-            printf(TABBER_NAME " " TABBER_VERSION " (" PLAT_NAME ")\n");
+            /* The architecture too: Windows ships an x64 and an x86 build. */
+            printf(TABBER_NAME " " TABBER_VERSION " (" PLAT_NAME " "
+                   UPDATE_ARCH ")\n");
             return EXIT_OK;
         } else if (!strcmp(arg, "-b") || !strcmp(arg, "--bare")) {
             opts.bare = 1;
