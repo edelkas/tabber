@@ -9,6 +9,7 @@ has just been started now that the command line side is complete.
 - [Table of contents](#table-of-contents)
 - [Building](#building)
 - [The graphical front-end](#the-graphical-front-end)
+   * [The window's frame](#the-windows-frame)
    * [When a tab was last played](#when-a-tab-was-last-played)
 - [Usage](#usage)
 - [Tests](#tests)
@@ -88,11 +89,11 @@ but not a separate copy of the tool: it links the same objects the CLI is built
 from, so everything below the presentation is the code `tabber` runs. The
 headers in `src/` carry `extern "C"` for it.
 
-It draws one window, filling the viewport whatever size the frame is dragged
-to. At the top, a button that refreshes the catalogue — `update`, in so many
-words — and when the copy on disk was last written. Below it, every custom tab
-in a sortable table: the four columns `list` prints, plus two the CLI has no
-use for.
+It draws one window, filling the viewport whatever size it is dragged to. At
+the top, its own [title bar](#the-windows-frame); under that a button that
+refreshes the catalogue — `update`, in so many words — and when the copy on
+disk was last written. Below them, every custom tab in a sortable table: the
+four columns `list` prints, plus two the CLI has no use for.
 
 | Column | |
 | --- | --- |
@@ -134,6 +135,40 @@ the built-in font is ProggyClean, which covers Latin and little else: a tab
 whose author writes their name in anything further out gets `?` where the CLI
 prints the character. Fixing that means bundling a font, which is a decision
 about size and licence rather than about code.
+
+### The window's frame
+
+The program is linked for the windowed subsystem, so no console opens beside
+it: `/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup` under MSVC — naming the console
+entry point is what keeps a plain `main` and its `argv` — and `-mwindows` under
+MinGW. The CLI stays a console program, as it must.
+
+The window is also asked for undecorated (`GLFW_DECORATED` off), and the bar
+across its top is drawn with everything else. That buys one look on every
+platform, and costs the three things the system frame did for free, all of
+which are put back by hand in `gui/main.cpp`:
+
+| | |
+| --- | --- |
+| The buttons | Minimise, maximise/restore and close, at the right end. The glyphs are drawn as lines rather than typed, the built-in font having no symbols for them |
+| Dragging | Pressing anywhere else on the bar moves the window; the point taken hold of stays under the pointer. Double-clicking it maximises |
+| The edges | Within a few pixels of one the pointer changes shape, and pulling moves that edge. Corners move two at once |
+
+Both drags ask GLFW where the pointer is rather than reading it from Dear
+ImGui: the window is moving out from under the pointer at that moment, and a
+position left over from the last poll would fight the one being set now. Every
+edge is measured from where the window stood when it was grabbed, so a drag
+that doubles back lands exactly where it started, and one that runs past the
+minimum size stops that edge instead of pushing the opposite one along.
+
+The edges are checked before anything else in the panel is drawn, which is what
+gives them first refusal on the pointer — the title bar reaches the very top of
+the window, and the top edge has to win there.
+
+What this does not get is the window manager's own gestures: no snapping to a
+screen half, and no system shadow. Doing better means a native hit test per
+platform — `WM_NCHITTEST` on Windows — rather than the portable arithmetic
+here.
 
 ### When a tab was last played
 

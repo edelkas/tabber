@@ -92,6 +92,8 @@ ifeq ($(OS),Windows_NT)
              win32_thread.c win32_time.c win32_window.c wgl_context.c
   GUIDEFS := -D_GLFW_WIN32 -DUNICODE -D_UNICODE
   GUILIBS := -lopengl32 -lgdi32 -lshell32 -luser32
+  # -mwindows: a windowed program, so no console is opened alongside it.
+  GUILINK := -mwindows
 else ifeq ($(UNAME_S),Darwin)
   GLFWSRC += cocoa_init.m cocoa_joystick.m cocoa_monitor.m cocoa_window.m \
              nsgl_context.m macos_time.c posix_module.c posix_thread.c
@@ -129,7 +131,7 @@ gui: $(GUITARGET)
 # library, not a second copy of it. They sit in $(OBJDIR) while the GUI's sit in
 # $(GUIOBJ), which is what keeps our platform.o apart from GLFW's.
 $(GUITARGET): $(GUIOBJS) $(LIBOBJ)
-	$(CXX) -o $@ $^ $(GUILIBS) $(LDLIBS)
+	$(CXX) -o $@ $^ $(GUILIBS) $(GUILINK) $(LDLIBS)
 
 $(GUIOBJ)/main.o: $(GUIDIR)/main.cpp | $(GUIOBJ)
 	$(CXX) $(VENDORCXXFLAGS) -Wall -Wextra -c -o $@ $<

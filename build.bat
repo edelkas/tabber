@@ -50,6 +50,11 @@ rem at /W4 they would bury ours. Our own GUI code stays at /W4 like the rest.
 set "VENDORFLAGS=/nologo /W1 /O2 /utf-8 /EHsc /D_CRT_SECURE_NO_WARNINGS /D_GLFW_WIN32 /DUNICODE /D_UNICODE %GUIINC%"
 set "GUILIBS=opengl32.lib gdi32.lib user32.lib shell32.lib"
 
+rem A windowed program, so no console is opened alongside it. mainCRTStartup is
+rem the console entry point: naming it keeps plain main() and its argv, which
+rem the subsystem alone would otherwise send looking for a WinMain.
+set "GUILINK=/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup"
+
 if not exist "%OUTDIR%" mkdir "%OUTDIR%"
 
 rem A compiler on PATH is only the right one if it targets what was asked for;
@@ -103,7 +108,7 @@ if errorlevel 1 exit /b 1
 
 rem The libraries WinHTTP and the registry need come from the pragmas in
 rem net.c and platform.c, the same way the CLI gets them.
-cl %GUIFLAGS% /Fe%OUTDIR%\tabber-gui.exe /Fo%OUTDIR%\gui\ gui\main.cpp %OUTDIR%\gui\lib\*.obj %OUTDIR%\gui\vendor\*.obj /link %GUILIBS%
+cl %GUIFLAGS% /Fe%OUTDIR%\tabber-gui.exe /Fo%OUTDIR%\gui\ gui\main.cpp %OUTDIR%\gui\lib\*.obj %OUTDIR%\gui\vendor\*.obj /link %GUILIBS% %GUILINK%
 if errorlevel 1 exit /b 1
 echo Built %OUTDIR%\tabber-gui.exe (%ARCH%)
 exit /b 0

@@ -11,6 +11,11 @@
  * two agree on what a listing looks like because the column headers and the
  * cells that are not shown verbatim live in digest.h.
  *
+ * The window has no frame from the system. Its title bar is drawn with the
+ * rest of the panel, and the three things a frame used to do — the buttons,
+ * dragging the window, pulling on its edges — are done by hand under "The
+ * window's own frame" below.
+ *
  * The work happens on this thread, so a download or an install freezes the
  * window while it runs. What the frame before it draws is a "working" overlay,
  * so at least the reason is on screen; moving it off the main thread is the
@@ -49,6 +54,21 @@ static const int   WINDOW_HEIGHT     = 400;
 static const int   GL_VERSION_MAJOR  = 3;
 static const int   GL_VERSION_MINOR  = 2;
 static const int   SWAP_INTERVAL     = 1;  /* vsync: an idle GUI must not spin */
+
+/*
+ * The window wears no frame of its own: GLFW is asked for an undecorated one
+ * and the bar across the top is drawn like everything else in it. That buys
+ * one look on every platform, and costs the three things the frame did for
+ * free — the buttons, dragging the window about, and pulling on its edges —
+ * all of which are put back by hand further down.
+ *
+ * These are in the units the style is written in and are scaled with it.
+ */
+static const float TITLE_BUTTON_ASPECT = 1.6f;  /* button width, in bar heights */
+static const float TITLE_ICON_SIZE     = 0.28f; /* glyph size, likewise        */
+static const float RESIZE_BORDER       = 6.0f;  /* how near an edge grabs it   */
+static const int   MIN_WIDTH           = 480;
+static const int   MIN_HEIGHT          = 240;
 
 /* Milliseconds to idle for per frame while the window is minimised, when there
  * is nothing to draw and polling would otherwise burn a core. */
@@ -124,6 +144,10 @@ static const char *TITLE_CONFIRM  = "One tab at a time";
 static const char *PANEL_ID   = "tabber-panel";
 static const char *TABLE_ID   = "tabber-tabs";
 static const char *BUSY_ID    = "tabber-busy";
+static const char *DRAG_ID    = "##titlebar";
+static const char *MINIMISE_ID = "##minimise";
+static const char *MAXIMISE_ID = "##maximise";
+static const char *CLOSE_ID    = "##close";
 
 /* Green for the step that puts a tab in, red for the one that takes it out. */
 static const ImVec4 GREEN_BUTTON(0.16f, 0.44f, 0.20f, 1.00f);
@@ -133,7 +157,27 @@ static const ImVec4 RED_BUTTON  (0.52f, 0.16f, 0.16f, 1.00f);
 static const ImVec4 RED_HOVER   (0.66f, 0.22f, 0.22f, 1.00f);
 static const ImVec4 RED_ACTIVE  (0.42f, 0.12f, 0.12f, 1.00f);
 
+/* The close button reddens under the pointer, as it does in every window. */
+static const ImVec4 CLOSE_HOVER (0.75f, 0.16f, 0.16f, 1.00f);
+static const ImVec4 CLOSE_ACTIVE(0.55f, 0.10f, 0.10f, 1.00f);
+static const ImVec4 NO_COLOUR   (0.00f, 0.00f, 0.00f, 0.00f);
+
 /* ---- State ------------------------------------------------------------- */
+
+/* The window itself, which the drawn frame has to be able to order about. */
+static GLFWwindow *g_window = NULL;
+static float g_scale = 1.0f;    /* the monitor's, applied to the style too */
+
+/* A drag of the title bar, and a drag of one of the edges. */
+static int    g_dragging = 0;
+static ImVec2 g_drag_grab;      /* where in the window it was taken hold of */
+static int    g_resize_edges = 0;
+static ImVec2 g_resize_grab;    /* the pointer on the desktop when it began */
+static int    g_resize_box[4];  /* and the window's x, y, width and height  */
+
+enum {
+    EDGE_LEFT = 1, EDGE_RIGHT = 2, EDGE_TOP = 4, EDGE_BOTTOM = 8
+};
 
 /* What is on screen: the catalogue, or why there is none. */
 static digest *g_digest = NULL;
@@ -724,15 +768,304 @@ static void draw_tab_table(void)
     ImGui::EndTable();
 }
 
+/* ---- The window's own frame -------------------------------------------- */
+
+/*
+ * Where the pointer is, asked of GLFW rather than of Dear ImGui. Both answers
+ * are read in the same breath, which matters while the window is being dragged
+ * or resized: it is then moving out from under the pointer, and a position
+ * left over from the last poll would fight the one being set now.
+ */
+static ImVec2 cursor_in_window(void)
+{
+    double x = 0.0, y = 0.0;
+
+    glfwGetCursorPos(g_window, &x, &y);
+    return ImVec2((float)x, (float)y);
+}
+
+static ImVec2 cursor_on_desktop(void)
+{
+    ImVec2 c = cursor_in_window();
+    int x = 0, y = 0;
+
+    glfwGetWindowPos(g_window, &x, &y);
+    return ImVec2(c.x + (float)x, c.y + (float)y);
+}
+
+static void toggle_maximised(void)
+{
+    if (glfwGetWindowAttrib(g_window, GLFW_MAXIMIZED))
+        glfwRestoreWindow(g_window);
+    else
+        glfwMaximizeWindow(g_window);
+}
+
+/*
+ * The three glyphs, drawn rather than written: the built-in font has no
+ * symbols for them, and a line is a line at any size. `c` is the middle of the
+ * button and `r` half the width of the mark that goes there.
+ */
+typedef enum { ICON_MINIMISE, ICON_MAXIMISE, ICON_CLOSE } bar_icon;
+
+static void draw_icon(ImDrawList *dl, bar_icon which, ImVec2 c, float r,
+                      ImU32 col, float th, int maximised)
+{
+    float o = r * 0.4f;   /* how far the two frames of the restore mark part */
+
+    switch (which) {
+    case ICON_MINIMISE:
+        dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), col, th);
+        break;
+    case ICON_MAXIMISE:
+        if (!maximised) {
+            dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r),
+                        col, 0.0f, 0, th);
+        } else {
+            /* The one in front, and two sides of the one behind it. */
+            dl->AddRect(ImVec2(c.x - r, c.y - r + o),
+                        ImVec2(c.x + r - o, c.y + r), col, 0.0f, 0, th);
+            dl->AddLine(ImVec2(c.x - r + o, c.y - r),
+                        ImVec2(c.x + r, c.y - r), col, th);
+            dl->AddLine(ImVec2(c.x + r, c.y - r),
+                        ImVec2(c.x + r, c.y + r - o), col, th);
+        }
+        break;
+    case ICON_CLOSE:
+        dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), col, th);
+        dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), col, th);
+        break;
+    }
+}
+
+/* One of the three, transparent until the pointer is on it. */
+static int title_button(const char *id, bar_icon which, ImVec2 size,
+                        int maximised)
+{
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec4 *style = ImGui::GetStyle().Colors;
+    int pressed;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, NO_COLOUR);
+    if (which == ICON_CLOSE) {
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, CLOSE_HOVER);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, CLOSE_ACTIVE);
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, style[ImGuiCol_ButtonHovered]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, style[ImGuiCol_ButtonActive]);
+    }
+    pressed = ImGui::Button(id, size);
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
+
+    draw_icon(dl, which, ImVec2(pos.x + size.x * 0.5f, pos.y + size.y * 0.5f),
+              ImGui::GetFontSize() * TITLE_ICON_SIZE,
+              ImGui::GetColorU32(ImGuiCol_Text), g_scale, maximised);
+    return pressed;
+}
+
+/*
+ * The bar across the top: the title, the three buttons, and between them the
+ * stretch that drags the window. `taken` says an edge has already claimed the
+ * pointer this frame, in which case the drag must not also start. Returns the
+ * height it used.
+ */
+static float draw_title_bar(int taken)
+{
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    const ImGuiStyle &style = ImGui::GetStyle();
+    ImDrawList *dl = ImGui::GetWindowDrawList();
+    float height = ImGui::GetFrameHeight();
+    float button = height * TITLE_BUTTON_ASPECT;
+    int maximised = glfwGetWindowAttrib(g_window, GLFW_MAXIMIZED);
+    int focused = glfwGetWindowAttrib(g_window, GLFW_FOCUSED);
+    ImVec2 corner = vp->WorkPos;
+    ImVec2 far_end(corner.x + vp->WorkSize.x, corner.y + height);
+    ImVec2 title;
+    float drag_width;
+
+    dl->AddRectFilled(corner, far_end, ImGui::GetColorU32(
+                          focused ? ImGuiCol_TitleBgActive : ImGuiCol_TitleBg));
+    title = ImGui::CalcTextSize(WINDOW_TITLE);
+    dl->AddText(ImVec2(corner.x + style.FramePadding.x * 2.0f,
+                       corner.y + (height - title.y) * 0.5f),
+                ImGui::GetColorU32(ImGuiCol_Text), WINDOW_TITLE);
+
+    /*
+     * The drag area goes down first so that the buttons, submitted after it,
+     * win the pointer where the two overlap.
+     */
+    drag_width = vp->WorkSize.x - button * 3.0f;
+    if (drag_width < 1.0f)
+        drag_width = 1.0f;
+    ImGui::SetCursorScreenPos(corner);
+    ImGui::InvisibleButton(DRAG_ID, ImVec2(drag_width, height));
+    if (ImGui::IsItemActive() && !maximised && !taken) {
+        if (!g_dragging) {
+            g_dragging = 1;
+            g_drag_grab = cursor_in_window();
+        } else {
+            /* Keep the point that was grabbed under the pointer. */
+            ImVec2 now = cursor_on_desktop();
+            glfwSetWindowPos(g_window, (int)(now.x - g_drag_grab.x),
+                                       (int)(now.y - g_drag_grab.y));
+        }
+    } else {
+        g_dragging = 0;
+    }
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+        toggle_maximised();
+
+    ImGui::SetCursorScreenPos(ImVec2(far_end.x - button * 3.0f, corner.y));
+    if (title_button(MINIMISE_ID, ICON_MINIMISE, ImVec2(button, height), maximised))
+        glfwIconifyWindow(g_window);
+    ImGui::SameLine(0.0f, 0.0f);
+    if (title_button(MAXIMISE_ID, ICON_MAXIMISE, ImVec2(button, height), maximised))
+        toggle_maximised();
+    ImGui::SameLine(0.0f, 0.0f);
+    if (title_button(CLOSE_ID, ICON_CLOSE, ImVec2(button, height), maximised))
+        glfwSetWindowShouldClose(g_window, GLFW_TRUE);
+
+    /* Back to where the panel's own contents belong, below the bar. */
+    ImGui::SetCursorScreenPos(ImVec2(corner.x + style.WindowPadding.x,
+                                     corner.y + height + style.WindowPadding.y));
+    return height;
+}
+
+static ImGuiMouseCursor cursor_for(int edges)
+{
+    int corner_nwse = (EDGE_LEFT | EDGE_TOP), corner_nesw = (EDGE_RIGHT | EDGE_TOP);
+
+    if ((edges & corner_nwse) == corner_nwse ||
+        (edges & (EDGE_RIGHT | EDGE_BOTTOM)) == (EDGE_RIGHT | EDGE_BOTTOM))
+        return ImGuiMouseCursor_ResizeNWSE;
+    if ((edges & corner_nesw) == corner_nesw ||
+        (edges & (EDGE_LEFT | EDGE_BOTTOM)) == (EDGE_LEFT | EDGE_BOTTOM))
+        return ImGuiMouseCursor_ResizeNESW;
+    if (edges & (EDGE_LEFT | EDGE_RIGHT))
+        return ImGuiMouseCursor_ResizeEW;
+    return ImGuiMouseCursor_ResizeNS;
+}
+
+/* Which edges the pointer is near, if any. */
+static int edges_under_pointer(void)
+{
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    ImVec2 m = ImGui::GetMousePos();
+    float border = RESIZE_BORDER * g_scale;
+    float right = vp->WorkPos.x + vp->WorkSize.x;
+    float bottom = vp->WorkPos.y + vp->WorkSize.y;
+    int edges = 0;
+
+    if (m.x < vp->WorkPos.x || m.x > right || m.y < vp->WorkPos.y || m.y > bottom)
+        return 0;
+    if (m.x - vp->WorkPos.x < border) edges |= EDGE_LEFT;
+    if (right - m.x < border)         edges |= EDGE_RIGHT;
+    if (m.y - vp->WorkPos.y < border) edges |= EDGE_TOP;
+    if (bottom - m.y < border)        edges |= EDGE_BOTTOM;
+    return edges;
+}
+
+/*
+ * An undecorated window has no border to take hold of, so the edges are
+ * watched here instead. This runs before anything else in the panel is drawn,
+ * which is what gives the edges first refusal on the pointer — the title bar
+ * reaches the very top of the window, and the top edge has to win there.
+ *
+ * Returns nonzero when it has the pointer, so the bar knows to leave it alone.
+ */
+static int handle_resize(void)
+{
+    int minimum_w = (int)(MIN_WIDTH * g_scale);
+    int minimum_h = (int)(MIN_HEIGHT * g_scale);
+    int x, y, w, h, dx, dy;
+    ImVec2 now;
+
+    if (!g_resize_edges) {
+        int edges;
+
+        if (glfwGetWindowAttrib(g_window, GLFW_MAXIMIZED))
+            return 0;              /* a maximised window has no edges to pull */
+        if (!ImGui::IsMousePosValid() || ImGui::IsAnyItemActive())
+            return 0;
+        if (ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId |
+                                     ImGuiPopupFlags_AnyPopupLevel))
+            return 0;              /* a dialog is up and owns the window */
+
+        edges = edges_under_pointer();
+        if (!edges)
+            return 0;
+        ImGui::SetMouseCursor(cursor_for(edges));
+        if (!ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            return 1;              /* hovering an edge is already a claim */
+
+        g_resize_edges = edges;
+        g_resize_grab = cursor_on_desktop();
+        glfwGetWindowPos(g_window, &g_resize_box[0], &g_resize_box[1]);
+        glfwGetWindowSize(g_window, &g_resize_box[2], &g_resize_box[3]);
+        return 1;
+    }
+
+    ImGui::SetMouseCursor(cursor_for(g_resize_edges));
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        g_resize_edges = 0;
+        return 1;
+    }
+
+    /* Every edge is moved from where the window stood when it was grabbed, so
+     * a drag that doubles back lands exactly where it started. */
+    now = cursor_on_desktop();
+    x = g_resize_box[0];
+    y = g_resize_box[1];
+    w = g_resize_box[2];
+    h = g_resize_box[3];
+    dx = (int)(now.x - g_resize_grab.x);
+    dy = (int)(now.y - g_resize_grab.y);
+
+    if (g_resize_edges & EDGE_LEFT) {
+        if (w - dx < minimum_w)
+            dx = w - minimum_w;    /* the left edge stops, rather than the right
+                                    * one being dragged along with it */
+        x += dx;
+        w -= dx;
+    }
+    if (g_resize_edges & EDGE_RIGHT) {
+        w += dx;
+        if (w < minimum_w)
+            w = minimum_w;
+    }
+    if (g_resize_edges & EDGE_TOP) {
+        if (h - dy < minimum_h)
+            dy = h - minimum_h;
+        y += dy;
+        h -= dy;
+    }
+    if (g_resize_edges & EDGE_BOTTOM) {
+        h += dy;
+        if (h < minimum_h)
+            h = minimum_h;
+    }
+
+    glfwSetWindowPos(g_window, x, y);
+    glfwSetWindowSize(g_window, w, h);
+    return 1;
+}
+
 /* The one window, filling the viewport however the frame has been resized. */
 static void draw_panel(void)
 {
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    int taken;
 
     /* Set every frame rather than once: this is what follows a resize. */
     ImGui::SetNextWindowPos(viewport->WorkPos);
     ImGui::SetNextWindowSize(viewport->WorkSize);
     ImGui::Begin(PANEL_ID, NULL, PANEL_FLAGS);
+
+    taken = handle_resize();
+    draw_title_bar(taken);
 
     ImGui::BeginDisabled(g_pending != ACT_NONE);
     if (ImGui::Button(LABEL_UPDATE))
@@ -857,6 +1190,9 @@ int main(int argc, char **argv)
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);  /* required there */
 #endif
 
+    /* No frame from the system: the bar at the top of the panel is ours. */
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+
     /* Size the window in the monitor's units, so a 4K display does not get a
      * postage stamp; the same factor scales the style and the font below. */
     scale = ImGui_ImplGlfw_GetContentScaleForMonitor(glfwGetPrimaryMonitor());
@@ -868,6 +1204,14 @@ int main(int argc, char **argv)
         glfwTerminate();
         return 1;
     }
+    g_window = window;
+    g_scale = scale;
+
+    /* The floor the drawn edges pull against, and the one a maximise-restore
+     * has to respect too, so it is set here rather than only checked there. */
+    glfwSetWindowSizeLimits(window, (int)(MIN_WIDTH * scale),
+                            (int)(MIN_HEIGHT * scale),
+                            GLFW_DONT_CARE, GLFW_DONT_CARE);
     glfwMakeContextCurrent(window);
     glfwSwapInterval(SWAP_INTERVAL);
 
