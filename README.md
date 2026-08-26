@@ -107,6 +107,12 @@ the column widths and the window's own settings are remembered in the
 [tool's folder](#where-tabber-keeps-its-files) rather than in whichever
 directory the program was started from.
 
+The table is ten rows tall and scrolls, or shorter when there are fewer tabs
+than that: it is told its height rather than handed the rest of the window, so
+it ends where its last row does instead of trailing an empty band down to the
+bottom edge. Every row's button is cut to the same width, the widest of the
+three labels, so the column does not twitch as tabs change state.
+
 The button in each row is the tab's state: **Download** when its files are not
 in the store, green **Install** when they are, red **Uninstall** for the one
 that is in the game. Each runs the call the matching command runs. Installing

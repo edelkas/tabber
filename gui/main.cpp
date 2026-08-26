@@ -44,8 +44,8 @@
 /* Window and context. GL 3.2 is the floor: it is what the OpenGL 3 backend
  * asks for and the oldest core profile macOS will hand out. */
 static const char *WINDOW_TITLE      = TABBER_NAME " " TABBER_VERSION;
-static const int   WINDOW_WIDTH      = 1100;
-static const int   WINDOW_HEIGHT     = 700;
+static const int   WINDOW_WIDTH      = 800;
+static const int   WINDOW_HEIGHT     = 400;
 static const int   GL_VERSION_MAJOR  = 3;
 static const int   GL_VERSION_MINOR  = 2;
 static const int   SWAP_INTERVAL     = 1;  /* vsync: an idle GUI must not spin */
@@ -96,6 +96,9 @@ static const ImGuiWindowFlags OVERLAY_FLAGS =
 /* The longest value each fixed-width column can hold, for sizing it. */
 #define WIDEST_DATE      "0000-00-00"
 #define WIDEST_LAST_USED "00 months ago"
+
+/* How many rows the table shows before it starts scrolling. */
+static const size_t VISIBLE_ROWS = 10;
 
 /* Column order, which is also what a sort spec reports. */
 enum {
@@ -580,45 +583,91 @@ static void push_button_colors(const ImVec4 &normal, const ImVec4 &hovered,
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
 }
 
+/*
+ * One width for all three buttons: whichever label is longest, plus the usual
+ * padding at its sides. A button wide enough for the longest word is wide
+ * enough for the other two, and the column then stays still as tabs come and
+ * go. The height is left alone, so they are as tall as any other button.
+ */
+static float button_width(void)
+{
+    const char *labels[] = { LABEL_DOWNLOAD, LABEL_INSTALL, LABEL_UNINSTALL };
+    float widest = 0.0f;
+    size_t i;
+
+    for (i = 0; i < sizeof labels / sizeof *labels; i++) {
+        float w = ImGui::CalcTextSize(labels[i]).x;
+        if (w > widest)
+            widest = w;
+    }
+    return widest + ImGui::GetStyle().FramePadding.x * 2.0f;
+}
+
 /* The button that says what can be done to this tab, and does it. */
 static void draw_row_button(const npp_tab *tab, const tab_row *row)
 {
+    ImVec2 size(button_width(), 0.0f);   /* 0 keeps the default height */
+
     /* While something is running, nothing else may be asked for. */
     ImGui::BeginDisabled(g_pending != ACT_NONE);
     if (row->installed) {
         push_button_colors(RED_BUTTON, RED_HOVER, RED_ACTIVE);
-        if (ImGui::Button(LABEL_UNINSTALL))
+        if (ImGui::Button(LABEL_UNINSTALL, size))
             request(ACT_UNINSTALL, tab->code, "Uninstalling...");
         ImGui::PopStyleColor(3);
     } else if (row->downloaded) {
         push_button_colors(GREEN_BUTTON, GREEN_HOVER, GREEN_ACTIVE);
-        if (ImGui::Button(LABEL_INSTALL))
+        if (ImGui::Button(LABEL_INSTALL, size))
             request_install(tab);
         ImGui::PopStyleColor(3);
     } else {
-        if (ImGui::Button(LABEL_DOWNLOAD))
+        if (ImGui::Button(LABEL_DOWNLOAD, size))
             request(ACT_DOWNLOAD, tab->code, "Downloading...");
     }
     ImGui::EndDisabled();
+}
+
+/*
+ * How tall the table has to be for VISIBLE_ROWS rows under the header, or for
+ * every row when there are fewer than that. Saying it outright is what stops
+ * the table from stretching to the bottom of the window and leaving an empty
+ * band below the last row.
+ */
+static float table_height(size_t rows)
+{
+    float pad = ImGui::GetStyle().CellPadding.y * 2.0f;
+    float shown = (float)(rows < VISIBLE_ROWS ? rows : VISIBLE_ROWS);
+    float avail = ImGui::GetContentRegionAvail().y;
+    float height;
+
+    /* The header is one line of text; a row is as tall as the button in it. */
+    height = ImGui::GetFontSize() + pad + shown * (ImGui::GetFrameHeight() + pad);
+
+    /* Never past the bottom of the window, however short it has been dragged. */
+    return (avail > 0.0f && height > avail) ? avail : height;
 }
 
 static void draw_tab_table(void)
 {
     ImGuiTableSortSpecs *specs;
     size_t i;
-    float pad;
+    float cell, pad, button;
 
     if (!ImGui::BeginTable(TABLE_ID, COLUMN_COUNT, TABLE_FLAGS,
-                           ImGui::GetContentRegionAvail()))
+                           ImVec2(0.0f, table_height(g_row_count))))
         return;
 
     /*
      * The columns of known size are fixed and start out just wide enough for
      * the widest thing that can land in them; the two carrying free text share
-     * whatever is left over. The padding leaves room for the sort arrow, which
-     * would otherwise eat into a header as short as CODE.
+     * whatever is left over. Sortable headers are given a font's width extra
+     * for the sort arrow, which would otherwise eat into one as short as CODE.
      */
-    pad = ImGui::GetStyle().CellPadding.x * 2.0f + ImGui::GetFontSize();
+    cell = ImGui::GetStyle().CellPadding.x * 2.0f;
+    pad = cell + ImGui::GetFontSize();
+    button = button_width();
+    if (button < ImGui::CalcTextSize(COL_INSTALL).x)
+        button = ImGui::CalcTextSize(COL_INSTALL).x;
     ImGui::TableSetupColumn(COL_CODE, ImGuiTableColumnFlags_WidthFixed,
                             ImGui::CalcTextSize(COL_CODE).x + pad);
     ImGui::TableSetupColumn(COL_NAME, ImGuiTableColumnFlags_WidthStretch);
@@ -627,9 +676,10 @@ static void draw_tab_table(void)
                             ImGui::CalcTextSize(WIDEST_DATE).x + pad);
     ImGui::TableSetupColumn(COL_LAST_USED, ImGuiTableColumnFlags_WidthFixed,
                             ImGui::CalcTextSize(WIDEST_LAST_USED).x + pad);
+    /* No arrow to make room for here: this column does not sort. */
     ImGui::TableSetupColumn(COL_INSTALL, ImGuiTableColumnFlags_WidthFixed |
                                          ImGuiTableColumnFlags_NoSort,
-                            ImGui::CalcTextSize(LABEL_UNINSTALL).x + pad);
+                            button + cell);
     ImGui::TableSetupScrollFreeze(0, 1);   /* the header stays put */
     ImGui::TableHeadersRow();
 
