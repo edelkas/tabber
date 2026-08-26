@@ -4,6 +4,11 @@
 #   make test       build and run the test suite (offline tiers)
 #   make test-online / make test-full   include the network tiers
 #   make gui        build the graphical front-end
+#   make all        both of the above, for this machine
+#
+# Every finished executable is also copied to dist/ under the name it is
+# released as, which carries the front-end and the platform. Nothing else
+# goes there. Unlike build.bat there is one architecture here, the host's.
 
 CC      ?= cc
 CXX     ?= c++
@@ -32,18 +37,52 @@ UNAME_S := $(shell uname -s)
 
 # HTTP comes from WinHTTP on Windows and from libcurl everywhere else.
 ifeq ($(OS),Windows_NT)
-  TARGET := $(OBJDIR)/tabber.exe
-  TESTTARGET := $(TESTOBJ)/test_tabber.exe
-  GUITARGET := $(OBJDIR)/tabber-gui.exe
+  EXEEXT := .exe
+  TARGET := $(OBJDIR)/tabber$(EXEEXT)
+  TESTTARGET := $(TESTOBJ)/test_tabber$(EXEEXT)
+  GUITARGET := $(OBJDIR)/tabber-gui$(EXEEXT)
   LDLIBS += -ladvapi32 -lole32 -lshell32 -luuid -lwinhttp -lws2_32
 else
+  EXEEXT :=
   LDLIBS += -lcurl
 endif
 
-all: $(TARGET)
+# The platform half of a released name, spelled the way the tool's own build
+# keys are (src/update.h), so the manifest and the binaries agree.
+UNAME_M := $(shell uname -m)
+
+ifeq ($(OS),Windows_NT)
+  DIST_OS := windows
+else ifeq ($(UNAME_S),Darwin)
+  DIST_OS := macos
+else
+  DIST_OS := linux
+endif
+
+ifneq (,$(filter x86_64 amd64,$(UNAME_M)))
+  DIST_ARCH := x64
+else ifneq (,$(filter aarch64 arm64,$(UNAME_M)))
+  DIST_ARCH := arm64
+else ifneq (,$(filter i386 i486 i586 i686,$(UNAME_M)))
+  DIST_ARCH := x86
+else
+  DIST_ARCH := $(UNAME_M)
+endif
+
+DISTDIR := dist
+DISTCLI := $(DISTDIR)/tabber-cli-$(DIST_OS)-$(DIST_ARCH)$(EXEEXT)
+DISTGUI := $(DISTDIR)/tabber-gui-$(DIST_OS)-$(DIST_ARCH)$(EXEEXT)
+
+# Bare `make` still builds the tool alone: the GUI wants OpenGL and the window
+# system's headers, which a machine that only needs the tool need not have.
+.DEFAULT_GOAL := $(TARGET)
+
+all: $(TARGET) $(GUITARGET)
 
 $(TARGET): $(MAINOBJ) $(LIBOBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+	@mkdir -p $(DISTDIR)
+	cp -f $@ $(DISTCLI)
 
 # The fresh savefile is built into the binary (src/resource_save.c), so the
 # executable is the whole program: nothing has to ship beside it.
@@ -132,6 +171,8 @@ gui: $(GUITARGET)
 # $(GUIOBJ), which is what keeps our platform.o apart from GLFW's.
 $(GUITARGET): $(GUIOBJS) $(LIBOBJ)
 	$(CXX) -o $@ $^ $(GUILIBS) $(GUILINK) $(LDLIBS)
+	@mkdir -p $(DISTDIR)
+	cp -f $@ $(DISTGUI)
 
 $(GUIOBJ)/main.o: $(GUIDIR)/main.cpp | $(GUIOBJ)
 	$(CXX) $(VENDORCXXFLAGS) -Wall -Wextra -c -o $@ $<

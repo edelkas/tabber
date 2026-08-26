@@ -716,7 +716,10 @@ static void draw_tab_table(void)
                             ImGui::CalcTextSize(COL_CODE).x + pad);
     ImGui::TableSetupColumn(COL_NAME, ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn(COL_AUTHORS, ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn(COL_DATE, ImGuiTableColumnFlags_WidthFixed,
+    /* The catalogue opens newest-first, which is the order it is read in. */
+    ImGui::TableSetupColumn(COL_DATE, ImGuiTableColumnFlags_WidthFixed |
+                                      ImGuiTableColumnFlags_DefaultSort |
+                                      ImGuiTableColumnFlags_PreferSortDescending,
                             ImGui::CalcTextSize(WIDEST_DATE).x + pad);
     ImGui::TableSetupColumn(COL_LAST_USED, ImGuiTableColumnFlags_WidthFixed,
                             ImGui::CalcTextSize(WIDEST_LAST_USED).x + pad);

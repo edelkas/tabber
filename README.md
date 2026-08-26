@@ -54,12 +54,24 @@ has just been started now that the command line side is complete.
 | --- | --- | --- |
 | Windows (MSVC), 64-bit | `build.bat` | Imports the MSVC environment automatically via `vswhere` |
 | Windows (MSVC), 32-bit | `build.bat x86` | The same, through `vcvars32`; lands in `build\x86\` |
+| Windows, everything | `build.bat all` | Both architectures, each with its CLI and its GUI |
 | Linux / macOS  | `make`      | Any C99 compiler; needs libcurl (`libcurl4-openssl-dev` or equivalent) |
 | Windows (MinGW)| `make`      | Links `advapi32`, `ole32`, `shell32`, `uuid`, `winhttp` |
+| Any, everything | `make all` | The CLI and the GUI, for this machine |
 
 The binary lands in `build/tabber[.exe]`. HTTP goes through WinHTTP on Windows
 (no dependency) and libcurl elsewhere, both behind the two-function API in
 `src/net.h`.
+
+Every finished executable is also copied to `dist/` under the name it is
+released as — `tabber-<cli|gui>-<os>-<arch>`, with `.exe` on Windows — over
+whatever was there before. Nothing else is put in that directory, which is what
+lets [`make_manifest.py`](#cutting-a-release) simply read it. `build.bat all`
+is two recursive calls, one per architecture, each with its own `setlocal`, so
+`vcvars64` and `vcvars32` never meet. `make all` builds the pair for the host,
+which is the only architecture a Makefile run has; bare `make` still builds the
+tool alone, since the GUI wants OpenGL and the window system's headers that a
+machine only after the CLI need not have.
 
 The 32-bit build is a first-class one, not an afterthought: it is the same
 source with nothing conditional on the word size, and the whole suite is run
@@ -103,7 +115,9 @@ four columns `list` prints, plus two the CLI has no use for.
 
 The column names and the two cells that are not shown as stored (the code goes
 up, the date keeps its `YYYY-MM-DD` part) live in `digest.h` and are shared, so
-the two front-ends cannot drift apart. Clicking a header sorts by it; the order,
+the two front-ends cannot drift apart. It opens sorted by `RELEASED`, newest
+first, which is the order the digest is read in; clicking a header sorts by
+that one instead. The order,
 the column widths and the window's own settings are remembered in the
 [tool's folder](#where-tabber-keeps-its-files) rather than in whichever
 directory the program was started from.
@@ -1248,16 +1262,26 @@ being unreachable is not this command's problem. `--offline` and
 
 ```
 python tools/make_manifest.py 0.3.0 --notes "What changed." \
-    --build windows-x64=dist/tabber-windows-x64.exe \
-    --build windows-x86=dist/tabber-windows-x86.exe \
-    --build linux-x64=dist/tabber-linux-x64 \
-    --out dist/manifest.json
+    --build all --out dist/manifest.json
 ```
 
 Bump `TABBER_VERSION` in `src/version.h`, build each platform, run that, then
 tag `v0.3.0` and attach every binary **and** `manifest.json` to the release.
 The first release is the odd one out, since nothing can update to it from
 nothing; publish it, then test the path from it to the next.
+
+`--build all` takes whatever the build scripts have left beside the manifest
+and works the keys out of the names; anything else in there is ignored, and a
+`KEY=PATH` given as well overrides what was found. **Generate the manifest
+last.** Every build restages `dist/`, and a binary rebuilt afterwards is a
+different file — same size, different MD5 — which the manifest would then
+describe wrongly.
+
+Two front-ends now ship per platform, and only one of them can hold the key the
+tool asks for. `upgrade` looks up exactly `<os>-<arch>` (`src/update.h`), so
+that stays the CLI's, which is also what keeps releases before this one
+upgradeable. The GUI is keyed `<os>-<arch>-gui`, off to one side of that
+lookup: nothing reads it today, and nothing can mistake it for the CLI.
 
 The asset names carry no version on purpose. An upgrade writes over the file
 that is already on disk and keeps whatever it is called, so a version in the

@@ -8,8 +8,13 @@ rem   build.bat test           build and run the test suite (offline tiers)
 rem   build.bat x86 test       ...the 32-bit build's own suite
 rem   build.bat test online    build and run everything, network included
 rem   build.bat gui            also build the graphical front-end
+rem   build.bat all            every build this tree produces, both architectures
 setlocal
 cd /d "%~dp0"
+
+rem Every finished executable is copied to dist\ under the name it is released
+rem as, which carries the front-end and the platform. Nothing else goes there.
+if /i "%~1"=="all" goto :build_all
 
 rem An optional first argument picks the architecture; everything after it is
 rem read the same either way. ARCH ends up equal to %1 only when %1 named one,
@@ -23,6 +28,12 @@ rem 32-bit output lives in its own tree: the object files are not interchangeabl
 rem with the 64-bit ones sitting in build\, and neither are the executables.
 set "OUTDIR=build"
 if /i "%ARCH%"=="x86" set "OUTDIR=build\x86"
+
+rem Where the release copies go, and under what names. "cli" and "gui" name the
+rem front-end the same way, so a release page lists the two side by side.
+set "DISTDIR=dist"
+set "DISTCLI=%DISTDIR%\tabber-cli-windows-%ARCH%.exe"
+set "DISTGUI=%DISTDIR%\tabber-gui-windows-%ARCH%.exe"
 
 set "LIBSRC=src\util.c src\platform.c src\resource_save.c src\kv.c src\json.c src\net.c src\md5.c src\inflate.c src\deflate.c src\zip.c src\gzip.c src\paths.c src\digest.c src\config.c src\tabs.c src\server.c src\patch.c src\save.c src\cloud.c src\palettes.c src\loc.c src\keys.c src\install.c src\usage.c src\update.c"
 set "SOURCES=src\main.c %LIBSRC%"
@@ -69,6 +80,8 @@ if errorlevel 1 exit /b 1
 cl %CFLAGS% /Fe%OUTDIR%\tabber.exe /Fo%OUTDIR%\ %SOURCES%
 if errorlevel 1 exit /b 1
 echo Built %OUTDIR%\tabber.exe (%ARCH%)
+call :to_dist "%OUTDIR%\tabber.exe" "%DISTCLI%"
+if errorlevel 1 exit /b 1
 
 rem The fresh savefile is built into the binary (src\resource_save.c), so the
 rem executable is the whole program: nothing has to ship beside it.
@@ -111,6 +124,31 @@ rem net.c and platform.c, the same way the CLI gets them.
 cl %GUIFLAGS% /Fe%OUTDIR%\tabber-gui.exe /Fo%OUTDIR%\gui\ gui\main.cpp %OUTDIR%\gui\lib\*.obj %OUTDIR%\gui\vendor\*.obj /link %GUILIBS% %GUILINK%
 if errorlevel 1 exit /b 1
 echo Built %OUTDIR%\tabber-gui.exe (%ARCH%)
+call :to_dist "%OUTDIR%\tabber-gui.exe" "%DISTGUI%"
+if errorlevel 1 exit /b 1
+exit /b 0
+
+rem ---------------------------------------------------------------------------
+:build_all
+rem Both architectures, each of them building the CLI and then the GUI. The
+rem recursion is what keeps one compiler environment per architecture: each
+rem call has its own setlocal, so vcvars64 and vcvars32 never meet.
+call "%~f0" x64 gui
+if errorlevel 1 exit /b 1
+call "%~f0" x86 gui
+if errorlevel 1 exit /b 1
+exit /b 0
+
+rem ---------------------------------------------------------------------------
+:to_dist
+rem Copies one finished executable to dist\, over whatever is already there.
+if not exist "%DISTDIR%" mkdir "%DISTDIR%"
+copy /y %1 %2 >nul
+if errorlevel 1 (
+    echo build: could not copy %~1 to %~2
+    exit /b 1
+)
+echo   -^> %~2
 exit /b 0
 
 rem ---------------------------------------------------------------------------

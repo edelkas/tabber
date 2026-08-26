@@ -1,5 +1,14 @@
 # Changelog
 
+## [[0.3.0] 2026-08-26](https://github.com/edelkas/tabber/releases/tag/v0.3.0)
+
+Added graphical interface with world's best toolkit, [Dear ImGui](https://github.com/ocornut/imgui):
+
+- Button to update the local custom tab collection.
+- Table listing all custom tabs with buttons to easily download, install and uninstall them.
+
+Improved build scripts and streamlined release process.
+
 ## [[0.2.0] 2026-08-25](https://github.com/edelkas/tabber/releases/tag/v0.2.0)
 
 Major restructure of the directory tree. User files (custom tab store, configuration, etc)
