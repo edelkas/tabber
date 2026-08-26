@@ -337,6 +337,31 @@ int plat_is_file(const char *path)
     return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+/* Seconds between the FILETIME epoch (1601-01-01) and the Unix one. */
+#define WIN_EPOCH_DELTA  11644473600LL
+#define WIN_TICKS_PER_S  10000000LL
+
+int plat_file_mtime(const char *path, long long *out)
+{
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    wchar_t *wpath = wide_from_utf8(path);
+    ULONGLONG ticks;
+
+    if (!wpath)
+        return -1;
+    if (!GetFileAttributesExW(wpath, GetFileExInfoStandard, &data)) {
+        free(wpath);
+        return -1;
+    }
+    free(wpath);
+
+    ticks = ((ULONGLONG)data.ftLastWriteTime.dwHighDateTime << 32) |
+            data.ftLastWriteTime.dwLowDateTime;
+    if (out)
+        *out = (long long)(ticks / WIN_TICKS_PER_S) - WIN_EPOCH_DELTA;
+    return 0;
+}
+
 int plat_list_dir(const char *path, str_list *out)
 {
     WIN32_FIND_DATAW info;
@@ -764,6 +789,17 @@ int plat_is_file(const char *path)
 {
     struct stat st;
     return path && stat(path, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+int plat_file_mtime(const char *path, long long *out)
+{
+    struct stat st;
+
+    if (!path || stat(path, &st) != 0)
+        return -1;
+    if (out)
+        *out = (long long)st.st_mtime;
+    return 0;
 }
 
 int plat_list_dir(const char *path, str_list *out)

@@ -153,6 +153,87 @@ void time_ago_iso8601(int hours, char *out, size_t outsz)
     time_iso8601(then < 0 ? 0 : then, out, outsz);
 }
 
+/*
+ * Days from 1970-01-01 to a civil date, by Howard Hinnant's algorithm. Doing
+ * the arithmetic ourselves keeps this free of timegm(), which Windows does not
+ * have, and of the local timezone, which would make the answer depend on where
+ * the machine thinks it is.
+ */
+static long long days_from_civil(long y, unsigned m, unsigned d)
+{
+    long era;
+    unsigned yoe, doy, doe;
+
+    y -= m <= 2;
+    era = (y >= 0 ? y : y - 399) / 400;
+    yoe = (unsigned)(y - era * 400);                       /* [0, 399]   */
+    doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;  /* [0, 365]   */
+    doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;           /* [0, 146096] */
+    return (long long)era * 146097 + (long long)doe - 719468;
+}
+
+long long time_from_iso8601(const char *iso)
+{
+    int y, mo, d, h, mi, sec;
+
+    if (!iso || sscanf(iso, "%4d-%2d-%2dT%2d:%2d:%2d",
+                       &y, &mo, &d, &h, &mi, &sec) != 6)
+        return 0;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 ||
+        h < 0 || h > 23 || mi < 0 || mi > 59 || sec < 0 || sec > 60)
+        return 0;
+    return days_from_civil(y, (unsigned)mo, (unsigned)d) * 86400LL +
+           h * 3600LL + mi * 60LL + sec;
+}
+
+/* Thresholds of the relative form, in seconds, coarsest unit last. */
+#define WHEN_MINUTE  60LL
+#define WHEN_HOUR    3600LL
+#define WHEN_DAY     86400LL
+#define WHEN_MONTH   2629746LL    /* the average Gregorian month */
+#define WHEN_YEAR    31556952LL   /* ...and year, 365.2425 days  */
+
+void time_relative(long long when, long long now, const char *never,
+                   char *out, size_t outsz)
+{
+    long long ago = now - when;
+    long long n;
+    const char *unit;
+
+    if (!out || outsz == 0)
+        return;
+    /* A stamp in the future is a clock that disagrees with ours, not a thing
+     * that has not happened yet; it reads better as no answer than as one. */
+    if (when <= 0 || ago < 0) {
+        snprintf(out, outsz, "%s", never ? never : "");
+        return;
+    }
+
+    if (ago < WHEN_MINUTE) {
+        snprintf(out, outsz, "just now");
+        return;
+    }
+    if (ago < WHEN_HOUR)       { n = ago / WHEN_MINUTE; unit = "minute"; }
+    else if (ago < WHEN_DAY)   { n = ago / WHEN_HOUR;   unit = "hour";   }
+    else if (ago < WHEN_MONTH) { n = ago / WHEN_DAY;    unit = "day";    }
+    else if (ago < WHEN_YEAR)  { n = ago / WHEN_MONTH;  unit = "month";  }
+    else                       { n = ago / WHEN_YEAR;   unit = "year";   }
+
+    snprintf(out, outsz, "%ld %s%s ago", (long)n, unit, n == 1 ? "" : "s");
+}
+
+void time_local_stamp(long long when, char *out, size_t outsz)
+{
+    time_t t = (time_t)when;
+    struct tm *local;
+
+    if (!out || outsz == 0)
+        return;
+    local = localtime(&t);
+    if (when <= 0 || !local || strftime(out, outsz, "%Y-%m-%d %H:%M", local) == 0)
+        snprintf(out, outsz, "unknown");
+}
+
 void str_list_push(str_list *list, char *s)
 {
     if (!s)

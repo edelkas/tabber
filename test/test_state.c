@@ -4,14 +4,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "config.h"
 #include "digest.h"
 #include "json.h"
 #include "patch.h"
 #include "platform.h"
+#include "save.h"
 #include "server.h"
 #include "test.h"
+#include "usage.h"
 #include "util.h"
 
 /* Loads the state file, asserting it worked. */
@@ -407,6 +410,91 @@ static void test_server_health(void)
     free(root_dir);
 }
 
+/*
+ * When a tab was last played, which nothing records: the answer is read off
+ * whichever savefile belongs to the tab, and falls back through the state file
+ * to the archive an older installer would have left.
+ */
+static void test_usage(void)
+{
+    char *root = test_dir("usage_root");
+    char *personal = test_dir("usage_personal");
+    char *gz_path, *raw_path, *archive_path;
+    long long expected = 0;
+    long long now = (long long)time(NULL);
+    npp_paths paths;
+    tab_usage used;
+    config *cfg;
+
+    test_case("when a tab was last played");
+    test_use_root(root);
+    memset(&paths, 0, sizeof paths);
+    paths.personal_dir = personal;   /* borrowed: freed below, not by paths */
+
+    cfg = load_config();
+    if (!cfg) { free(root); free(personal); return; }
+
+    gz_path = path_join(personal, SAVE_GZ_NAME);
+    raw_path = path_join(personal, SAVE_NAME);
+    archive_path = path_join(personal, "nprofile_abc.zip");
+
+    /* Nothing written down and nothing on disk. */
+    usage_last_played(cfg, &paths, "abc", 0, &used);
+    CHECK_NUM(used.source, USAGE_NEVER, "a tab with no history was never played");
+    CHECK_NUM(used.when, 0, "...and carries no date");
+
+    /* A tab one of the older installers handled: no record of it anywhere,
+     * but the archive their uninstall wrote is still in the folder. */
+    test_write(archive_path, "not really a zip");
+    usage_last_played(cfg, &paths, "abc", 0, &used);
+    CHECK_NUM(used.source, USAGE_ARCHIVED_SAVE, "its archived save stands in");
+    CHECK(used.when >= now, "...dated when that archive was written");
+
+    /* Once tabber has written it down, that is the better answer. */
+    config_set_installed(cfg, 1, "abc");
+    config_set_uninstalled(cfg, 1, "abc");
+    usage_last_played(cfg, &paths, "abc", 0, &used);
+    CHECK_NUM(used.source, USAGE_RECORDED, "a recorded uninstall outranks the archive");
+    CHECK(used.when >= now, "...and is dated then");
+
+    /* Installed, so the live save is this tab's. Only the uncompressed form
+     * is there, which is what an older build of the game writes. */
+    test_write(raw_path, "a savefile");
+    plat_file_mtime(raw_path, &expected);
+    usage_last_played(cfg, &paths, "abc", 1, &used);
+    CHECK_NUM(used.source, USAGE_LIVE_SAVE, "an installed tab is dated by the live save");
+    CHECK_NUM(used.when, expected, "...the uncompressed one, when that is all there is");
+
+    /* With both there the game reads the gzipped one, and so do we. */
+    test_write(gz_path, "a gzipped savefile");
+    plat_file_mtime(gz_path, &expected);
+    usage_last_played(cfg, &paths, "abc", 1, &used);
+    CHECK_NUM(used.source, USAGE_LIVE_SAVE, "still the live save");
+    CHECK_NUM(used.when, expected, "...and the gzipped form is the one asked");
+
+    /* Installed but never launched since: no savefile at all, so the install
+     * itself is the most recent thing that happened to the tab. */
+    plat_remove_file(gz_path);
+    plat_remove_file(raw_path);
+    usage_last_played(cfg, &paths, "abc", 1, &used);
+    CHECK_NUM(used.source, USAGE_RECORDED, "with no savefile, the install date");
+
+    /* And with nothing written down either, it is genuinely unknown. */
+    usage_last_played(NULL, &paths, "abc", 1, &used);
+    CHECK_NUM(used.source, USAGE_NEVER, "no save and no record is never played");
+
+    /* A folder we know nothing about must not stop the state file answering. */
+    usage_last_played(cfg, NULL, "abc", 0, &used);
+    CHECK_NUM(used.source, USAGE_RECORDED, "no game folder still reads the record");
+
+    free(gz_path);
+    free(raw_path);
+    free(archive_path);
+    config_free(cfg);
+    free(root);
+    free(personal);
+}
+
 void suite_state(void)
 {
     test_suite("state");
@@ -418,4 +506,5 @@ void suite_state(void)
     test_server_precedence();
     test_uri_budget();
     test_server_health();
+    test_usage();
 }

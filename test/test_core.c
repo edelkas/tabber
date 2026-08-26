@@ -114,6 +114,66 @@ static void test_tab_columns(void)
     CHECK_STR(date, "", "no date gives an empty cell");
 }
 
+/*
+ * Timestamps: the state file's own format in and out, and the shape the GUI
+ * shows a date in. `now` is passed in rather than read, so these do not depend
+ * on the clock or on the machine's timezone.
+ */
+static void test_timestamps(void)
+{
+    char out[TB_WHEN_LEN];
+    char stamp[TB_TIMESTAMP_LEN + 1];
+    long long now = 1787747696LL;   /* 2026-08-26T12:34:56Z */
+
+    test_case("timestamps");
+
+    CHECK_NUM(time_from_iso8601("1970-01-01T00:00:00Z"), 0, "the epoch itself");
+    CHECK_NUM(time_from_iso8601("2000-01-01T00:00:00Z"), 946684800L, "a round date");
+    CHECK_NUM(time_from_iso8601("2015-07-30T00:00:00Z"), 1438214400L,
+              "the day the first mappack is dated");
+    CHECK_NUM(time_from_iso8601("2026-08-26T12:34:56Z"), 1787747696L,
+              "a date with a time on it");
+    /* Some digests stamp fractions of a second; the rest of the string is not
+     * ours to read, so it is ignored rather than refused. */
+    CHECK_NUM(time_from_iso8601("2015-07-30T00:00:00.000Z"), 1438214400L,
+              "a fractional stamp parses the same");
+    CHECK_NUM(time_from_iso8601(""), 0, "an empty string is not a date");
+    CHECK_NUM(time_from_iso8601(NULL), 0, "neither is nothing at all");
+    CHECK_NUM(time_from_iso8601("yesterday"), 0, "nor is prose");
+    CHECK_NUM(time_from_iso8601("2015-13-30T00:00:00Z"), 0, "nor a 13th month");
+
+    /* The two directions have to agree, or a date written by one version of
+     * the tool would read as a different one to the next. */
+    time_now_iso8601(stamp, sizeof stamp);
+    CHECK(time_from_iso8601(stamp) > 1438214400L, "what we write, we can read back");
+
+    time_relative(0, now, "Never", out, sizeof out);
+    CHECK_STR(out, "Never", "no timestamp at all");
+    time_relative(now + 3600, now, "Never", out, sizeof out);
+    CHECK_STR(out, "Never", "a stamp from the future is a clock we cannot trust");
+    time_relative(0, now, NULL, out, sizeof out);
+    CHECK_STR(out, "", "and the stand-in may be nothing");
+
+    time_relative(now, now, "Never", out, sizeof out);
+    CHECK_STR(out, "just now", "this very second");
+    time_relative(now - 59, now, "Never", out, sizeof out);
+    CHECK_STR(out, "just now", "under a minute");
+    time_relative(now - 60, now, "Never", out, sizeof out);
+    CHECK_STR(out, "1 minute ago", "the singular has no s");
+    time_relative(now - 150, now, "Never", out, sizeof out);
+    CHECK_STR(out, "2 minutes ago", "minutes round down");
+    time_relative(now - 3600, now, "Never", out, sizeof out);
+    CHECK_STR(out, "1 hour ago", "an hour");
+    time_relative(now - 86400, now, "Never", out, sizeof out);
+    CHECK_STR(out, "1 day ago", "a day");
+    time_relative(now - 3 * 86400, now, "Never", out, sizeof out);
+    CHECK_STR(out, "3 days ago", "several days");
+    time_relative(now - 45 * 86400, now, "Never", out, sizeof out);
+    CHECK_STR(out, "1 month ago", "past a month, months");
+    time_relative(now - 400 * 86400, now, "Never", out, sizeof out);
+    CHECK_STR(out, "1 year ago", "and past a year, years");
+}
+
 static void test_buffers(void)
 {
     byte_buf buf = {0};
@@ -449,6 +509,7 @@ void suite_core(void)
     test_suite("core");
     test_strings();
     test_tab_columns();
+    test_timestamps();
     test_buffers();
     test_paths();
     test_canonical();

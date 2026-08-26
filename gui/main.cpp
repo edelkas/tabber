@@ -1,16 +1,27 @@
 /*
  * main.cpp - Entry point of the graphical front-end.
  *
- * Dear ImGui on GLFW + OpenGL 3, both built from source under vendor/. The
- * window is a single full-viewport panel holding the catalogue of custom tabs,
- * the same four columns the CLI's `list` prints.
+ * Dear ImGui on GLFW + OpenGL 3, both built from source under vendor/. One
+ * full-viewport panel: a button that refreshes the catalogue, and a sortable
+ * table of every custom tab with a button per row that downloads, installs or
+ * uninstalls it.
  *
  * This is a second front-end onto the library in src/, not a second copy of
- * it: everything below the presentation is the code the CLI runs.
+ * it. Every button runs the same call the matching CLI command runs, and the
+ * two agree on what a listing looks like because the column headers and the
+ * cells that are not shown verbatim live in digest.h.
+ *
+ * The work happens on this thread, so a download or an install freezes the
+ * window while it runs. What the frame before it draws is a "working" overlay,
+ * so at least the reason is on screen; moving it off the main thread is the
+ * next thing this file needs.
  */
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -20,15 +31,20 @@
 #include <GLFW/glfw3.h>
 
 /* The tool's own library. Its headers carry their own extern "C". */
+#include "config.h"
 #include "digest.h"
+#include "install.h"
+#include "paths.h"
 #include "platform.h"
+#include "tabs.h"
+#include "usage.h"
 #include "util.h"
 #include "version.h"
 
 /* Window and context. GL 3.2 is the floor: it is what the OpenGL 3 backend
  * asks for and the oldest core profile macOS will hand out. */
 static const char *WINDOW_TITLE      = TABBER_NAME " " TABBER_VERSION;
-static const int   WINDOW_WIDTH      = 1000;
+static const int   WINDOW_WIDTH      = 1100;
 static const int   WINDOW_HEIGHT     = 700;
 static const int   GL_VERSION_MAJOR  = 3;
 static const int   GL_VERSION_MINOR  = 2;
@@ -38,11 +54,19 @@ static const int   SWAP_INTERVAL     = 1;  /* vsync: an idle GUI must not spin *
  * is nothing to draw and polling would otherwise burn a core. */
 static const int   ICONIFIED_SLEEP_MS = 10;
 
+/*
+ * How often the per-tab state is worked out again. Everything in it can change
+ * without tabber being told — the game rewrites the savefile as it is played,
+ * and the CLI can install a tab from another window — so it is read afresh on
+ * a timer rather than only when this program does something.
+ */
+static const long long REFRESH_SECONDS = 5 * 60;
+
 /* Background behind the panel, straight from the Dear ImGui example. */
 static const ImVec4 CLEAR_COLOR(0.45f, 0.55f, 0.60f, 1.00f);
 
 /*
- * Dear ImGui's own state (column widths and the like) goes in the tool's
+ * Dear ImGui's own state (column widths, the sort order) goes in the tool's
  * folder, beside config.json and the tab store, rather than in whichever
  * directory the program happened to be started from.
  */
@@ -57,37 +81,689 @@ static const ImGuiWindowFlags PANEL_FLAGS =
 
 static const ImGuiTableFlags TABLE_FLAGS =
     ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-    ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY;
+    ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY |
+    ImGuiTableFlags_Sortable;
+
+static const ImGuiWindowFlags OVERLAY_FLAGS =
+    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize |
+    ImGuiWindowFlags_NoSavedSettings;
+
+/* The two columns the CLI has no use for; the other four are in digest.h. */
+#define COL_LAST_USED   "LAST USED"
+#define COL_INSTALL     "INSTALL"
+
+/* The longest value each fixed-width column can hold, for sizing it. */
+#define WIDEST_DATE      "0000-00-00"
+#define WIDEST_LAST_USED "00 months ago"
+
+/* Column order, which is also what a sort spec reports. */
+enum {
+    COLUMN_CODE, COLUMN_NAME, COLUMN_AUTHORS, COLUMN_DATE,
+    COLUMN_LAST_USED, COLUMN_INSTALL, COLUMN_COUNT
+};
+
+/* Everything the user reads, in one place. */
+static const char *LABEL_UPDATE   = "Update mappack list";
+static const char *LABEL_UPDATED  = "Last updated: ";
+static const char *LABEL_NEVER    = "Never";
+static const char *LABEL_DOWNLOAD = "Download";
+static const char *LABEL_INSTALL  = "Install";
+static const char *LABEL_UNINSTALL = "Uninstall";
+static const char *LABEL_YES      = "Yes";
+static const char *LABEL_NO       = "No";
+static const char *LABEL_OK       = "OK";
+static const char *TITLE_DONE     = "Done";
+static const char *TITLE_FAILED   = "Failed";
+static const char *TITLE_CONFIRM  = "One tab at a time";
 
 /* Identifiers Dear ImGui keys its state on. They are not shown to anyone. */
-static const char *PANEL_ID = "tabber-panel";
-static const char *TABLE_ID = "tabber-tabs";
+static const char *PANEL_ID   = "tabber-panel";
+static const char *TABLE_ID   = "tabber-tabs";
+static const char *BUSY_ID    = "tabber-busy";
+
+/* Green for the step that puts a tab in, red for the one that takes it out. */
+static const ImVec4 GREEN_BUTTON(0.16f, 0.44f, 0.20f, 1.00f);
+static const ImVec4 GREEN_HOVER (0.22f, 0.58f, 0.27f, 1.00f);
+static const ImVec4 GREEN_ACTIVE(0.12f, 0.35f, 0.16f, 1.00f);
+static const ImVec4 RED_BUTTON  (0.52f, 0.16f, 0.16f, 1.00f);
+static const ImVec4 RED_HOVER   (0.66f, 0.22f, 0.22f, 1.00f);
+static const ImVec4 RED_ACTIVE  (0.42f, 0.12f, 0.12f, 1.00f);
+
+/* ---- State ------------------------------------------------------------- */
 
 /* What is on screen: the catalogue, or why there is none. */
 static digest *g_digest = NULL;
 static char    g_error[TB_ERR_LEN] = "";
+static char    g_last_updated[TB_WHEN_LEN] = "";
+
+/* One row of the table, worked out every REFRESH_SECONDS. */
+typedef struct {
+    int downloaded;
+    int installed;
+    long long last_played;          /* what the column sorts on */
+    char last_used[TB_WHEN_LEN];    /* ...and what it shows      */
+} tab_row;
+
+static tab_row *g_rows = NULL;
+static int     *g_order = NULL;     /* row indices, in the order shown */
+static size_t   g_row_count = 0;
+static char     g_installed_code[64] = "";
+static long long g_rows_stamp = 0;  /* when the rows were last worked out */
+
+static int g_sort_column = -1;      /* -1: the digest's own order */
+static int g_sort_ascending = 1;
+
+/* Work a click has asked for, run once the overlay announcing it is on screen. */
+typedef enum {
+    ACT_NONE, ACT_UPDATE, ACT_DOWNLOAD, ACT_INSTALL, ACT_UNINSTALL, ACT_REPLACE
+} ui_action;
+
+static ui_action g_pending = ACT_NONE;
+static char g_pending_code[TAB_CODE_MAX_LEN + 1] = "";
+static int  g_pending_drawn = 0;
+static char g_busy_text[128] = "";
+
+/* The two dialogs: what a result says, and what a replacement asks. */
+static char g_result_title[64] = "";
+static char g_result_text[TB_ERR_LEN + 256] = "";
+static char g_confirm_text[512] = "";
+static const char *g_open_popup = NULL;
 
 static void on_glfw_error(int error, const char *description)
 {
     fprintf(stderr, "GLFW error %d: %s\n", error, description);
 }
 
+/* ---- Reading the world ------------------------------------------------- */
+
+/* When the cached catalogue was last written, which is when we last updated. */
+static void refresh_last_updated(void)
+{
+    char *path = digest_cache_path();
+    long long when = 0;
+
+    if (!path || plat_file_mtime(path, &when) != 0)
+        when = 0;
+    time_local_stamp(when, g_last_updated, sizeof g_last_updated);
+    free(path);
+}
+
+static void apply_sort(void);
+
 /*
- * Loads the catalogue, refreshing it from the network first. A refresh that
- * fails is not fatal — the cached copy is what the CLI falls back on too — so
- * only a failure to load at all leaves g_error set.
+ * Works out what every row should say: whether the tab is downloaded, whether
+ * it is the one installed, and when it was last played. All of it can change
+ * behind our back, so this is the only place any of it is believed from.
  */
+static void refresh_rows(void)
+{
+    char err[TB_ERR_LEN];
+    config *cfg;
+    npp_paths paths;
+    size_t i;
+    long long now = (long long)time(NULL);
+
+    memset(&paths, 0, sizeof paths);
+    g_rows_stamp = now;
+
+    free(g_rows);
+    free(g_order);
+    g_rows = NULL;
+    g_order = NULL;
+    g_installed_code[0] = '\0';
+    g_row_count = g_digest ? g_digest->tab_count : 0;
+
+    refresh_last_updated();
+    if (g_row_count == 0)
+        return;
+
+    g_rows = (tab_row *)xmalloc(g_row_count * sizeof *g_rows);
+    memset(g_rows, 0, g_row_count * sizeof *g_rows);
+    g_order = (int *)xmalloc(g_row_count * sizeof *g_order);
+
+    /* The game's folders are wanted for the savefile timestamps only. Without
+     * them the dates fall back to what the state file remembers, so a machine
+     * where the game cannot be found still shows a usable table. */
+    npp_find_game_dirs(&paths, err, sizeof err);
+    npp_find_personal_dir(&paths, err, sizeof err);
+
+    cfg = config_load(err, sizeof err);
+    if (cfg)
+        install_detect(cfg, &paths, g_installed_code, sizeof g_installed_code);
+
+    for (i = 0; i < g_row_count; i++) {
+        const npp_tab *tab = &g_digest->tabs[i];
+        tab_usage used;
+
+        g_rows[i].downloaded = tab_is_downloaded(tab->code);
+        g_rows[i].installed = g_installed_code[0] != '\0' &&
+                              str_ieq(g_installed_code, tab->code);
+        usage_last_played(cfg, &paths, tab->code, g_rows[i].installed, &used);
+        g_rows[i].last_played = used.when;
+        time_relative(used.when, now, LABEL_NEVER,
+                      g_rows[i].last_used, sizeof g_rows[i].last_used);
+    }
+
+    config_free(cfg);
+    npp_paths_free(&paths);
+    apply_sort();
+}
+
+/*
+ * Re-parses the cached catalogue. A parse that fails leaves the one already on
+ * screen alone: a broken download must not empty the table.
+ */
+static int reload_digest(char *err, size_t errsz)
+{
+    digest *fresh = digest_load(err, errsz);
+
+    if (!fresh)
+        return -1;
+    digest_free(g_digest);
+    g_digest = fresh;
+    g_error[0] = '\0';
+    return 0;
+}
+
+/* Loads the catalogue at startup, refreshing it from the network first. */
 static void load_digest(void)
 {
     char err[TB_ERR_LEN];
 
     if (digest_ensure_fresh(0, err, sizeof err) != 0)
         fprintf(stderr, TABBER_NAME ": could not refresh the digest (%s), using the cached copy\n", err);
-
-    g_digest = digest_load(err, sizeof err);
-    if (!g_digest)
+    if (reload_digest(err, sizeof err) != 0)
         snprintf(g_error, sizeof g_error, "%s", err);
 }
+
+/* ---- Sorting ----------------------------------------------------------- */
+
+/* Case-insensitive, so a lowercase name does not sort below every capital. */
+static int text_cmp(const char *a, const char *b)
+{
+    unsigned char ca, cb;
+
+    if (!a) a = "";
+    if (!b) b = "";
+    for (; *a || *b; a++, b++) {
+        ca = (unsigned char)*a;
+        cb = (unsigned char)*b;
+        if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+        if (ca != cb)
+            return ca < cb ? -1 : 1;
+    }
+    return 0;
+}
+
+static int compare_rows(const void *pa, const void *pb)
+{
+    int ia = *(const int *)pa, ib = *(const int *)pb;
+    const npp_tab *a = &g_digest->tabs[ia];
+    const npp_tab *b = &g_digest->tabs[ib];
+    long long da, db;
+    int r = 0;
+
+    switch (g_sort_column) {
+    case COLUMN_CODE:    r = text_cmp(a->code, b->code); break;
+    case COLUMN_NAME:    r = text_cmp(a->name, b->name); break;
+    case COLUMN_AUTHORS: r = text_cmp(a->authors, b->authors); break;
+    /* The dates are fixed-width ISO 8601, so comparing them as text orders
+     * them; "never played" is 0, which sorts below every real date. */
+    case COLUMN_DATE:    r = text_cmp(a->date, b->date); break;
+    case COLUMN_LAST_USED:
+        da = g_rows[ia].last_played;
+        db = g_rows[ib].last_played;
+        r = (da > db) - (da < db);
+        break;
+    default: break;
+    }
+    if (r != 0)
+        return g_sort_ascending ? r : -r;
+    return ia - ib;   /* ties keep the catalogue's own order, both ways */
+}
+
+static void apply_sort(void)
+{
+    size_t i;
+
+    for (i = 0; i < g_row_count; i++)
+        g_order[i] = (int)i;
+    if (g_sort_column >= 0 && g_row_count > 1)
+        qsort(g_order, g_row_count, sizeof *g_order, compare_rows);
+}
+
+/* ---- Doing the work ---------------------------------------------------- */
+
+static void set_result(const char *title, const char *fmt, ...)
+{
+    va_list ap;
+
+    snprintf(g_result_title, sizeof g_result_title, "%s", title);
+    va_start(ap, fmt);
+    vsnprintf(g_result_text, sizeof g_result_text, fmt, ap);
+    va_end(ap);
+    g_open_popup = g_result_title;
+}
+
+/* The tab `code` names, or NULL with a reason when the catalogue has no such. */
+static const npp_tab *find_tab(const char *code, char *err, size_t errsz)
+{
+    const npp_tab *tab = g_digest ? digest_find(g_digest, code) : NULL;
+
+    if (!tab)
+        err_set(err, errsz, "there is no custom tab with the code '%s'", code);
+    return tab;
+}
+
+/* Both folders, as install and uninstall need them. */
+static int find_game(npp_paths *paths, char *err, size_t errsz)
+{
+    memset(paths, 0, sizeof *paths);
+    if (npp_find_game_dirs(paths, err, errsz) != 0 ||
+        npp_find_personal_dir(paths, err, errsz) != 0) {
+        npp_paths_free(paths);
+        return -1;
+    }
+    return 0;
+}
+
+/* Downloads a tab into the local store, as `fetch` does. */
+static int run_download(const npp_tab *tab, char *err, size_t errsz)
+{
+    tab_report report;
+
+    if (tab_fetch(g_digest, tab, &report, err, errsz) != 0)
+        return -1;
+    tab_report_free(&report);
+    return 0;
+}
+
+/* Puts a tab into the game, downloading it first if it is not in the store. */
+static int run_install(const npp_tab *tab, char *err, size_t errsz)
+{
+    npp_paths paths;
+    install_options opts;
+    install_report report;
+    config *cfg;
+    char other[64];
+    int busy;
+
+    if (find_game(&paths, err, errsz) != 0)
+        return -1;
+
+    /* Downloading first changes nothing in the game folder, so it is safe to
+     * do before the checks below. */
+    if (!tab_is_downloaded(tab->code) && run_download(tab, err, errsz) != 0) {
+        npp_paths_free(&paths);
+        return -1;
+    }
+
+    /* Only one tab at a time. The button that led here was drawn from state
+     * that may be minutes old, and the CLI may have installed something since,
+     * so the answer is asked for again rather than assumed. */
+    cfg = config_load(err, errsz);
+    if (!cfg) {
+        npp_paths_free(&paths);
+        return -1;
+    }
+    busy = install_detect(cfg, &paths, other, sizeof other) &&
+           !str_ieq(other, tab->code);
+    config_free(cfg);
+    if (busy) {
+        char upper[DIGEST_CODE_BUF];
+
+        digest_code_upper(upper, sizeof upper, other);
+        err_set(err, errsz, "%s has been installed in the meantime; uninstall "
+                            "it first", upper);
+        npp_paths_free(&paths);
+        return -1;
+    }
+
+    install_options_init(&opts);
+    if (tab_install(g_digest, tab, &paths, &opts, &report, err, errsz) != 0) {
+        install_report_free(&report);
+        npp_paths_free(&paths);
+        return -1;
+    }
+    install_report_free(&report);
+    npp_paths_free(&paths);
+    return 0;
+}
+
+/* Puts the game back as it was, as `uninstall` does. */
+static int run_uninstall(const npp_tab *tab, char *err, size_t errsz)
+{
+    npp_paths paths;
+    install_options opts;
+    uninstall_report report;
+
+    if (find_game(&paths, err, errsz) != 0)
+        return -1;
+
+    install_options_init(&opts);
+    if (tab_uninstall(g_digest, tab, &paths, &opts, &report, err, errsz) != 0) {
+        uninstall_report_free(&report);
+        npp_paths_free(&paths);
+        return -1;
+    }
+    uninstall_report_free(&report);
+    npp_paths_free(&paths);
+    return 0;
+}
+
+/* Carries out whatever the last click asked for, and says how it went. */
+static void run_pending(void)
+{
+    char err[TB_ERR_LEN];
+    char upper[DIGEST_CODE_BUF], other[DIGEST_CODE_BUF];
+    const npp_tab *tab, *installed;
+    ui_action action = g_pending;
+
+    if (action == ACT_NONE || !g_pending_drawn)
+        return;
+    g_pending = ACT_NONE;
+    g_pending_drawn = 0;
+
+    if (action == ACT_UPDATE) {
+        /* Forced, as `update` is: an explicit refresh always goes out. */
+        if (digest_ensure_fresh(1, err, sizeof err) != 0)
+            set_result(TITLE_FAILED, "The mappack list could not be updated:\n%s", err);
+        else if (reload_digest(err, sizeof err) != 0)
+            set_result(TITLE_FAILED, "The mappack list was downloaded but could "
+                                     "not be read:\n%s", err);
+        else
+            set_result(TITLE_DONE, "The mappack list is up to date: %u custom tab(s).",
+                       (unsigned)g_digest->tab_count);
+        refresh_rows();
+        return;
+    }
+
+    tab = find_tab(g_pending_code, err, sizeof err);
+    if (!tab) {
+        set_result(TITLE_FAILED, "%s", err);
+        return;
+    }
+    digest_code_upper(upper, sizeof upper, tab->code);
+
+    switch (action) {
+    case ACT_DOWNLOAD:
+        if (run_download(tab, err, sizeof err) != 0)
+            set_result(TITLE_FAILED, "%s could not be downloaded:\n%s", upper, err);
+        else
+            set_result(TITLE_DONE, "%s has been downloaded.", upper);
+        break;
+
+    case ACT_UNINSTALL:
+        if (run_uninstall(tab, err, sizeof err) != 0)
+            set_result(TITLE_FAILED, "%s could not be uninstalled:\n%s", upper, err);
+        else
+            set_result(TITLE_DONE, "%s has been uninstalled, and the game is "
+                                   "back as it was.", upper);
+        break;
+
+    case ACT_REPLACE:
+        /* Take the other one out first; if that fails nothing else is tried,
+         * since installing over it is exactly what must not happen. */
+        installed = find_tab(g_installed_code, err, sizeof err);
+        digest_code_upper(other, sizeof other, g_installed_code);
+        if (!installed) {
+            set_result(TITLE_FAILED, "%s could not be uninstalled:\n%s", other, err);
+            break;
+        }
+        if (run_uninstall(installed, err, sizeof err) != 0) {
+            set_result(TITLE_FAILED, "%s could not be uninstalled, so %s was not "
+                                     "installed:\n%s", other, upper, err);
+            break;
+        }
+        if (run_install(tab, err, sizeof err) != 0)
+            set_result(TITLE_FAILED, "%s was uninstalled, but %s could not be "
+                                     "installed:\n%s", other, upper, err);
+        else
+            set_result(TITLE_DONE, "%s has been uninstalled and %s installed "
+                                   "in its place.", other, upper);
+        break;
+
+    case ACT_INSTALL:
+        if (run_install(tab, err, sizeof err) != 0)
+            set_result(TITLE_FAILED, "%s could not be installed:\n%s", upper, err);
+        else
+            set_result(TITLE_DONE, "%s has been installed.", upper);
+        break;
+
+    default:
+        break;
+    }
+    refresh_rows();
+}
+
+/* Asks for work, and for the overlay that says so. */
+static void request(ui_action action, const char *code, const char *busy)
+{
+    g_pending = action;
+    g_pending_drawn = 0;
+    snprintf(g_pending_code, sizeof g_pending_code, "%s", code ? code : "");
+    snprintf(g_busy_text, sizeof g_busy_text, "%s", busy);
+}
+
+/*
+ * An install click. When another tab is in place the choice is the user's, so
+ * it is put to them; otherwise it just goes ahead.
+ */
+static void request_install(const npp_tab *tab)
+{
+    char upper[DIGEST_CODE_BUF], other[DIGEST_CODE_BUF];
+
+    if (g_installed_code[0] == '\0' || str_ieq(g_installed_code, tab->code)) {
+        request(ACT_INSTALL, tab->code, "Installing...");
+        return;
+    }
+
+    digest_code_upper(upper, sizeof upper, tab->code);
+    digest_code_upper(other, sizeof other, g_installed_code);
+    snprintf(g_confirm_text, sizeof g_confirm_text,
+             "%s is installed, and only one custom tab can be installed at a "
+             "time.\n\nUninstall %s and install %s in its place?",
+             other, other, upper);
+    snprintf(g_pending_code, sizeof g_pending_code, "%s", tab->code);
+    g_open_popup = TITLE_CONFIRM;
+}
+
+/* ---- Drawing ----------------------------------------------------------- */
+
+static void push_button_colors(const ImVec4 &normal, const ImVec4 &hovered,
+                               const ImVec4 &active)
+{
+    ImGui::PushStyleColor(ImGuiCol_Button, normal);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hovered);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
+}
+
+/* The button that says what can be done to this tab, and does it. */
+static void draw_row_button(const npp_tab *tab, const tab_row *row)
+{
+    /* While something is running, nothing else may be asked for. */
+    ImGui::BeginDisabled(g_pending != ACT_NONE);
+    if (row->installed) {
+        push_button_colors(RED_BUTTON, RED_HOVER, RED_ACTIVE);
+        if (ImGui::Button(LABEL_UNINSTALL))
+            request(ACT_UNINSTALL, tab->code, "Uninstalling...");
+        ImGui::PopStyleColor(3);
+    } else if (row->downloaded) {
+        push_button_colors(GREEN_BUTTON, GREEN_HOVER, GREEN_ACTIVE);
+        if (ImGui::Button(LABEL_INSTALL))
+            request_install(tab);
+        ImGui::PopStyleColor(3);
+    } else {
+        if (ImGui::Button(LABEL_DOWNLOAD))
+            request(ACT_DOWNLOAD, tab->code, "Downloading...");
+    }
+    ImGui::EndDisabled();
+}
+
+static void draw_tab_table(void)
+{
+    ImGuiTableSortSpecs *specs;
+    size_t i;
+    float pad;
+
+    if (!ImGui::BeginTable(TABLE_ID, COLUMN_COUNT, TABLE_FLAGS,
+                           ImGui::GetContentRegionAvail()))
+        return;
+
+    /*
+     * The columns of known size are fixed and start out just wide enough for
+     * the widest thing that can land in them; the two carrying free text share
+     * whatever is left over. The padding leaves room for the sort arrow, which
+     * would otherwise eat into a header as short as CODE.
+     */
+    pad = ImGui::GetStyle().CellPadding.x * 2.0f + ImGui::GetFontSize();
+    ImGui::TableSetupColumn(COL_CODE, ImGuiTableColumnFlags_WidthFixed,
+                            ImGui::CalcTextSize(COL_CODE).x + pad);
+    ImGui::TableSetupColumn(COL_NAME, ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn(COL_AUTHORS, ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn(COL_DATE, ImGuiTableColumnFlags_WidthFixed,
+                            ImGui::CalcTextSize(WIDEST_DATE).x + pad);
+    ImGui::TableSetupColumn(COL_LAST_USED, ImGuiTableColumnFlags_WidthFixed,
+                            ImGui::CalcTextSize(WIDEST_LAST_USED).x + pad);
+    ImGui::TableSetupColumn(COL_INSTALL, ImGuiTableColumnFlags_WidthFixed |
+                                         ImGuiTableColumnFlags_NoSort,
+                            ImGui::CalcTextSize(LABEL_UNINSTALL).x + pad);
+    ImGui::TableSetupScrollFreeze(0, 1);   /* the header stays put */
+    ImGui::TableHeadersRow();
+
+    specs = ImGui::TableGetSortSpecs();
+    if (specs && specs->SpecsDirty) {
+        if (specs->SpecsCount > 0) {
+            g_sort_column = specs->Specs[0].ColumnIndex;
+            g_sort_ascending =
+                specs->Specs[0].SortDirection == ImGuiSortDirection_Ascending;
+        } else {
+            g_sort_column = -1;
+        }
+        apply_sort();
+        specs->SpecsDirty = false;
+    }
+
+    for (i = 0; i < g_row_count; i++) {
+        int index = g_order[i];
+        const npp_tab *tab = &g_digest->tabs[index];
+        const tab_row *row = &g_rows[index];
+        char code[DIGEST_CODE_BUF], date[DIGEST_DATE_BUF];
+
+        digest_code_upper(code, sizeof code, tab->code);
+        digest_date_short(date, sizeof date, tab->date);
+
+        ImGui::PushID(index);
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(COLUMN_CODE);
+        ImGui::TextUnformatted(code);
+        ImGui::TableSetColumnIndex(COLUMN_NAME);
+        ImGui::TextUnformatted(tab->name ? tab->name : "");
+        ImGui::TableSetColumnIndex(COLUMN_AUTHORS);
+        ImGui::TextUnformatted(tab->authors ? tab->authors : "");
+        ImGui::TableSetColumnIndex(COLUMN_DATE);
+        ImGui::TextUnformatted(date);
+        ImGui::TableSetColumnIndex(COLUMN_LAST_USED);
+        ImGui::TextUnformatted(row->last_used);
+        ImGui::TableSetColumnIndex(COLUMN_INSTALL);
+        draw_row_button(tab, row);
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+}
+
+/* The one window, filling the viewport however the frame has been resized. */
+static void draw_panel(void)
+{
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+
+    /* Set every frame rather than once: this is what follows a resize. */
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    ImGui::Begin(PANEL_ID, NULL, PANEL_FLAGS);
+
+    ImGui::BeginDisabled(g_pending != ACT_NONE);
+    if (ImGui::Button(LABEL_UPDATE))
+        request(ACT_UPDATE, NULL, "Updating the mappack list...");
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::Text("%s%s", LABEL_UPDATED, g_last_updated);
+
+    ImGui::Separator();
+    if (g_digest)
+        draw_tab_table();
+    else
+        ImGui::TextWrapped("%s", g_error);
+
+    ImGui::End();
+}
+
+/* Centres the next window on the viewport, which is where a dialog belongs. */
+static void centre_next_window(void)
+{
+    const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    ImVec2 centre(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                  viewport->WorkPos.y + viewport->WorkSize.y * 0.5f);
+
+    ImGui::SetNextWindowPos(centre, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+}
+
+static void draw_dialogs(void)
+{
+    if (g_open_popup) {
+        ImGui::OpenPopup(g_open_popup);
+        g_open_popup = NULL;
+    }
+
+    centre_next_window();
+    if (ImGui::BeginPopupModal(TITLE_CONFIRM, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted(g_confirm_text);
+        ImGui::Separator();
+        if (ImGui::Button(LABEL_YES)) {
+            request(ACT_REPLACE, g_pending_code, "Replacing the installed tab...");
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(LABEL_NO))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    /* One modal per outcome, so the title says which it was without reading. */
+    centre_next_window();
+    if (ImGui::BeginPopupModal(TITLE_DONE, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted(g_result_text);
+        ImGui::Separator();
+        if (ImGui::Button(LABEL_OK))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+    centre_next_window();
+    if (ImGui::BeginPopupModal(TITLE_FAILED, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted(g_result_text);
+        ImGui::Separator();
+        if (ImGui::Button(LABEL_OK))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    /*
+     * The overlay that says what is running. Not a modal: the work blocks this
+     * thread the moment this frame is on screen, so there is nothing to keep
+     * anyone out of. Drawing it is what lets the work start.
+     */
+    if (g_pending != ACT_NONE) {
+        centre_next_window();
+        ImGui::Begin(BUSY_ID, NULL, OVERLAY_FLAGS);
+        ImGui::TextUnformatted(g_busy_text);
+        ImGui::End();
+        g_pending_drawn = 1;
+    }
+}
+
+/* ---- Startup ----------------------------------------------------------- */
 
 /*
  * Where Dear ImGui keeps its settings. It holds on to the pointer for as long
@@ -106,64 +782,6 @@ static const char *ini_path(void)
     return path;
 }
 
-/* The catalogue as a table, one row per tab, the columns `list` prints. */
-static void draw_tab_table(void)
-{
-    size_t i;
-
-    if (!ImGui::BeginTable(TABLE_ID, 4, TABLE_FLAGS, ImGui::GetContentRegionAvail()))
-        return;
-
-    /* The two fixed-width columns hold values of a known size; the two that
-     * carry free text share whatever is left. */
-    ImGui::TableSetupColumn(COL_CODE, ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupColumn(COL_NAME, ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn(COL_AUTHORS, ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn(COL_DATE, ImGuiTableColumnFlags_WidthFixed);
-    ImGui::TableSetupScrollFreeze(0, 1);   /* the header stays put */
-    ImGui::TableHeadersRow();
-
-    for (i = 0; i < g_digest->tab_count; i++) {
-        const npp_tab *tab = &g_digest->tabs[i];
-        char code[DIGEST_CODE_BUF], date[DIGEST_DATE_BUF];
-
-        digest_code_upper(code, sizeof code, tab->code);
-        digest_date_short(date, sizeof date, tab->date);
-
-        ImGui::TableNextRow();
-        ImGui::TableSetColumnIndex(0);
-        ImGui::TextUnformatted(code);
-        ImGui::TableSetColumnIndex(1);
-        ImGui::TextUnformatted(tab->name ? tab->name : "");
-        ImGui::TableSetColumnIndex(2);
-        ImGui::TextUnformatted(tab->authors ? tab->authors : "");
-        ImGui::TableSetColumnIndex(3);
-        ImGui::TextUnformatted(date);
-    }
-    ImGui::EndTable();
-}
-
-/* The one window, filling the viewport however the frame has been resized. */
-static void draw_panel(void)
-{
-    const ImGuiViewport *viewport = ImGui::GetMainViewport();
-
-    /* Set every frame rather than once: this is what follows a resize. */
-    ImGui::SetNextWindowPos(viewport->WorkPos);
-    ImGui::SetNextWindowSize(viewport->WorkSize);
-    ImGui::Begin(PANEL_ID, NULL, PANEL_FLAGS);
-
-    if (g_digest) {
-        ImGui::Text("%u custom tab(s) available.", (unsigned)g_digest->tab_count);
-        ImGui::Separator();
-        draw_tab_table();
-    } else {
-        ImGui::TextWrapped("%s", g_error);
-    }
-
-    ImGui::End();
-}
-
 int main(int argc, char **argv)
 {
     GLFWwindow *window;
@@ -174,6 +792,7 @@ int main(int argc, char **argv)
 
     plat_init();
     load_digest();
+    refresh_rows();
 
     glfwSetErrorCallback(on_glfw_error);
     if (!glfwInit()) {
@@ -221,11 +840,17 @@ int main(int argc, char **argv)
             continue;
         }
 
+        /* Whatever the last frame asked for, now that it has been seen. */
+        run_pending();
+        if ((long long)time(NULL) - g_rows_stamp >= REFRESH_SECONDS)
+            refresh_rows();
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
         draw_panel();
+        draw_dialogs();
 
         ImGui::Render();
         {
@@ -247,5 +872,7 @@ int main(int argc, char **argv)
     glfwDestroyWindow(window);
     glfwTerminate();
     digest_free(g_digest);
+    free(g_rows);
+    free(g_order);
     return 0;
 }

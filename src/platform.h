@@ -137,6 +137,14 @@ int plat_is_dir(const char *path);
 int plat_is_file(const char *path);
 
 /*
+ * When `path` was last written, as a Unix timestamp in UTC. Returns 0 on
+ * success, -1 when the file cannot be reached at all. The savefiles are dated
+ * this way rather than by anything we record, so a tab played through the game
+ * still shows the day it was played.
+ */
+int plat_file_mtime(const char *path, long long *out);
+
+/*
  * Names of the entries in a directory, sorted, without "." and "..".
  * Returns 0 on success, -1 if the directory cannot be read.
  */

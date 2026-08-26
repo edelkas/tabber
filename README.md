@@ -9,6 +9,7 @@ has just been started now that the command line side is complete.
 - [Table of contents](#table-of-contents)
 - [Building](#building)
 - [The graphical front-end](#the-graphical-front-end)
+   * [When a tab was last played](#when-a-tab-was-last-played)
 - [Usage](#usage)
 - [Tests](#tests)
 - [Layout](#layout)
@@ -87,23 +88,64 @@ but not a separate copy of the tool: it links the same objects the CLI is built
 from, so everything below the presentation is the code `tabber` runs. The
 headers in `src/` carry `extern "C"` for it.
 
-So far it draws one window, filling the viewport whatever size the frame is
-dragged to, holding the catalogue of custom tabs in the four columns `list`
-prints — `CODE`, `NAME`, `AUTHOR(S)` and `RELEASED`. The column names and the
-two cells that are not shown as stored (the code goes up, the date keeps its
-`YYYY-MM-DD` part) live in `digest.h` and are shared, so the two front-ends
-cannot drift apart. The catalogue is refreshed and loaded before the window
-opens, exactly as `list` does it, and a refresh that fails still leaves the
-cached copy on screen. Dear ImGui's own settings go in the
+It draws one window, filling the viewport whatever size the frame is dragged
+to. At the top, a button that refreshes the catalogue — `update`, in so many
+words — and when the copy on disk was last written. Below it, every custom tab
+in a sortable table: the four columns `list` prints, plus two the CLI has no
+use for.
+
+| Column | |
+| --- | --- |
+| `CODE` `NAME` `AUTHOR(S)` `RELEASED` | What `list` prints, from the same headers |
+| `LAST USED` | When the tab was last played, in words: `3 days ago`, `Never` |
+| `INSTALL` | One button, saying what can be done to this tab and doing it |
+
+The column names and the two cells that are not shown as stored (the code goes
+up, the date keeps its `YYYY-MM-DD` part) live in `digest.h` and are shared, so
+the two front-ends cannot drift apart. Clicking a header sorts by it; the order,
+the column widths and the window's own settings are remembered in the
 [tool's folder](#where-tabber-keeps-its-files) rather than in whichever
 directory the program was started from.
 
-Two things it does not do yet. The digest is fetched on the way up, so a slow
-network delays the window rather than filling it in behind a loaded frame. And
+The button in each row is the tab's state: **Download** when its files are not
+in the store, green **Install** when they are, red **Uninstall** for the one
+that is in the game. Each runs the call the matching command runs. Installing
+over another tab is the one case the CLI refuses and this does not: it asks
+first, and on a yes uninstalls the other one before installing this one. Either
+way the outcome is a dialog — what happened, or why it did not.
+
+None of that is believed for longer than five minutes. Whether a tab is
+downloaded, which one is installed and when each was last played can all change
+without tabber being told: the game rewrites the savefile as it is played, and
+the CLI can install something from another window. So the whole table is worked
+out again on a timer, and after anything this program does.
+
+Two things it does not do yet. **The work runs on the drawing thread**, so a
+download or an install freezes the window until it finishes — the frame before
+it draws an overlay saying what is running, which is a caption on the problem
+rather than a fix. Moving it to a worker is the next thing this file needs. And
 the built-in font is ProggyClean, which covers Latin and little else: a tab
 whose author writes their name in anything further out gets `?` where the CLI
 prints the character. Fixing that means bundling a font, which is a decision
 about size and licence rather than about code.
+
+### When a tab was last played
+
+Nothing records this. The game does not tell us and tabber only ever sees the
+moments a tab went in or came out, so what `src/usage.c` reads instead is the
+savefile, which the game rewrites every time it is played. Which file that is
+depends on where the tab stands:
+
+| The tab is | Dated by |
+| --- | --- |
+| installed | the live savefile, `nprofile.gz` or `nprofile` — it is this tab's for as long as the tab is in place |
+| uninstalled | `uninstall_date` in `config.json`: when its save stopped being the live one |
+| uninstalled, with nothing written down | `nprofile_<code>.zip`, the archive that uninstall left — which is what a tab one of the [older installers](#the-older-installers) handled looks like |
+
+A tab with none of those has never been played, which is a real answer rather
+than a missing one. An installed tab with no savefile at all falls back to its
+`install_date`: the game has not been run since, so the install is the most
+recent thing that happened to it.
 
 Both libraries are vendored under `vendor/` and compiled from source along with
 everything else, rather than linked against a prebuilt `glfw3.lib`. A static
@@ -241,8 +283,9 @@ cover. The suite covers the tool, not the
 is not something this suite is built to judge. What it does cover is everything
 the front-end shares with the CLI, which is deliberately most of it — the
 column headers and the two cells a listing reshapes are in `digest.c` for that
-reason, and are checked there. What stands in for the rest is that both
-architectures compile and run it.
+reason, the timestamps it shows are in `util.c`, and working out when a tab was
+last played is `usage.c`, all three checked there. What stands in for the rest
+is that both architectures compile and run it.
 
 ## Layout
 
@@ -253,6 +296,7 @@ architectures compile and run it.
 | `src/digest.c/.h`| The custom tab catalogue: fetch, cache, parse, look up, and the columns both front-ends list it in |
 | `src/tabs.c/.h`  | Downloading, verifying and unpacking a custom tab |
 | `src/install.c/.h` | Installing a custom tab into the game |
+| `src/usage.c/.h` | When each tab was last played, read off whichever savefile is its own |
 | `src/patch.c/.h` | Redirecting the game's server queries, the developer credit, and the library health check |
 | `src/palettes.c/.h` | The palettes a tab bundles: names, the game's limit, copying them in and out |
 | `src/loc.c/.h`   | The game's own texts (`loc.txt`): replacing them per language, and putting them back |
@@ -271,7 +315,7 @@ architectures compile and run it.
 | `src/md5.c/.h`   | MD5 digest (RFC 1321), for download integrity |
 | `src/net.c/.h`   | HTTPS client: WinHTTP on Windows, libcurl elsewhere |
 | `src/platform.c/.h` | OS abstraction: filesystem, environment, Windows registry, UTF-8 paths, the tool's own folder |
-| `src/util.c/.h`  | Allocation, string, buffer and error helpers |
+| `src/util.c/.h`  | Allocation, string, buffer, timestamp and error helpers |
 | `src/version.h`  | Program name and version |
 | `src/resource.h` | Files built into the binary |
 | `src/resource_save.c` | The fresh savefile as bytes; generated, do not edit |
@@ -1211,4 +1255,4 @@ release.
 - [x] Bind several players' controls together (`bind` / `unbind`, or at the tab's request)
 - [x] Update tabber itself from GitHub Releases (`upgrade`)
 - [ ] Optional extras
-- [ ] Dear ImGui front-end (started: the catalogue is on screen; the commands are not)
+- [ ] Dear ImGui front-end (started: the catalogue, and download / install / uninstall)

@@ -11,9 +11,9 @@ so is expected to pass exactly the same checks.
 | File | Covers |
 | --- | --- |
 | `test_main.c` | The harness, the scratch-world helpers and the shared fixtures |
-| `test_core.c` | Strings, buffers, path handling, canonical paths, tab listing columns, JSON, KeyValues, MD5 |
+| `test_core.c` | Strings, buffers, path handling, canonical paths, tab listing columns, timestamps, JSON, KeyValues, MD5 |
 | `test_archive.c` | ZIP reading and writing, DEFLATE both ways, gzip, CRC verification, corruption, unsafe entry names |
-| `test_state.c` | `config.json` round trips and lifecycle, server resolution, URI budget, the server health check |
+| `test_state.c` | `config.json` round trips and lifecycle, server resolution, URI budget, the server health check, when a tab was last played |
 | `test_save.c` | Archiving and swapping the savefile in both its forms, and its copies in Steam Cloud |
 | `test_palettes.c` | The baked palette names, collisions, the game's 256 limit, and copying palettes in and out |
 | `test_loc.c` | The game's own texts: which languages are written, the state record, restoring, and the ones the old installer left behind |

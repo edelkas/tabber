@@ -24,7 +24,7 @@ rem with the 64-bit ones sitting in build\, and neither are the executables.
 set "OUTDIR=build"
 if /i "%ARCH%"=="x86" set "OUTDIR=build\x86"
 
-set "LIBSRC=src\util.c src\platform.c src\resource_save.c src\kv.c src\json.c src\net.c src\md5.c src\inflate.c src\deflate.c src\zip.c src\gzip.c src\paths.c src\digest.c src\config.c src\tabs.c src\server.c src\patch.c src\save.c src\cloud.c src\palettes.c src\loc.c src\keys.c src\install.c src\update.c"
+set "LIBSRC=src\util.c src\platform.c src\resource_save.c src\kv.c src\json.c src\net.c src\md5.c src\inflate.c src\deflate.c src\zip.c src\gzip.c src\paths.c src\digest.c src\config.c src\tabs.c src\server.c src\patch.c src\save.c src\cloud.c src\palettes.c src\loc.c src\keys.c src\install.c src\usage.c src\update.c"
 set "SOURCES=src\main.c %LIBSRC%"
 set "TESTSRC=test\test_main.c test\test_core.c test\test_archive.c test\test_state.c test\test_save.c test\test_palettes.c test\test_loc.c test\test_keys.c test\test_update.c test\test_game.c test\test_online.c test\fixture_zip.c"
 set "CFLAGS=/nologo /W4 /O2 /std:c11 /D_CRT_SECURE_NO_WARNINGS"

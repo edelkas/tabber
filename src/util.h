@@ -64,6 +64,29 @@ void time_now_iso8601(char *out, size_t outsz);
  */
 void time_ago_iso8601(int hours, char *out, size_t outsz);
 
+/*
+ * Back the other way: a timestamp in that format as a Unix time in UTC, or 0
+ * when it is not one. Anything after the seconds is ignored, so the fractional
+ * stamps some digests carry parse the same as ours.
+ */
+long long time_from_iso8601(const char *iso);
+
+/* Longest string the two below write, terminator included. */
+#define TB_WHEN_LEN 32
+
+/*
+ * How long ago `when` was, for reading rather than sorting: "just now", "5
+ * minutes ago", "3 days ago". `now` is passed in rather than read from the
+ * clock so a caller stamping a whole list gets one consistent answer, and so
+ * this can be tested. A `when` of 0, or one in the future, gives `never`,
+ * which may be NULL for an empty string.
+ */
+void time_relative(long long when, long long now, const char *never,
+                   char *out, size_t outsz);
+
+/* A local date and time, "YYYY-MM-DD HH:MM", for showing an exact moment. */
+void time_local_stamp(long long when, char *out, size_t outsz);
+
 /* ---- Growable list of owned strings ------------------------------------ */
 
 typedef struct {
