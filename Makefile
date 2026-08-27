@@ -130,7 +130,8 @@ ifeq ($(OS),Windows_NT)
   GLFWSRC += win32_init.c win32_joystick.c win32_module.c win32_monitor.c \
              win32_thread.c win32_time.c win32_window.c wgl_context.c
   GUIDEFS := -D_GLFW_WIN32 -DUNICODE -D_UNICODE
-  GUILIBS := -lopengl32 -lgdi32 -lshell32 -luser32
+  # dwmapi: DwmFlush paces the frames here; see "Pacing the frames" in main.cpp.
+  GUILIBS := -lopengl32 -lgdi32 -lshell32 -luser32 -ldwmapi
   # -mwindows: a windowed program, so no console is opened alongside it.
   GUILINK := -mwindows
 else ifeq ($(UNAME_S),Darwin)

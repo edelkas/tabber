@@ -59,7 +59,8 @@ set "GUIFLAGS=/nologo /W4 /O2 /utf-8 /EHsc /D_CRT_SECURE_NO_WARNINGS %GUIINC%"
 rem Vendored code is compiled quietly: its warnings are upstream's to fix, and
 rem at /W4 they would bury ours. Our own GUI code stays at /W4 like the rest.
 set "VENDORFLAGS=/nologo /W1 /O2 /utf-8 /EHsc /D_CRT_SECURE_NO_WARNINGS /D_GLFW_WIN32 /DUNICODE /D_UNICODE %GUIINC%"
-set "GUILIBS=opengl32.lib gdi32.lib user32.lib shell32.lib"
+rem dwmapi: DwmFlush paces the frames on Windows; see "Pacing the frames".
+set "GUILIBS=opengl32.lib gdi32.lib user32.lib shell32.lib dwmapi.lib"
 
 rem A windowed program, so no console is opened alongside it. mainCRTStartup is
 rem the console entry point: naming it keeps plain main() and its argv, which

@@ -16,6 +16,11 @@
  * dragging the window, pulling on its edges — are done by hand under "The
  * window's own frame" below.
  *
+ * A frame is drawn when there is a reason to draw one — an event, or the
+ * timer under IDLE_SECONDS below — and the loop sleeps between them rather
+ * than redrawing an unchanging window sixty times a second. What it sleeps in
+ * is worth a look too: see "Pacing the frames".
+ *
  * The work happens on this thread, so a download or an install freezes the
  * window while it runs. What the frame before it draws is a "working" overlay,
  * so at least the reason is on screen; moving it off the main thread is the
@@ -53,7 +58,21 @@ static const int   WINDOW_WIDTH      = 800;
 static const int   WINDOW_HEIGHT     = 400;
 static const int   GL_VERSION_MAJOR  = 3;
 static const int   GL_VERSION_MINOR  = 2;
-static const int   SWAP_INTERVAL     = 1;  /* vsync: an idle GUI must not spin */
+static const int   SWAP_INTERVAL     = 1;  /* vsync, where the driver is trusted with it */
+
+/*
+ * Waiting instead of spinning. With nothing happening the loop sleeps until
+ * something does, waking on its own every IDLE_SECONDS to notice what changes
+ * without an event to announce it — the savefile the game rewrites, and the
+ * clock LAST USED counts from.
+ *
+ * SETTLE_FRAMES is how many frames follow the last thing that happened. Dear
+ * ImGui answers a click over the frames after the one that received it, and
+ * the work a click asks for only starts once the overlay saying so has been
+ * drawn, so a woken loop owes a few frames before it may sleep again.
+ */
+static const double IDLE_SECONDS  = 0.25;
+static const int    SETTLE_FRAMES = 3;
 
 /*
  * The window wears no frame of its own: GLFW is asked for an undecorated one
@@ -1149,6 +1168,50 @@ static void draw_dialogs(void)
     }
 }
 
+/* ---- Pacing the frames --------------------------------------------------
+ *
+ * A swap interval of 1 hands the wait for the display's next refresh to the
+ * graphics driver, and not every driver sleeps through that wait. Intel's
+ * OpenGL driver polls for it instead, which costs a whole core to put sixty
+ * unchanging frames on screen. GLFW knows the trick — see swapBuffersWGL in
+ * vendor/glfw/src/wgl_context.c — but keeps it for Windows 7 and older, and
+ * hands the interval to the driver on anything newer.
+ *
+ * So on Windows the interval is left at zero and DwmFlush does the waiting.
+ * It blocks on the compositor's next vertical blank and burns nothing while
+ * it waits. It does want a compositor, which a remote session can be without;
+ * should it ever fail, the interval goes back on and the driver has the job
+ * again, spin and all — a warm laptop beats a window that never draws.
+ */
+
+#ifdef _WIN32
+/* Declared here rather than by including <dwmapi.h>, which would bring in
+ * windows.h and the macros it carries into every name in this file. */
+extern "C" __declspec(dllimport) long __stdcall DwmFlush(void);
+static int g_dwm_paces = 1;
+#endif
+
+/* Which of the two is pacing this window. Called once, before the first frame. */
+static void start_pacing(void)
+{
+#ifdef _WIN32
+    glfwSwapInterval(0);  /* DwmFlush below does the waiting instead */
+#else
+    glfwSwapInterval(SWAP_INTERVAL);
+#endif
+}
+
+/* Blocks until the display is ready for another frame. */
+static void pace_frame(void)
+{
+#ifdef _WIN32
+    if (g_dwm_paces && DwmFlush() < 0) {  /* < 0 is a failed HRESULT */
+        g_dwm_paces = 0;
+        glfwSwapInterval(SWAP_INTERVAL);
+    }
+#endif
+}
+
 /* ---- Startup ----------------------------------------------------------- */
 
 /*
@@ -1172,6 +1235,7 @@ int main(int argc, char **argv)
 {
     GLFWwindow *window;
     float scale;
+    int settle;
 
     (void)argc;
     (void)argv;
@@ -1216,7 +1280,7 @@ int main(int argc, char **argv)
                             (int)(MIN_HEIGHT * scale),
                             GLFW_DONT_CARE, GLFW_DONT_CARE);
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(SWAP_INTERVAL);
+    start_pacing();
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -1230,8 +1294,20 @@ int main(int argc, char **argv)
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(NULL);  /* NULL: pick the GLSL version to match */
 
+    settle = SETTLE_FRAMES;  /* the window has itself to draw for the first time */
     while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
+        if (settle > 0) {
+            settle--;
+            glfwPollEvents();
+        } else {
+            /* Nothing owed, so sleep in here until something arrives. An
+             * event that beats the timeout is something happening, and buys
+             * the frames it takes to answer. */
+            double waited = glfwGetTime();
+            glfwWaitEventsTimeout(IDLE_SECONDS);
+            if (glfwGetTime() - waited < IDLE_SECONDS)
+                settle = SETTLE_FRAMES;
+        }
         if (glfwGetWindowAttrib(window, GLFW_ICONIFIED)) {
             ImGui_ImplGlfw_Sleep(ICONIFIED_SLEEP_MS);
             continue;
@@ -1249,6 +1325,11 @@ int main(int argc, char **argv)
         draw_panel();
         draw_dialogs();
 
+        /* Anything still under way keeps the frames coming on its own: a held
+         * button or a dragged edge, and the click whose work has yet to run. */
+        if (ImGui::IsAnyItemActive() || g_pending != ACT_NONE)
+            settle = SETTLE_FRAMES;
+
         ImGui::Render();
         {
             int width, height;
@@ -1261,6 +1342,7 @@ int main(int argc, char **argv)
         }
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
+        pace_frame();
     }
 
     ImGui_ImplOpenGL3_Shutdown();

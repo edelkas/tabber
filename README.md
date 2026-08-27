@@ -10,6 +10,7 @@ has just been started now that the command line side is complete.
 - [Building](#building)
 - [The graphical front-end](#the-graphical-front-end)
    * [The window's frame](#the-windows-frame)
+   * [Pacing the frames](#pacing-the-frames)
    * [When a tab was last played](#when-a-tab-was-last-played)
 - [Usage](#usage)
 - [Tests](#tests)
@@ -183,6 +184,59 @@ What this does not get is the window manager's own gestures: no snapping to a
 screen half, and no system shadow. Doing better means a native hit test per
 platform — `WM_NCHITTEST` on Windows — rather than the portable arithmetic
 here.
+
+### Pacing the frames
+
+A Dear ImGui program draws the whole window every frame, which is cheap: at 60
+frames a second on an i5-7300U, all of tabber's own work — polling, working out
+the table, building the draw lists — comes to **0.42 ms** of the 16.7 ms a
+frame has. The rest is spent waiting for the display, and the waiting is where
+the cost was.
+
+`glfwSwapInterval(1)` hands that wait to the graphics driver. Intel's OpenGL
+driver does not sleep through it: it polls, about half in user code and half in
+the kernel, so the window cost **a whole core** to leave sixty identical frames
+on screen. Sampling the busy thread put 73% of it in `ntdll` and 26% in
+`win32u`, which is a syscall being asked the same question over and over. GLFW
+knows this trick — `vendor/glfw/src/wgl_context.c` paces windowed frames with
+`DwmFlush` rather than the swap interval — but only for Windows 7 and older;
+on anything newer the interval goes to the driver, which is where it is
+supposed to belong.
+
+Two changes, both in `gui/main.cpp`:
+
+| | |
+| --- | --- |
+| The wait sleeps | On Windows the swap interval is left at zero and `DwmFlush` does the waiting, blocking on the compositor's next vertical blank at no cost. Elsewhere the driver keeps the job, which elsewhere it does properly |
+| Frames are earned | The loop blocks in `glfwWaitEventsTimeout` until something happens, rather than redrawing an unchanging window. It wakes on its own four times a second, because the savefile and the clock behind `LAST USED` both change without an event to announce it |
+
+Measured idle, as a share of a four-thread machine:
+
+| | idle | while the pointer moves |
+| --- | --- | --- |
+| before | 26% | 26% |
+| `DwmFlush` alone | 6% | 6% |
+| both | **0.65%** | 6% |
+
+Waking is not quite the whole story: Dear ImGui answers a click over the frames
+*after* the one that received it, and a click here asks for work that only
+starts once the overlay naming it has been drawn. So a wake buys `SETTLE_FRAMES`
+frames rather than one, and anything still under way — a held button, a dragged
+edge, a click whose work has not run — keeps topping that up.
+
+`DwmFlush` wants a desktop compositor, which a remote session can be without.
+If it ever fails the swap interval goes back on and the driver has the job
+again, spin and all: a warm laptop beats a window that never draws.
+
+One more thing worth writing down, found while working out why a sibling
+project on the same libraries and the same driver did not have this problem. It
+asks for an OpenGL 3.0 context and no profile; tabber asks for 3.2 core,
+because that is the floor the Dear ImGui backend documents and the oldest core
+profile macOS will hand out. On this driver the compatibility path *blocks*
+where the core path spins — the same program, changing nothing but the context
+hint, idles at 11% of a core instead of 105%. That is the driver's business
+rather than ours, and pacing the frames ourselves makes it moot, but it is
+worth knowing that the two paths through a driver need not behave alike.
 
 ### When a tab was last played
 
