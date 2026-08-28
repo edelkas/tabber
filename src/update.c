@@ -60,15 +60,30 @@ int update_version_compare(const char *a, const char *b)
 
 /* ---- The manifest ------------------------------------------------------ */
 
-/* The build for this platform: the exact key first, the bare system after. */
-static const json_value *build_for_us(const json_value *builds)
+/*
+ * The build for this platform and front-end: the exact key first, then the
+ * bare system, for a release that ships one build per system. The front-end's
+ * suffix is on both, so a GUI never falls back onto a CLI build. `key` comes
+ * back holding the exact one, which is what a message about a release that
+ * has nothing for us should name.
+ */
+static const json_value *build_for_us(const json_value *builds,
+                                      const char *flavour,
+                                      char *key, size_t keysz)
 {
-    const json_value *build = json_get(builds, UPDATE_BUILD_KEY);
+    char any[UPDATE_KEY_MAX];
+    const json_value *build;
 
-    return build ? build : json_get(builds, UPDATE_OS);
+    snprintf(key, keysz, "%s%s", UPDATE_BUILD_KEY, flavour);
+    build = json_get(builds, key);
+    if (build)
+        return build;
+    snprintf(any, sizeof any, "%s%s", UPDATE_OS, flavour);
+    return json_get(builds, any);
 }
 
-int update_manifest_parse(const char *text, update_info *info, char *err, size_t errsz)
+int update_manifest_parse(const char *text, const char *flavour,
+                          update_info *info, char *err, size_t errsz)
 {
     char sub[TB_ERR_LEN];
     json_value *root;
@@ -101,7 +116,8 @@ int update_manifest_parse(const char *text, update_info *info, char *err, size_t
      * knowing a newer version exists is the point — so a missing build leaves
      * `url` NULL rather than failing.
      */
-    build = build_for_us(json_get(root, UJK_BUILDS));
+    build = build_for_us(json_get(root, UJK_BUILDS), flavour,
+                         info->build, sizeof info->build);
     if (build) {
         info->url = str_dup(json_get_string(build, UJK_URL, NULL));
         info->size = (size_t)json_get_int(build, UJK_SIZE, 0);
@@ -109,9 +125,10 @@ int update_manifest_parse(const char *text, update_info *info, char *err, size_t
         snprintf(info->md5, sizeof info->md5, "%s", md5);
         if (info->url && (info->size == 0 || strlen(info->md5) != MD5_HEX_LEN)) {
             /* Half a description is worse than none: without both we cannot
-             * tell a good download from a bad one, so we will not take it. */
+             * tell a good download from a bad one, so we will not take it.
+             * The message is built before `info` is emptied below. */
             err_set(err, errsz, "the release manifest describes the %s build without a "
-                                "usable '%s' and '%s'", UPDATE_BUILD_KEY, UJK_SIZE, UJK_MD5);
+                                "usable '%s' and '%s'", info->build, UJK_SIZE, UJK_MD5);
             json_free(root);
             update_info_free(info);
             return -1;
@@ -122,7 +139,7 @@ int update_manifest_parse(const char *text, update_info *info, char *err, size_t
     return 0;
 }
 
-int update_check(update_info *info, char *err, size_t errsz)
+int update_check(const char *flavour, update_info *info, char *err, size_t errsz)
 {
     char *text = NULL;
     size_t len = 0;
@@ -132,7 +149,7 @@ int update_check(update_info *info, char *err, size_t errsz)
     if (net_fetch(UPDATE_MANIFEST_URL, &text, &len, err, errsz) != 0)
         return -1;
 
-    rc = update_manifest_parse(text, info, err, errsz);
+    rc = update_manifest_parse(text, flavour, info, err, errsz);
     free(text);
     return rc;
 }
@@ -225,7 +242,7 @@ int update_plan_build(const update_info *info, update_plan *plan, char *err, siz
 
     memset(plan, 0, sizeof(*plan));
     if (!info->url) {
-        err_set(err, errsz, "this release ships no build for %s", UPDATE_BUILD_KEY);
+        err_set(err, errsz, "this release ships no build for %s", info->build);
         return -1;
     }
     if (net_fetch(info->url, &data, &len, err, errsz) != 0)

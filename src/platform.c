@@ -596,6 +596,53 @@ int plat_restart(const char *exe, char *const *args, size_t count, int *status)
     return run_child(exe, args, count, status);
 }
 
+int plat_spawn_detached(const char *exe, char *const *args, size_t count)
+{
+    byte_buf line = {0};
+    char *utf8;
+    wchar_t *wexe, *wline;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    size_t i;
+    int rc = -1;
+
+    fflush(NULL);
+
+    append_arg(&line, exe);
+    for (i = 0; i < count; i++) {
+        buf_append(&line, " ", 1);
+        append_arg(&line, args[i]);
+    }
+    utf8 = buf_finish(&line, NULL);
+
+    wexe = wide_from_utf8(exe);
+    wline = wide_from_utf8(utf8);
+    free(utf8);
+    if (!wexe || !wline)
+        goto done;
+
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    memset(&pi, 0, sizeof pi);
+
+    /* No inherited handles and no console: nothing of this process is left
+     * holding the new one up once this one goes. */
+    if (!CreateProcessW(wexe, wline, NULL, NULL, FALSE, DETACHED_PROCESS,
+                        NULL, NULL, &si, &pi))
+        goto done;
+
+    /* Closing these does not end the process; it only says we are not
+     * watching it. */
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    rc = 0;
+
+done:
+    free(wexe);
+    free(wline);
+    return rc;
+}
+
 /* ====================================================================== */
 /*  POSIX (Linux, macOS)                                                  */
 /* ====================================================================== */
@@ -603,6 +650,7 @@ int plat_restart(const char *exe, char *const *args, size_t count, int *status)
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>          /* FD_CLOEXEC, for the spawn that reports itself */
 #include <limits.h>
 #include <pwd.h>
 #include <sys/stat.h>
@@ -900,6 +948,72 @@ int plat_restart(const char *exe, char *const *args, size_t count, int *status)
     execv(exe, argv);
     free(argv);
     return -1;
+}
+
+int plat_spawn_detached(const char *exe, char *const *args, size_t count)
+{
+    char **argv = build_argv(exe, args, count);
+    pid_t pid, grandchild;
+    int state = 0, told[2];
+    char note = 0;
+    ssize_t got;
+
+    fflush(NULL);
+
+    /*
+     * How the process that runs the program says it could not. The writing end
+     * closes of its own accord on a successful exec, so a read that ends
+     * without a byte is the good answer, and it is the only word this side
+     * gets from two forks away.
+     */
+    if (pipe(told) != 0) {
+        free(argv);
+        return -1;
+    }
+    fcntl(told[1], F_SETFD, FD_CLOEXEC);
+
+    pid = fork();
+    if (pid < 0) {
+        close(told[0]);
+        close(told[1]);
+        free(argv);
+        return -1;
+    }
+    if (pid == 0) {
+        close(told[0]);
+        /*
+         * Forked twice: the one that runs the program is orphaned onto init
+         * the moment its parent here exits, so nobody has to wait for it —
+         * and the caller, which is about to leave, is not its parent.
+         */
+        grandchild = fork();
+        if (grandchild == 0) {
+            setsid();               /* and out of this terminal's session */
+            execv(exe, argv);
+            note = 1;               /* only reached when it will not run */
+            if (write(told[1], &note, 1) < 0) {
+                /* Nothing left to tell, and nothing to be done about it. */
+            }
+            _exit(127);
+        }
+        _exit(grandchild < 0 ? 127 : 0);
+    }
+
+    close(told[1]);
+    free(argv);
+
+    /* The middle process is gone at once either way; what it exits with says
+     * whether the fork that mattered was made at all. */
+    if (waitpid(pid, &state, 0) < 0 ||
+        !WIFEXITED(state) || WEXITSTATUS(state) != 0) {
+        close(told[0]);
+        return -1;
+    }
+
+    /* Waits only as long as it takes the program to start, or to fail to. */
+    got = read(told[0], &note, 1);
+    close(told[0]);
+    return got > 0 ? -1 : 0;
 }
 
 #endif /* _WIN32 */

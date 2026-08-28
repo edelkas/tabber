@@ -326,6 +326,24 @@ void config_update_decline(config *cfg, const char *version)
                     version ? json_new_string(version) : json_new_null());
 }
 
+void config_update_applied(config *cfg, const char *version)
+{
+    json_object_set(update_record(cfg, 1), CJK_APPLIED,
+                    version ? json_new_string(version) : json_new_null());
+}
+
+const char *config_update_unannounced(config *cfg)
+{
+    const char *applied = json_get_string(update_record(cfg, 0), CJK_APPLIED, NULL);
+
+    return applied && applied[0] ? applied : NULL;
+}
+
+void config_update_announced(config *cfg)
+{
+    json_object_set(update_record(cfg, 1), CJK_APPLIED, json_new_null());
+}
+
 int config_get_palettes(config *cfg, const char *code, str_list *out)
 {
     const json_value *array = json_get(config_find_tab(cfg, code), CJK_PALETTES);

@@ -21,6 +21,16 @@
 #include "util.h"
 #include "version.h"
 
+/*
+ * How long the child of the handover test takes before it leaves its mark, and
+ * how long this side is willing to wait for it. The delay only has to outlast
+ * the call that started it, which is a fork and a wait; the patience only has
+ * to outlast a loaded machine starting a process.
+ */
+#define SPAWN_DELAY_MS    400
+#define SPAWN_POLL_MS     100
+#define SPAWN_WAIT_TRIES  100
+
 /* A manifest naming a build for whatever platform the suite is running on. */
 #define MANIFEST_FMT \
     "{\n" \
@@ -39,6 +49,15 @@
     "{ \"version\": \"99.0.0\", \"builds\": { \"%s\": " \
     "{ \"url\": \"https://example.invalid/tabber\", \"size\": 12, " \
     "\"md5\": \"0123456789abcdef0123456789abcdef\" } } }"
+
+/* A release as one really is: a build for each front-end, side by side. */
+#define PAIRED_MANIFEST \
+    "{ \"version\": \"99.0.0\", \"builds\": {" \
+    " \"" UPDATE_BUILD_KEY "\": { \"url\": \"https://example.invalid/cli\"," \
+    " \"size\": 12, \"md5\": \"0123456789abcdef0123456789abcdef\" }," \
+    " \"" UPDATE_BUILD_KEY UPDATE_FLAVOUR_GUI "\": " \
+    "{ \"url\": \"https://example.invalid/gui\"," \
+    " \"size\": 34, \"md5\": \"fedcba9876543210fedcba9876543210\" } } }"
 
 /* ---- Versions ---------------------------------------------------------- */
 
@@ -118,7 +137,7 @@ static void test_build_key(void)
      * that took the 64-bit binary would replace itself with one that cannot run.
      */
     text = str_fmt(KEYED_MANIFEST_FMT, UPDATE_OS "-etchasketch");
-    if (CHECK(update_manifest_parse(text, &info, err, sizeof err) == 0,
+    if (CHECK(update_manifest_parse(text, UPDATE_FLAVOUR_CLI, &info, err, sizeof err) == 0,
               "a release built for another architecture parses (%s)", err)) {
         CHECK(info.newer, "the newer version is known");
         CHECK(info.url == NULL, "but its build is not taken for ours");
@@ -128,9 +147,79 @@ static void test_build_key(void)
 
     /* The bare system still stands in, for a release with one build per OS. */
     text = str_fmt(KEYED_MANIFEST_FMT, UPDATE_OS);
-    if (CHECK(update_manifest_parse(text, &info, err, sizeof err) == 0,
+    if (CHECK(update_manifest_parse(text, UPDATE_FLAVOUR_CLI, &info, err, sizeof err) == 0,
               "a release keyed by the bare system parses (%s)", err)) {
         CHECK(info.url != NULL, "and its build stands in for ours");
+        update_info_free(&info);
+    }
+    free(text);
+}
+
+/* ---- Which front-end is asking ----------------------------------------- */
+
+/*
+ * A release ships a build per front-end, and taking the wrong one is the
+ * quietest failure there is: a download that verifies against the size and the
+ * MD5 it was promised, installs cleanly, and turns out to be the other
+ * program. So each front-end asks for its own key and takes nothing else.
+ */
+static void test_front_end_keys(void)
+{
+    char err[TB_ERR_LEN];
+    update_info info;
+    char *text;
+
+    test_case("each front-end is offered its own build and no other");
+
+    CHECK_STR(UPDATE_FLAVOUR_CLI, "", "the CLI's key is the bare platform");
+    CHECK(sizeof(UPDATE_BUILD_KEY UPDATE_FLAVOUR_GUI) <= UPDATE_KEY_MAX,
+          "and the longest key either of them asks for fits the buffer");
+
+    if (CHECK(update_manifest_parse(PAIRED_MANIFEST, UPDATE_FLAVOUR_CLI, &info,
+                                    err, sizeof err) == 0,
+              "a release with a build for each parses (%s)", err)) {
+        CHECK_STR(info.url, "https://example.invalid/cli", "the CLI takes the CLI's");
+        CHECK_STR(info.build, UPDATE_BUILD_KEY, "and says which key it looked under");
+        update_info_free(&info);
+    }
+    if (CHECK(update_manifest_parse(PAIRED_MANIFEST, UPDATE_FLAVOUR_GUI, &info,
+                                    err, sizeof err) == 0,
+              "...and parses the same for the front-end (%s)", err)) {
+        CHECK_STR(info.url, "https://example.invalid/gui",
+                  "the front-end takes the front-end's");
+        CHECK_STR(info.build, UPDATE_BUILD_KEY UPDATE_FLAVOUR_GUI,
+                  "under the key that carries its suffix");
+        CHECK_NUM(info.size, 34, "with that build's size, not the other's");
+        update_info_free(&info);
+    }
+
+    /* A release from before the front-end existed has a build for this
+     * platform, and it is not one the front-end may install over itself. */
+    text = str_fmt(KEYED_MANIFEST_FMT, UPDATE_BUILD_KEY);
+    if (CHECK(update_manifest_parse(text, UPDATE_FLAVOUR_GUI, &info,
+                                    err, sizeof err) == 0,
+              "a release with only a CLI build parses (%s)", err)) {
+        CHECK(info.newer, "the newer version is still known");
+        CHECK(info.url == NULL, "but the CLI's build is not taken for the front-end's");
+        update_info_free(&info);
+    }
+    free(text);
+
+    /* The bare-system fallback carries the suffix too, both ways round. */
+    text = str_fmt(KEYED_MANIFEST_FMT, UPDATE_OS UPDATE_FLAVOUR_GUI);
+    if (CHECK(update_manifest_parse(text, UPDATE_FLAVOUR_GUI, &info,
+                                    err, sizeof err) == 0,
+              "a front-end build keyed by the bare system parses (%s)", err)) {
+        CHECK(info.url != NULL, "and stands in for the front-end's");
+        update_info_free(&info);
+    }
+    free(text);
+
+    text = str_fmt(KEYED_MANIFEST_FMT, UPDATE_OS);
+    if (CHECK(update_manifest_parse(text, UPDATE_FLAVOUR_GUI, &info,
+                                    err, sizeof err) == 0,
+              "a CLI build keyed by the bare system parses (%s)", err)) {
+        CHECK(info.url == NULL, "and does not stand in for the front-end's");
         update_info_free(&info);
     }
     free(text);
@@ -148,7 +237,7 @@ static void test_manifest(void)
 
     text = str_fmt(MANIFEST_FMT, "99.0.0", "99.0.0", 12UL,
                    "0123456789abcdef0123456789abcdef");
-    if (CHECK(update_manifest_parse(text, &info, err, sizeof err) == 0,
+    if (CHECK(update_manifest_parse(text, UPDATE_FLAVOUR_CLI, &info, err, sizeof err) == 0,
               "the manifest parses (%s)", err)) {
         CHECK_STR(info.version, "99.0.0", "the version is read");
         CHECK_STR(info.date, "2026-09-01T12:00:00Z", "so is the date");
@@ -163,7 +252,7 @@ static void test_manifest(void)
     /* The same release, but the one already installed. */
     text = str_fmt(MANIFEST_FMT, TABBER_VERSION, TABBER_VERSION, 12UL,
                    "0123456789abcdef0123456789abcdef");
-    if (CHECK(update_manifest_parse(text, &info, err, sizeof err) == 0,
+    if (CHECK(update_manifest_parse(text, UPDATE_FLAVOUR_CLI, &info, err, sizeof err) == 0,
               "a manifest of the running version parses (%s)", err)) {
         CHECK(!info.newer, "and is not newer than itself");
         update_info_free(&info);
@@ -172,19 +261,20 @@ static void test_manifest(void)
 
     test_case("...and a manifest that cannot be trusted is refused");
 
-    CHECK(update_manifest_parse("{ not json", &info, err, sizeof err) != 0,
+    CHECK(update_manifest_parse("{ not json", UPDATE_FLAVOUR_CLI, &info, err, sizeof err) != 0,
           "something that is not JSON is refused");
-    CHECK(update_manifest_parse("{ \"notes\": \"hi\" }", &info, err, sizeof err) != 0,
+    CHECK(update_manifest_parse("{ \"notes\": \"hi\" }", UPDATE_FLAVOUR_CLI,
+                                &info, err, sizeof err) != 0,
           "so is one that names no version");
 
     /* A build with no size or no hash cannot be checked, so it is not taken. */
     text = str_fmt(MANIFEST_FMT, "99.0.0", "99.0.0", 0UL,
                    "0123456789abcdef0123456789abcdef");
-    CHECK(update_manifest_parse(text, &info, err, sizeof err) != 0,
+    CHECK(update_manifest_parse(text, UPDATE_FLAVOUR_CLI, &info, err, sizeof err) != 0,
           "a build with no size is refused");
     free(text);
     text = str_fmt(MANIFEST_FMT, "99.0.0", "99.0.0", 12UL, "tooshort");
-    CHECK(update_manifest_parse(text, &info, err, sizeof err) != 0,
+    CHECK(update_manifest_parse(text, UPDATE_FLAVOUR_CLI, &info, err, sizeof err) != 0,
           "and so is one with no usable MD5");
     free(text);
 
@@ -192,7 +282,7 @@ static void test_manifest(void)
 
     if (CHECK(update_manifest_parse(
                   "{ \"version\": \"99.0.0\", \"builds\": { \"vic20\": {} } }",
-                  &info, err, sizeof err) == 0,
+                  UPDATE_FLAVOUR_CLI, &info, err, sizeof err) == 0,
               "a manifest with no build for us parses (%s)", err)) {
         CHECK(info.newer, "the newer version is still known");
         CHECK(info.url == NULL, "but there is nothing to download");
@@ -421,6 +511,56 @@ static void test_undo(void)
     world_free(&w);
 }
 
+/* ---- Handing over ------------------------------------------------------ */
+
+/*
+ * What a windowed front-end does at the end of an update: start the binary
+ * that has just replaced it and go, rather than wait for it. Waiting is what
+ * this has to be told apart from, so the child takes a moment before it leaves
+ * its mark — a parent that waited could not still be here to look.
+ */
+static void test_handover(void)
+{
+    char *dir = test_dir("update_spawn");
+    char *mark = path_join(dir, "the-child-was-here");
+    char *self = plat_exe_path();
+    char *args[3];
+    char delay[16];
+    int started, waited = 0, i;
+
+    test_case("the successor is started, and not waited for");
+    if (!CHECK(self != NULL, "the test binary knows where it is")) {
+        free(mark);
+        free(dir);
+        return;
+    }
+
+    snprintf(delay, sizeof delay, "%d", SPAWN_DELAY_MS);
+    args[0] = (char *)TEST_TOUCH_ARG;
+    args[1] = mark;
+    args[2] = delay;
+
+    started = plat_spawn_detached(self, args, 3);
+    CHECK(started == 0, "a process that exists starts");
+    CHECK(!plat_is_file(mark),
+          "and control comes back before it has done anything");
+
+    /* It still has to have really run: a spawn that quietly did nothing would
+     * pass the check above just as well. */
+    for (i = 0; i < SPAWN_WAIT_TRIES && !plat_is_file(mark); i++)
+        test_sleep_ms(SPAWN_POLL_MS);
+    waited = plat_is_file(mark);
+    CHECK(waited, "the child runs on and leaves its mark");
+
+    /* The one thing a caller that is about to exit can still act on. */
+    CHECK(plat_spawn_detached("no such program here", NULL, 0) != 0,
+          "a program that is not one is reported rather than assumed");
+
+    free(self);
+    free(mark);
+    free(dir);
+}
+
 /* ---- When to look ------------------------------------------------------ */
 
 static void test_when_to_check(void)
@@ -451,6 +591,16 @@ static void test_when_to_check(void)
         CHECK(!config_update_declined(cfg, "99.1.0"),
               "but only to that one: a later release asks again");
 
+        /*
+         * An update that went through is news the process that did it cannot
+         * give: it hands over to the binary it installed and exits. So it is
+         * left here for that one to find.
+         */
+        CHECK(config_update_unannounced(cfg) == NULL, "nothing is waiting to be told");
+        config_update_applied(cfg, "99.0.0");
+        CHECK_STR(config_update_unannounced(cfg), "99.0.0",
+                  "an update that went through is left for the next run to tell");
+
         /* All of it has to survive the trip through the file. */
         CHECK(config_save(cfg, err, sizeof err) == 0, "the state file saves (%s)", err);
         config_free(cfg);
@@ -459,6 +609,21 @@ static void test_when_to_check(void)
         if (CHECK(cfg != NULL, "and loads again (%s)", err)) {
             CHECK(!config_update_due(cfg, UPDATE_CHECK_HOURS), "the check is still fresh");
             CHECK(config_update_declined(cfg, "99.0.0"), "and the refusal is remembered");
+            CHECK_STR(config_update_unannounced(cfg), "99.0.0",
+                      "...as is the news, which is the point of writing it down");
+
+            config_update_announced(cfg);
+            CHECK(config_update_unannounced(cfg) == NULL,
+                  "telling it strikes it, so it is told once and not every run");
+            CHECK(config_save(cfg, err, sizeof err) == 0,
+                  "the state file saves again (%s)", err);
+            config_free(cfg);
+        }
+
+        cfg = config_load(err, sizeof err);
+        if (CHECK(cfg != NULL, "and loads a third time (%s)", err)) {
+            CHECK(config_update_unannounced(cfg) == NULL,
+                  "...and stays told, once that has been written down too");
             config_free(cfg);
         }
     }
@@ -473,11 +638,13 @@ void suite_update(void)
     test_suite("update");
     test_versions();
     test_build_key();
+    test_front_end_keys();
     test_manifest();
     test_swap();
     test_refusals();
     test_broken_binary_is_rolled_back();
     test_wrong_version_is_rolled_back();
     test_undo();
+    test_handover();
     test_when_to_check();
 }

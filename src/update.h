@@ -2,9 +2,9 @@
  * update.h - Updating tabber itself.
  *
  * Releases are published on GitHub, each carrying one plain executable per
- * platform and a manifest describing them all. The manifest lives at a fixed
- * URL that always redirects to the newest release, so checking for an update
- * is one small download:
+ * platform per front-end and a manifest describing them all. The manifest
+ * lives at a fixed URL that always redirects to the newest release, so
+ * checking for an update is one small download:
  *
  *   {
  *     "version": "0.3.0",
@@ -12,14 +12,22 @@
  *     "notes":   "What changed, in a line or three.",
  *     "page":    "https://github.com/edelkas/tabber/releases/tag/v0.3.0",
  *     "builds":  {
- *       "windows-x64": { "url": "https://.../tabber-windows-x64.exe",
- *                        "size": 371712, "md5": "..." }
+ *       "windows-x64":     { "url": "https://.../tabber-cli-windows-x64.exe",
+ *                            "size": 371712, "md5": "..." },
+ *       "windows-x64-gui": { "url": "https://.../tabber-gui-windows-x64.exe",
+ *                            "size": 1143296, "md5": "..." }
  *     }
  *   }
  *
  * The build is looked up by platform and architecture ("windows-x64"), falling
  * back to the platform alone ("windows") for a release that ships one build
  * per system. A manifest that names no build we can run is not an update.
+ *
+ * Which of the two front-ends is asking is part of that key: they are separate
+ * programs and each replaces itself, so the caller says which it is (see
+ * UPDATE_FLAVOUR_CLI and UPDATE_FLAVOUR_GUI). Asking is not optional, because
+ * the failure it prevents is a quiet one — a program that verifies a download
+ * perfectly, installs it, and finds it has become the other front-end.
  *
  * Applying one rests on a single fact: a running executable cannot be written
  * to or deleted, but it can be *renamed*, on Windows as much as on Unix. So
@@ -90,6 +98,18 @@ extern "C" {
 
 #define UPDATE_BUILD_KEY UPDATE_OS "-" UPDATE_ARCH
 
+/*
+ * ...and which front-end of it. A release ships a CLI and a GUI build for each
+ * platform, keyed apart by this: the CLI's build key is the bare platform, the
+ * GUI's carries the suffix. Passed to update_check and update_manifest_parse
+ * so that a program can only be offered the build it is.
+ */
+#define UPDATE_FLAVOUR_CLI   ""
+#define UPDATE_FLAVOUR_GUI   "-gui"
+
+/* Room for the longest of those keys, with the suffix and the terminator. */
+#define UPDATE_KEY_MAX       32
+
 /* How long a check stays good, so ordinary commands are not held up by one. */
 #define UPDATE_CHECK_HOURS   24
 
@@ -131,19 +151,22 @@ typedef struct {
     char *page;                   /* release page, may be NULL              */
     char *url;                    /* the build for this platform, NULL when
                                      the release ships none we can run      */
+    char build[UPDATE_KEY_MAX];   /* the key it was looked for under        */
     char md5[MD5_HEX_LEN + 1];
     size_t size;
     int newer;                    /* newer than the running version         */
 } update_info;
 
 /*
- * Reads a manifest. Returns 0 and fills `info` (release it with
- * update_info_free), or -1 with a reason in `err`.
+ * Reads a manifest, taking the build for this platform in `flavour`'s
+ * front-end. Returns 0 and fills `info` (release it with update_info_free),
+ * or -1 with a reason in `err`.
  */
-int update_manifest_parse(const char *text, update_info *info, char *err, size_t errsz);
+int update_manifest_parse(const char *text, const char *flavour,
+                          update_info *info, char *err, size_t errsz);
 
 /* Downloads the manifest and reads it. Returns 0, or -1 with a reason. */
-int update_check(update_info *info, char *err, size_t errsz);
+int update_check(const char *flavour, update_info *info, char *err, size_t errsz);
 
 void update_info_free(update_info *info);
 

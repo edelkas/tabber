@@ -51,6 +51,7 @@
 #include "paths.h"
 #include "platform.h"
 #include "tabs.h"
+#include "update.h"
 #include "usage.h"
 #include "util.h"
 #include "version.h"
@@ -108,6 +109,31 @@ static const int   ICONIFIED_SLEEP_MS = 10;
  * a timer rather than only when this program does something.
  */
 static const long long REFRESH_SECONDS = 5 * 60;
+
+/*
+ * How often the state file is asked whether a look for a newer tabber is due.
+ * Only the asking happens this often: what it answers is governed by
+ * UPDATE_CHECK_HOURS, so GitHub is reached at most once a day. The window is
+ * the sort of thing that gets left open for a week, which is why this is on a
+ * timer at all and not only done at startup.
+ */
+static const long long UPDATE_POLL_SECONDS = 30 * 60;
+
+/*
+ * The binary an update replaced cannot be deleted until the process that was
+ * running it has gone — and on Windows that process is the one that started
+ * this one, still shutting down as this starts. So the sweep at startup is
+ * made once more this many seconds in, and only then left to the next run.
+ */
+static const double SWEEP_RETRY_SECONDS = 2.0;
+
+/*
+ * How wide the text in a dialog may run before it wraps. A dialog sizes itself
+ * to what it holds, and what it holds can be a message from anywhere down the
+ * library — a URL, a path, a hash — which without this would push the box
+ * wider than the window it is centred in.
+ */
+static const float DIALOG_WRAP_WIDTH = 420.0f;
 
 /* ASCII art banner */
 static const char* BANNERS[] = {
@@ -275,6 +301,18 @@ static const char *TITLE_DONE     = "Done";
 static const char *TITLE_FAILED   = "Failed";
 static const char *TITLE_CONFIRM  = "One tab at a time";
 static const char *TITLE_ABOUT    = "About";
+static const char *TITLE_UPDATE   = "Update available";
+static const char *TITLE_UPDATED  = "Updated";
+
+/* What the overlay says while the thread is away doing each of them. */
+static const char *BUSY_CHECK     = "Looking for a newer " TABBER_NAME "...";
+static const char *BUSY_UPGRADE   = "Updating " TABBER_NAME "...";
+
+/* The update prompt. The version numbers are filled in beside these. */
+static const char *UPDATE_QUESTION = "Update now?";
+static const char *UPDATE_NO_BUILD =
+    "That release ships no build this one can replace itself with. It can be "
+    "installed by hand from the release page:";
 
 /* What the About box says. The name, the version and the date it carries are
  * the release's own, from version.h, so that what is on screen is what was
@@ -345,9 +383,11 @@ static long long g_rows_stamp = 0;  /* when the rows were last worked out */
 static int g_sort_column = -1;      /* -1: the digest's own order */
 static int g_sort_ascending = 1;
 
-/* Work a click has asked for, run once the overlay announcing it is on screen. */
+/* Work a click has asked for, run once the overlay announcing it is on screen.
+ * ACT_CHECK is the one nothing clicks: see "Updating tabber itself". */
 typedef enum {
-    ACT_NONE, ACT_UPDATE, ACT_DOWNLOAD, ACT_INSTALL, ACT_UNINSTALL, ACT_REPLACE
+    ACT_NONE, ACT_UPDATE, ACT_DOWNLOAD, ACT_INSTALL, ACT_UNINSTALL, ACT_REPLACE,
+    ACT_CHECK, ACT_UPGRADE
 } ui_action;
 
 static ui_action g_pending = ACT_NONE;
@@ -355,11 +395,17 @@ static char g_pending_code[TAB_CODE_MAX_LEN + 1] = "";
 static int  g_pending_drawn = 0;
 static char g_busy_text[128] = "";
 
-/* The two dialogs: what a result says, and what a replacement asks. */
+/* The dialogs: what a result says, and what a replacement asks. */
 static char g_result_title[64] = "";
 static char g_result_text[TB_ERR_LEN + 256] = "";
 static char g_confirm_text[512] = "";
 static const char *g_open_popup = NULL;
+static int  g_dialog_open = 0;      /* one is on screen and owns the window */
+
+/* The release a check found and has yet to be answered about. Held rather than
+ * copied out because applying it wants the URL, the size and the MD5 too. */
+static update_info g_update;
+static long long g_update_stamp = 0;   /* when the state file was last asked */
 
 static void on_glfw_error(int error, const char *description)
 {
@@ -644,6 +690,9 @@ static int run_uninstall(const npp_tab *tab, char *err, size_t errsz)
     return 0;
 }
 
+static void run_check(void);
+static void run_upgrade(void);
+
 /* Carries out whatever the last click asked for, and says how it went. */
 static void run_pending(void)
 {
@@ -656,6 +705,16 @@ static void run_pending(void)
         return;
     g_pending = ACT_NONE;
     g_pending_drawn = 0;
+
+    /* Neither of these is about a tab, so neither wants the code below. */
+    if (action == ACT_CHECK) {
+        run_check();
+        return;
+    }
+    if (action == ACT_UPGRADE) {
+        run_upgrade();
+        return;
+    }
 
     if (action == ACT_UPDATE) {
         /* Forced, as `update` is: an explicit refresh always goes out. */
@@ -759,6 +818,181 @@ static void request_install(const npp_tab *tab)
              other, other, upper);
     snprintf(g_pending_code, sizeof g_pending_code, "%s", tab->code);
     g_open_popup = TITLE_CONFIRM;
+}
+
+/* ---- Updating tabber itself ---------------------------------------------
+ *
+ * The same three steps the CLI takes, and the same code underneath: look at
+ * the manifest the newest release carries, and if it names a version above
+ * this one, offer it. Taking it up downloads the build for this platform and
+ * this front-end, checks it against the size and the MD5 the manifest
+ * declares, moves this binary aside, puts the new one in its place and makes
+ * it prove it runs before the old one is let go. See src/update.h.
+ *
+ * What is different here is what happens at the ends of it. Nothing that goes
+ * wrong closes this window: the failure goes in a dialog and the program the
+ * user already had carries on running, which is the one thing an update must
+ * never take away from them. And nothing that goes right can be reported by
+ * the process that did it, because on success it hands over to the binary it
+ * just installed and exits — so the news is written to the state file and the
+ * new process gives it, once.
+ *
+ * The looking is on a timer rather than a button: at startup and every
+ * UPDATE_POLL_SECONDS after, asking GitHub at most once a day. Only a version
+ * the user has not already said no to interrupts them.
+ */
+
+/* Remembers that this version was turned down, so it is offered once and not
+ * every day until it is taken. */
+static void decline_update(void)
+{
+    char err[TB_ERR_LEN];
+    config *cfg = config_load(err, sizeof err);
+
+    if (!cfg)
+        return;
+    config_update_decline(cfg, g_update.version);
+    config_save(cfg, err, sizeof err);
+    config_free(cfg);
+}
+
+/*
+ * Reads the newest release's manifest and, if it is worth saying anything
+ * about, puts the question. A check nobody asked for says nothing when it
+ * fails: no network is not this window's problem to report.
+ */
+static void run_check(void)
+{
+    char err[TB_ERR_LEN], sub[TB_ERR_LEN];
+    update_info info;
+    config *cfg;
+    int found, declined = 0;
+
+    found = update_check(UPDATE_FLAVOUR_GUI, &info, err, sizeof err) == 0;
+
+    /* The attempt is recorded whether or not it got through, or a machine
+     * that cannot reach GitHub would pay for a failed lookup every half hour
+     * instead of once a day. */
+    cfg = config_load(sub, sizeof sub);
+    if (cfg) {
+        config_update_checked(cfg, found ? info.version : NULL);
+        if (found)
+            declined = config_update_declined(cfg, info.version);
+        config_save(cfg, sub, sizeof sub);
+        config_free(cfg);
+    }
+
+    if (!found)
+        return;
+    if (!info.newer || declined) {
+        update_info_free(&info);
+        return;
+    }
+
+    /* Held until the question is answered: applying it wants the URL and the
+     * two promises the manifest makes about the download. */
+    update_info_free(&g_update);
+    g_update = info;
+    g_open_popup = TITLE_UPDATE;
+}
+
+/*
+ * Takes the release the user has just said yes to. Everything up to the last
+ * step is the library's; what is left here is where each outcome goes.
+ */
+static void run_upgrade(void)
+{
+    char err[TB_ERR_LEN], sub[TB_ERR_LEN];
+    update_plan plan;
+    config *cfg;
+
+    /* Downloaded and weighed and hashed; still nothing in place. */
+    if (update_plan_build(&g_update, &plan, err, sizeof err) != 0) {
+        set_result(TITLE_FAILED, "%s %s could not be downloaded:\n%s\n\n"
+                                 "Nothing has changed; you are still running %s.",
+                   TABBER_NAME, g_update.version, err, TABBER_VERSION);
+        return;
+    }
+
+    /* This binary aside, the new one under its name, and the new one made to
+     * say what it is before the old one is let go. */
+    if (update_plan_apply(&plan, err, sizeof err) != 0) {
+        set_result(TITLE_FAILED, "The update was not applied:\n%s\n\n"
+                                 "You are still running %s.", err, TABBER_VERSION);
+        update_plan_free(&plan);
+        return;
+    }
+
+    /* Left for the binary that replaces this one to tell the user about. */
+    cfg = config_load(sub, sizeof sub);
+    if (cfg) {
+        config_update_applied(cfg, plan.version);
+        config_save(cfg, sub, sizeof sub);
+        config_free(cfg);
+    }
+
+    /*
+     * Started and not waited for: this process is about to go, and on Windows
+     * waiting would keep it holding the binary it was replaced from. If it
+     * will not start, the update itself still stands — the window stays open
+     * on the old code, and the news above is given whenever it is next opened.
+     */
+    if (plat_spawn_detached(plan.exe, NULL, 0) != 0) {
+        set_result(TITLE_FAILED, "%s %s is installed, but it could not be "
+                                 "started.\n\nClose this window and open "
+                                 "%s again.", TABBER_NAME, plan.version, TABBER_NAME);
+        update_plan_free(&plan);
+        return;
+    }
+    update_plan_free(&plan);
+    glfwSetWindowShouldClose(g_window, GLFW_TRUE);
+}
+
+/* Asks for a look, if one is due and there is nothing in the way of it. */
+static void poll_for_update(void)
+{
+    char err[TB_ERR_LEN];
+    config *cfg;
+
+    g_update_stamp = (long long)time(NULL);
+
+    /* Never over the top of something else: a dialog waiting on an answer, or
+     * work already under way on this thread. */
+    if (g_pending != ACT_NONE || g_open_popup || g_dialog_open)
+        return;
+
+    cfg = config_load(err, sizeof err);
+    if (!cfg)
+        return;
+    if (config_update_enabled(cfg) && config_update_due(cfg, UPDATE_CHECK_HOURS))
+        request(ACT_CHECK, NULL, BUSY_CHECK);
+    config_free(cfg);
+}
+
+/*
+ * The other half of an update that went through, in the process that came out
+ * of it: says so, once, and strikes the record so that it is not said again.
+ */
+static void announce_update(void)
+{
+    char err[TB_ERR_LEN];
+    config *cfg = config_load(err, sizeof err);
+    const char *applied;
+
+    if (!cfg)
+        return;
+    applied = config_update_unannounced(cfg);
+    if (applied) {
+        /* Only when it is this version that arrived. Anything else is a record
+         * left over from a binary that is no longer the one running, and there
+         * is nothing to congratulate anyone on. */
+        if (strcmp(applied, TABBER_VERSION) == 0)
+            set_result(TITLE_UPDATED, "%s has been updated to %s.",
+                       TABBER_NAME, TABBER_VERSION);
+        config_update_announced(cfg);
+        config_save(cfg, err, sizeof err);
+    }
+    config_free(cfg);
 }
 
 /* ---- Drawing ----------------------------------------------------------- */
@@ -1275,6 +1509,25 @@ static void centre_next_window(void)
     ImGui::SetNextWindowPos(centre, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
 }
 
+/*
+ * What set_result last wrote, under whichever of the titles it wrote it. They
+ * differ in the title alone, which is the point: what happened is readable
+ * from the top of the box without reading the box.
+ */
+static void draw_result_modal(const char *title)
+{
+    centre_next_window();
+    if (!ImGui::BeginPopupModal(title, NULL, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + DIALOG_WRAP_WIDTH * g_scale);
+    ImGui::TextUnformatted(g_result_text);
+    ImGui::PopTextWrapPos();
+    ImGui::Separator();
+    if (ImGui::Button(LABEL_OK))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 static void draw_dialogs(void)
 {
     if (g_open_popup) {
@@ -1296,21 +1549,48 @@ static void draw_dialogs(void)
         ImGui::EndPopup();
     }
 
-    /* One modal per outcome, so the title says which it was without reading. */
+    /* One modal per outcome, so the title says which it was without reading.
+     * They all say whatever set_result last wrote, and only one can be up. */
+    draw_result_modal(TITLE_DONE);
+    draw_result_modal(TITLE_FAILED);
+    draw_result_modal(TITLE_UPDATED);
+
+    /* A newer release, and the choice of whether to take it. Saying no is
+     * remembered, so the same version is not put up again tomorrow. */
     centre_next_window();
-    if (ImGui::BeginPopupModal(TITLE_DONE, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted(g_result_text);
+    if (ImGui::BeginPopupModal(TITLE_UPDATE, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextColored(THEME_COLOR, "%s %s", TABBER_NAME, g_update.version);
+        ImGui::TextDisabled("You have %s.", TABBER_VERSION);
+        if (g_update.notes && g_update.notes[0]) {
+            ImGui::Separator();
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + DIALOG_WRAP_WIDTH * g_scale);
+            ImGui::TextUnformatted(g_update.notes);
+            ImGui::PopTextWrapPos();
+        }
         ImGui::Separator();
-        if (ImGui::Button(LABEL_OK))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-    }
-    centre_next_window();
-    if (ImGui::BeginPopupModal(TITLE_FAILED, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted(g_result_text);
-        ImGui::Separator();
-        if (ImGui::Button(LABEL_OK))
-            ImGui::CloseCurrentPopup();
+        if (g_update.url) {
+            ImGui::TextUnformatted(UPDATE_QUESTION);
+            if (ImGui::Button(LABEL_YES)) {
+                request(ACT_UPGRADE, NULL, BUSY_UPGRADE);
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(LABEL_NO)) {
+                decline_update();
+                ImGui::CloseCurrentPopup();
+            }
+        } else {
+            /* Worth knowing about even so, which is why the check reports a
+             * release that has nothing this program can install. */
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + DIALOG_WRAP_WIDTH * g_scale);
+            ImGui::TextUnformatted(UPDATE_NO_BUILD);
+            ImGui::PopTextWrapPos();
+            ImGui::TextLinkOpenURL(g_update.page, g_update.page);
+            if (ImGui::Button(LABEL_OK)) {
+                decline_update();
+                ImGui::CloseCurrentPopup();
+            }
+        }
         ImGui::EndPopup();
     }
 
@@ -1342,6 +1622,11 @@ static void draw_dialogs(void)
         ImGui::End();
         g_pending_drawn = 1;
     }
+
+    /* Whether anything is waiting on an answer, for the timed check to keep
+     * out of the way of. Read at the end, so it counts what was just opened. */
+    g_dialog_open = ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId |
+                                             ImGuiPopupFlags_AnyPopupLevel);
 }
 
 /* ---- Pacing the frames --------------------------------------------------
@@ -1445,18 +1730,51 @@ static void build_font(ImGuiIO& io)
                                              icons_ranges);
 }
 
+/*
+ * The one argument this program answers, and it is not one to type: an update
+ * runs the binary it has just installed with it, and keeps that binary only if
+ * it agrees about what version it is. Answered before anything is drawn, and
+ * before the sweep below in particular — the binary being replaced is sitting
+ * under UPDATE_OLD_SUFFIX at that moment, and it is what a check that fails is
+ * rolled back to. Returns 1 when that is all this run is for.
+ */
+static int self_check_only(int argc, char **argv, int *status)
+{
+    int i;
+
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], UPDATE_SELF_CHECK_ARG) == 0) {
+            const char *want = i + 1 < argc ? argv[i + 1] : "";
+
+            *status = strcmp(want, TABBER_VERSION) == 0 ? 0 : 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     GLFWwindow *window;
     float scale;
-    int settle;
-
-    (void)argc;
-    (void)argv;
+    int settle, status = 0, swept = 0;
 
     plat_init();
+
+    if (self_check_only(argc, argv, &status))
+        return status;
+
+    /* A binary an earlier update moved aside can only be deleted once the run
+     * that was using it has ended. Tried again a moment in; see
+     * SWEEP_RETRY_SECONDS. */
+    update_sweep();
+
     load_digest();
     refresh_rows();
+
+    /* An update this program made of itself, and whether to look for another. */
+    announce_update();
+    poll_for_update();
 
     glfwSetErrorCallback(on_glfw_error);
     if (!glfwInit()) {
@@ -1534,6 +1852,15 @@ int main(int argc, char **argv)
         run_pending();
         if ((long long)time(NULL) - g_rows_stamp >= REFRESH_SECONDS)
             refresh_rows();
+        if ((long long)time(NULL) - g_update_stamp >= UPDATE_POLL_SECONDS)
+            poll_for_update();
+
+        /* The one retry the binary this replaced is owed, by which time the
+         * process that was running it has had time to go. */
+        if (!swept && glfwGetTime() >= SWEEP_RETRY_SECONDS) {
+            update_sweep();
+            swept = 1;
+        }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
@@ -1568,6 +1895,7 @@ int main(int argc, char **argv)
     glfwDestroyWindow(window);
     glfwTerminate();
     digest_free(g_digest);
+    update_info_free(&g_update);
     free(g_rows);
     free(g_order);
     return 0;

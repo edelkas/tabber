@@ -1235,7 +1235,7 @@ static int cmd_upgrade(const options *opts)
     }
 
     printf("Checking for a newer " TABBER_NAME "...\n");
-    if (update_check(&info, err, sizeof err) != 0) {
+    if (update_check(UPDATE_FLAVOUR_CLI, &info, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": the newest release could not be looked up: %s\n"
                         "Releases are listed at %s\n", err, UPDATE_RELEASES_URL);
         return EXIT_FAILED;
@@ -1296,7 +1296,7 @@ static int check_for_update(const options *opts, const char *command,
         return 0;
     }
 
-    if (update_check(&info, err, sizeof err) != 0) {
+    if (update_check(UPDATE_FLAVOUR_CLI, &info, err, sizeof err) != 0) {
         /*
          * No network, or GitHub having a bad day. Not this command's problem —
          * but the attempt is still recorded, or a machine that cannot reach
@@ -1502,6 +1502,31 @@ static void adopt_old_root(void)
     free(exe_real);
 }
 
+/*
+ * How a freshly installed binary proves it is what the manifest said it was:
+ * the old one runs this on the new one and keeps it only if it agrees.
+ * Undocumented on purpose — it is not a thing to type, it is a thing tabber
+ * asks itself. Returns 1 when that is all this run is for.
+ *
+ * Read before anything else happens, and before the sweep in particular: the
+ * binary this one is being asked to replace is sitting under UPDATE_OLD_SUFFIX
+ * at that moment, and it is what a failed check is rolled back to.
+ */
+static int self_check_only(int argc, char **argv, int *status)
+{
+    int i;
+
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], UPDATE_SELF_CHECK_ARG) == 0) {
+            const char *want = i + 1 < argc ? argv[i + 1] : "";
+
+            *status = strcmp(want, TABBER_VERSION) == 0 ? EXIT_OK : EXIT_FAILED;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     options opts = {0};
@@ -1510,6 +1535,9 @@ int main(int argc, char **argv)
     int i, rc;
 
     plat_init();
+
+    if (self_check_only(argc, argv, &rc))
+        return rc;
 
     /* A binary an earlier update moved aside can only be deleted once the run
      * that was using it has ended, which is to say now. */
@@ -1535,16 +1563,6 @@ int main(int argc, char **argv)
             opts.offline = 1;
         } else if (!strcmp(arg, "--no-update-check")) {
             opts.no_update_check = 1;
-        } else if (!strcmp(arg, UPDATE_SELF_CHECK_ARG)) {
-            /*
-             * How a freshly installed binary proves it is what the manifest
-             * said it was: the old one runs this on the new one and keeps it
-             * only if it agrees. Undocumented on purpose — it is not a thing
-             * to type, it is a thing tabber asks itself.
-             */
-            const char *want = i + 1 < argc ? argv[++i] : "";
-
-            return strcmp(want, TABBER_VERSION) == 0 ? EXIT_OK : EXIT_FAILED;
         } else if (!strcmp(arg, "-c") || !strcmp(arg, "--force-compress")) {
             opts.compress = 1;
         } else if (!strncmp(arg, "--cloud-mode", 12)) {

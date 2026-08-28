@@ -83,6 +83,7 @@ extern "C" {
 #define CJK_LAST_CHECK       "last_check"
 #define CJK_LATEST           "latest"     /* newest version the check has seen   */
 #define CJK_DECLINED         "declined"   /* version the user said no to         */
+#define CJK_APPLIED          "applied"    /* update installed, not yet announced */
 
 typedef struct {
     json_value *root;   /* whole document, "tabs" included */
@@ -193,6 +194,23 @@ int config_update_declined(config *cfg, const char *version);
 
 /* Remembers that they did, so they are asked once per version, not per day. */
 void config_update_decline(config *cfg, const char *version);
+
+/*
+ * Records that an update to `version` went through, for the binary that
+ * replaces this one to tell the user about. The process that did the work
+ * hands over to the new one and is gone by the time there is news to give,
+ * so the news is left here rather than shown.
+ */
+void config_update_applied(config *cfg, const char *version);
+
+/*
+ * The version an update installed and has not announced yet, or NULL. Owned
+ * by the config, and only good until the next call that writes to it.
+ */
+const char *config_update_unannounced(config *cfg);
+
+/* Clears that record, so the news is given once and not on every run after. */
+void config_update_announced(config *cfg);
 
 #ifdef __cplusplus
 }

@@ -45,6 +45,7 @@ has just been started now that the command line side is complete.
 - [Updating tabber](#updating-tabber)
    * [Replacing a running program](#replacing-a-running-program)
    * [When it looks](#when-it-looks)
+   * [In the front-end](#in-the-front-end)
    * [Cutting a release](#cutting-a-release)
    * [What this does and does not protect](#what-this-does-and-does-not-protect)
 - [Status](#status)
@@ -159,6 +160,11 @@ that is in the game. Each runs the call the matching command runs. Installing
 over another tab is the one case the CLI refuses and this does not: it asks
 first, and on a yes uninstalls the other one before installing this one. Either
 way the outcome is a dialog — what happened, or why it did not.
+
+It also [keeps itself up to date](#in-the-front-end): a look at the newest
+release when the window opens and at most once a day after, and a Yes/No
+dialog when there is one worth taking. Nothing that goes wrong there closes the
+window.
 
 None of that is believed for longer than five minutes. Whether a tab is
 downloaded, which one is installed and when each was last played can all change
@@ -1253,13 +1259,17 @@ not held up by one more than once a day (see
   "check": true,
   "last_check": "2026-08-24T18:00:00Z",
   "latest": "0.3.0",
-  "declined": null
+  "declined": null,
+  "applied": null
 }
 ```
 
 `check` set to false turns the automatic look off altogether; `declined` is the
 version the user said no to, which is why the offer comes once per release
-rather than once a day.
+rather than once a day. `applied` is news left for another process to give: the
+front-end writes the version there when an update goes through, because it then
+hands over to the binary it installed and is gone before there is anything to
+say. The one that comes up says it once and clears the key.
 
 The file is edited in place rather than regenerated: keys this version does not
 know about, and fields it does not own, survive a rewrite. If it is missing it
@@ -1269,8 +1279,9 @@ alone rather than overwriting whatever is in there.
 ## Updating tabber
 
 Releases live on [GitHub Releases](https://github.com/edelkas/tabber/releases).
-Each one carries a plain executable per platform — tabber is a single file,
-with the fresh savefile built into it — and a `manifest.json` describing them:
+Each one carries a plain executable per platform per front-end — tabber is a
+single file, with the fresh savefile built into it — and a `manifest.json`
+describing them:
 
 ```json
 {
@@ -1279,8 +1290,10 @@ with the fresh savefile built into it — and a `manifest.json` describing them:
   "notes": "What changed, in a line or three.",
   "page": "https://github.com/edelkas/tabber/releases/tag/v0.3.0",
   "builds": {
-    "windows-x64": { "url": "https://github.com/edelkas/tabber/releases/download/v0.3.0/tabber-windows-x64.exe",
-                     "size": 371712, "md5": "..." }
+    "windows-x64":     { "url": "https://github.com/edelkas/tabber/releases/download/v0.3.0/tabber-cli-windows-x64.exe",
+                         "size": 382464, "md5": "..." },
+    "windows-x64-gui": { "url": "https://github.com/edelkas/tabber/releases/download/v0.3.0/tabber-gui-windows-x64.exe",
+                         "size": 1143296, "md5": "..." }
   }
 }
 ```
@@ -1296,6 +1309,15 @@ The build is chosen by `<os>-<arch>` (`windows-x64`, `windows-x86`,
 that ships one build per platform. A release with no build we can run is still
 reported — knowing there is a newer version is the point — with a pointer to
 the page.
+
+Which front-end is asking is part of that key. The CLI and the GUI are separate
+programs and each replaces itself, so the CLI takes `<os>-<arch>` and the GUI
+takes `<os>-<arch>-gui`; the fallback carries the suffix too, so a GUI can
+never land on a CLI build. Asking is not optional — `update_check` takes the
+front-end as an argument — because the failure it prevents is a quiet one: a
+download that verifies against both promises, installs cleanly, and turns out
+to be the other program. That would be caught a step later by the self-check
+below, but only after the swap, and the report would make no sense to anyone.
 
 Since Windows ships in two architectures, `"windows"` on its own is no longer
 a key to reach for there: a 32-bit tabber would match it and pull down the
@@ -1333,6 +1355,14 @@ from the very version the manifest named. A file that verified perfectly can
 still be a build that will not run on this machine, and that is the only way to
 find out. If it fails, the old binary goes straight back.
 
+`--self-check` is answered by both front-ends before anything else happens —
+before the sweep in step 4 in particular. At the moment it runs, the binary it
+is being asked to replace is the one sitting under `.old`, and that file is
+what a check that fails is rolled back to; a sweep first would delete it. On
+Windows the file is locked and the deletion would fail harmlessly, which is
+exactly the kind of bug that survives by being untestable on the machine it was
+written on.
+
 ### When it looks
 
 `tabber upgrade` checks and installs in one go, without asking: it was asked
@@ -1348,6 +1378,43 @@ release rather than once per day, and a check that fails is silent: GitHub
 being unreachable is not this command's problem. `--offline` and
 `--no-update-check` skip it, and `"update": { "check": false }` in
 `config.json` turns it off for good.
+
+### In the front-end
+
+The same three steps and the same code underneath, with different ends on it.
+
+The window looks when it opens and every half hour it stays open, which is only
+how often the state file is *asked*: the 24-hour rule still decides, so GitHub
+is reached at most once a day however long the window is left up. A check that
+finds nothing, or fails, says nothing at all — there is no line of output here
+to put it in, and no network is not a reason to interrupt anyone.
+
+A newer version opens a dialog naming it, the version in hand and the release
+notes, and asks. **No** is remembered for that version, as on the terminal.
+**Yes** downloads, verifies and swaps exactly as `upgrade` does, and then the
+two ends part company from the CLI:
+
+- **Anything that fails** puts the reason in a dialog and leaves the program
+  running. That is the one thing an update must never take away, so there is no
+  path here that closes the window on a failure — including the last one, where
+  the new binary is in place but will not start: the window stays on the old
+  code and says so.
+- **Success** hands over. The new binary is started and *not* waited for
+  (`plat_spawn_detached`), and this process closes. Waiting would keep it alive
+  behind an empty screen, and on Windows would keep the file it was replaced
+  from locked against the sweep.
+
+Which leaves nobody to say it worked: the process that did the work is gone by
+the time there is news. So the version is written to `config.json` as
+`"update": { "applied": ... }`, and the binary that comes up finds it, says so
+once, and strikes the record. Restarting afterwards is quiet, and a record left
+by some other version is struck without being read out.
+
+The sweep has the same shape of problem. The displaced `.old` binary cannot be
+deleted until the process running it has gone — and that process is the one
+that started this one, still shutting down. So the sweep at startup is made a
+second time two seconds in, which is where it actually succeeds; the next run
+would get it otherwise.
 
 ### Cutting a release
 
@@ -1368,11 +1435,13 @@ last.** Every build restages `dist/`, and a binary rebuilt afterwards is a
 different file — same size, different MD5 — which the manifest would then
 describe wrongly.
 
-Two front-ends now ship per platform, and only one of them can hold the key the
-tool asks for. `upgrade` looks up exactly `<os>-<arch>` (`src/update.h`), so
-that stays the CLI's, which is also what keeps releases before this one
-upgradeable. The GUI is keyed `<os>-<arch>-gui`, off to one side of that
-lookup: nothing reads it today, and nothing can mistake it for the CLI.
+Two front-ends ship per platform, and each looks up its own key: the CLI takes
+`<os>-<arch>` and the GUI takes `<os>-<arch>-gui` (`src/update.h`). The CLI
+keeps the plain key, which is what makes releases published before the GUI
+existed still upgradeable. **Both have to be in the manifest** — a release that
+names only the CLI leaves every GUI reporting a version it cannot install.
+`--build all` picks up both from the names, so this takes care of itself as
+long as both were built.
 
 The asset names carry no version on purpose. An upgrade writes over the file
 that is already on disk and keeps whatever it is called, so a version in the
@@ -1411,4 +1480,4 @@ release.
 - [x] Bind several players' controls together (`bind` / `unbind`, or at the tab's request)
 - [x] Update tabber itself from GitHub Releases (`upgrade`)
 - [ ] Optional extras
-- [ ] Dear ImGui front-end (started: the catalogue, and download / install / uninstall)
+- [ ] Dear ImGui front-end (started: the catalogue, download / install / uninstall, and updating itself)

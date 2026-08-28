@@ -91,6 +91,19 @@ int plat_run_and_wait(const char *exe, char *const *args, size_t count, int *sta
  */
 int plat_restart(const char *exe, char *const *args, size_t count, int *status);
 
+/*
+ * Starts `exe` and does not wait for it: the caller is about to exit, and the
+ * new process has to outlive it. That is what a windowed program does after
+ * updating itself, where waiting would keep the old process alive — and on
+ * Windows keep the binary it was replaced from locked. The child gets no
+ * console and inherits nothing.
+ *
+ * Returns 0 once the program is running, or -1 when it could not be started —
+ * which is the whole of what comes back, and all a caller that is about to
+ * exit can act on. Nothing is waited for beyond that point.
+ */
+int plat_spawn_detached(const char *exe, char *const *args, size_t count);
+
 /* Overrides the tool's root directory; mainly for tests and portable setups. */
 #define TABBER_ENV_HOME "TABBER_HOME"
 

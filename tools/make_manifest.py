@@ -25,10 +25,12 @@ The platform keys are what the tool asks for: "<os>-<arch>", with os one of
 windows, linux or macos, and arch one of x64, arm64 or x86. A key of just the
 os ("windows") also matches, for a release shipping one build per system.
 
-Those keys name the CLI, because the CLI is what asks: `upgrade` looks up
-exactly its own "<os>-<arch>" (src/update.h). The graphical front-end is keyed
-"<os>-<arch>-gui", which nothing looks up today and which above all keeps it
-out of the way of a CLI asking to be upgraded.
+Those keys name the CLI: `upgrade` looks up exactly its own "<os>-<arch>"
+(src/update.h), and leaving that key to the CLI is what keeps releases from
+before the front-end existed upgradeable. The front-end asks for its own,
+"<os>-<arch>-gui", and takes nothing else -- so a release that names only the
+CLI leaves every front-end reporting a version it cannot install. Both belong
+in every manifest; "--build all" picks up both from the file names.
 
 The file names carry no version, and should not: an upgrade keeps the name the
 binary already had on disk, so a version in it would be a lie the moment the

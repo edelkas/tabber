@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "digest.h"
 #include "gzip.h"
@@ -101,6 +102,19 @@ char *test_dir(const char *name)
     plat_remove_tree(dir);   /* start from nothing every time */
     plat_mkdir_p(dir);
     return dir;
+}
+
+/*
+ * Spun rather than slept: sleeping wants a header that C99 on its own does not
+ * offer on either system, and the only thing waited on here is a few hundred
+ * milliseconds in one child process.
+ */
+void test_sleep_ms(int ms)
+{
+    clock_t end = clock() + (clock_t)((double)ms * CLOCKS_PER_SEC / 1000.0);
+
+    while (clock() < end)
+        ;
 }
 
 void test_cleanup(void)
@@ -431,6 +445,14 @@ int main(int argc, char **argv)
      */
     if (argc == 3 && !strcmp(argv[1], UPDATE_SELF_CHECK_ARG))
         return strcmp(argv[2], TABBER_VERSION) == 0 ? 0 : 1;
+
+    /* The other thing this binary can be asked to be: a process that takes a
+     * moment and leaves a mark, which is how a spawn that is not waited for is
+     * told from one that is. Answered here for the same reason. */
+    if (argc == 4 && !strcmp(argv[1], TEST_TOUCH_ARG)) {
+        test_sleep_ms(atoi(argv[3]));
+        return plat_write_file(argv[2], "here", 4) == 0 ? 0 : 1;
+    }
 
     /*
      * Point the personal folder at scratch space before anything runs: no

@@ -44,6 +44,17 @@ int check_long_eq(long got, long want, const char *file, int line, const char *w
 #define TEST_DEAD_HOST  "127.0.0.1"
 #define TEST_DEAD_PORT  9
 
+/*
+ * A hidden mode this binary answers, for the tests that need a second process
+ * to actually do something: `test_tabber --touch <path> <ms>` waits that long
+ * and then writes the file, which is enough to tell a process that was waited
+ * for from one that was not.
+ */
+#define TEST_TOUCH_ARG  "--touch"
+
+/* Waits for `ms`, for a test that has to let another process get somewhere. */
+void test_sleep_ms(int ms);
+
 /* What an executable is called here, for the tests that write one. */
 #ifdef _WIN32
 #  define TEST_EXE_SUFFIX ".exe"
