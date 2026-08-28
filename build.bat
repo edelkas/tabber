@@ -78,16 +78,20 @@ rem this tree already has two architectures and three operating systems to keep
 rem happy. GLFW picks its backend from a define, one per platform.
 set "IMGUIDIR=vendor\imgui"
 set "GLFWDIR=vendor\glfw"
+
+rem ForkAwesome is two headers and nothing to compile: the icon font is baked
+rem into one of them and the names of its codepoints are in the other.
+set "FKDIR=vendor\forkawesome"
 set "IMGUISRC=%IMGUIDIR%\imgui.cpp %IMGUIDIR%\imgui_draw.cpp %IMGUIDIR%\imgui_tables.cpp %IMGUIDIR%\imgui_widgets.cpp %IMGUIDIR%\imgui_demo.cpp %IMGUIDIR%\backends\imgui_impl_glfw.cpp %IMGUIDIR%\backends\imgui_impl_opengl3.cpp"
 set "GLFWSRC=%GLFWDIR%\src\context.c %GLFWDIR%\src\init.c %GLFWDIR%\src\input.c %GLFWDIR%\src\monitor.c %GLFWDIR%\src\platform.c %GLFWDIR%\src\vulkan.c %GLFWDIR%\src\window.c %GLFWDIR%\src\egl_context.c %GLFWDIR%\src\osmesa_context.c %GLFWDIR%\src\null_init.c %GLFWDIR%\src\null_monitor.c %GLFWDIR%\src\null_window.c %GLFWDIR%\src\null_joystick.c"
 set "GLFWSRC=%GLFWSRC% %GLFWDIR%\src\win32_init.c %GLFWDIR%\src\win32_joystick.c %GLFWDIR%\src\win32_module.c %GLFWDIR%\src\win32_monitor.c %GLFWDIR%\src\win32_thread.c %GLFWDIR%\src\win32_time.c %GLFWDIR%\src\win32_window.c %GLFWDIR%\src\wgl_context.c"
 
 set "VDEPS=%IMGUIDIR%\*.h;%IMGUIDIR%\backends\*.h;%GLFWDIR%\include\GLFW\*.h;%GLFWDIR%\src\*.h"
-set "GDEPS=src\*.h;%IMGUIDIR%\*.h;%IMGUIDIR%\backends\*.h;%GLFWDIR%\include\GLFW\*.h"
+set "GDEPS=src\*.h;%IMGUIDIR%\*.h;%IMGUIDIR%\backends\*.h;%GLFWDIR%\include\GLFW\*.h;%FKDIR%\*.h"
 
 rem /utf-8 because both libraries carry UTF-8 string literals, and MSVC reads a
 rem source file in the system codepage unless told otherwise.
-set "GUIINC=/I src /I %IMGUIDIR% /I %IMGUIDIR%\backends /I %GLFWDIR%\include"
+set "GUIINC=/I src /I %IMGUIDIR% /I %IMGUIDIR%\backends /I %GLFWDIR%\include /I %FKDIR%"
 set "GUIFLAGS=/nologo /W4 /O2 /utf-8 /EHsc /D_CRT_SECURE_NO_WARNINGS %GUIINC%"
 
 rem Vendored code is compiled quietly: its warnings are upstream's to fix, and

@@ -42,6 +42,28 @@
 
 /* ---- Versions ---------------------------------------------------------- */
 
+/* "YYYY-MM-DD", with a month and a day that could exist. The loop stops at the
+ * first character that is not what it should be, the terminator included, so
+ * it never reads past the end of a string that is too short. */
+static int iso_date(const char *s)
+{
+    int i, month, day;
+
+    for (i = 0; i < 10; i++) {
+        if (i == 4 || i == 7) {
+            if (s[i] != '-')
+                return 0;
+        } else if (s[i] < '0' || s[i] > '9') {
+            return 0;
+        }
+    }
+    if (s[10] != '\0')
+        return 0;
+    month = (s[5] - '0') * 10 + (s[6] - '0');
+    day   = (s[8] - '0') * 10 + (s[9] - '0');
+    return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
 static void test_versions(void)
 {
     test_case("versions compare the way a human reads them");
@@ -65,6 +87,15 @@ static void test_versions(void)
 
     CHECK(update_version_compare("0.0.0", TABBER_VERSION) < 0,
           "the version this was built as is above 0.0.0");
+
+    /* The front-end's About box shows this beside the version, and nothing
+     * else reads it: a typo would be seen there and nowhere else, once the
+     * release carrying it had already gone out. */
+    CHECK(iso_date(TABBER_DATE), "the date it went out is a real YYYY-MM-DD");
+    CHECK(!iso_date("2026-13-01") && !iso_date("2026-01-32"),
+          "...which a thirteenth month or a thirty-second day is not");
+    CHECK(!iso_date("2026-1-1") && !iso_date("2026-01-01T00:00:00Z"),
+          "...nor a short field, nor a whole timestamp");
 }
 
 /* ---- The build key ----------------------------------------------------- */

@@ -131,6 +131,10 @@ test-full: $(TESTTARGET)
 IMGUIDIR := vendor/imgui
 GLFWDIR  := vendor/glfw
 
+# ForkAwesome is two headers and nothing to compile: the icon font is baked into
+# one of them and the names of its codepoints are in the other.
+FKDIR    := vendor/forkawesome
+
 IMGUISRC := imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp \
             imgui_demo.cpp
 IMGUISRC += backends/imgui_impl_glfw.cpp backends/imgui_impl_opengl3.cpp
@@ -167,7 +171,8 @@ else
   GUILIBS := -lGL -lX11 -lpthread -ldl -lm
 endif
 
-GUIINC   := -I$(SRCDIR) -I$(IMGUIDIR) -I$(IMGUIDIR)/backends -I$(GLFWDIR)/include
+GUIINC   := -I$(SRCDIR) -I$(IMGUIDIR) -I$(IMGUIDIR)/backends -I$(GLFWDIR)/include \
+            -I$(FKDIR)
 # The backend files sit a directory down, but every object lands in one place;
 # no two of these share a basename, and none of them clashes with the tool's.
 GUIOBJS  := $(addprefix $(GUIOBJ)/,$(notdir $(IMGUISRC:.cpp=.o)))

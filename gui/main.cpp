@@ -40,6 +40,10 @@
 /* Brings in the system's OpenGL header, so it goes after the backends. */
 #include <GLFW/glfw3.h>
 
+/* Baked ForkAwesome font and codepoint names */
+#include "font_forkawesome.h"
+#include "IconsForkAwesome.h"
+
 /* The tool's own library. Its headers carry their own extern "C". */
 #include "config.h"
 #include "digest.h"
@@ -59,6 +63,10 @@ static const int   WINDOW_HEIGHT     = 400;
 static const int   GL_VERSION_MAJOR  = 3;
 static const int   GL_VERSION_MINOR  = 2;
 static const int   SWAP_INTERVAL     = 1;  /* vsync, where the driver is trusted with it */
+
+/* ProggyClean's own size, and what the icons merged into it are measured
+ * against. Not the size anything is drawn at: FontScaleDpi settles that. */
+static const float FONT_SIZE         = 13.0f;
 
 /*
  * Waiting instead of spinning. With nothing happening the loop sleeps until
@@ -145,25 +153,11 @@ static const char* BANNERS[] = {
     "  | |/ _` | '_ \\| '_ \\ / _ \\ '__|\n"
     "  | | (_| | |_) | |_) |  __/ |   \n"
     "  \\_/\\__,_|_.__/|_.__/ \\___|_|   ",
-    " /$$$$$$$$        /$$       /$$                          \n"
-    "|__  $$__/       | $$      | $$                          \n"
-    "   | $$  /$$$$$$ | $$$$$$$ | $$$$$$$   /$$$$$$   /$$$$$$ \n"
-    "   | $$ |____  $$| $$__  $$| $$__  $$ /$$__  $$ /$$__  $$\n"
-    "   | $$  /$$$$$$$| $$  \\ $$| $$  \\ $$| $$$$$$$$| $$  \\__/\n"
-    "   | $$ /$$__  $$| $$  | $$| $$  | $$| $$_____/| $$      \n"
-    "   | $$|  $$$$$$$| $$$$$$$/| $$$$$$$/|  $$$$$$$| $$      \n"
-    "   |__/ \\_______/|_______/ |_______/  \\_______/|__/    ",
     "  ______      __    __             \n"
     " /_  __/___ _/ /_  / /_  ___  _____\n"
     "  / / / __ `/ __ \\/ __ \\/ _ \\/ ___/\n"
     " / / / /_/ / /_/ / /_/ /  __/ /    \n"
     "/_/  \\__,_/_.___/_.___/\\___/_/     ",
-    "     _/\\/\\/\\/\\/\\/\\______________/\\/\\________/\\/\\_______________________________\n"
-    "    _____/\\/\\______/\\/\\/\\______/\\/\\________/\\/\\__________/\\/\\/\\____/\\/\\__/\\/\\_ \n"
-    "   _____/\\/\\__________/\\/\\____/\\/\\/\\/\\____/\\/\\/\\/\\____/\\/\\/\\/\\/\\__/\\/\\/\\/\\___  \n"
-    "  _____/\\/\\______/\\/\\/\\/\\____/\\/\\__/\\/\\__/\\/\\__/\\/\\__/\\/\\________/\\/\\_______   \n"
-    " _____/\\/\\______/\\/\\/\\/\\/\\__/\\/\\/\\/\\____/\\/\\/\\/\\______/\\/\\/\\/\\__/\\/\\_______    \n"
-    "__________________________________________________________________________     ",
     "_/_/_/_/_/          _/        _/                            \n"
     "   _/      _/_/_/  _/_/_/    _/_/_/      _/_/    _/  _/_/   \n"
     "  _/    _/    _/  _/    _/  _/    _/  _/_/_/_/  _/_/        \n"
@@ -276,9 +270,18 @@ static const char *LABEL_UNINSTALL = "Uninstall";
 static const char *LABEL_YES      = "Yes";
 static const char *LABEL_NO       = "No";
 static const char *LABEL_OK       = "OK";
+static const char *LABEL_ABOUT    = ICON_FK_INFO_CIRCLE;
 static const char *TITLE_DONE     = "Done";
 static const char *TITLE_FAILED   = "Failed";
 static const char *TITLE_CONFIRM  = "One tab at a time";
+static const char *TITLE_ABOUT    = "About";
+
+/* What the About box says. The name, the version and the date it carries are
+ * the release's own, from version.h, so that what is on screen is what was
+ * built and not a second copy of it kept up to date by hand. */
+static const char *ABOUT_BLURB = "Installs custom tabs (mappacks) for N++.";
+static const char *ABOUT_REPO  = "https://github.com/edelkas/tabber";
+static const char *ABOUT_HINT  = "About " TABBER_NAME;
 
 /* Identifiers Dear ImGui keys its state on. They are not shown to anyone. */
 static const char *PANEL_ID   = "tabber-panel";
@@ -1199,17 +1202,36 @@ static int handle_resize(void)
 
 static void draw_banner(void)
 {
-    //ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
     ImGui::TextColored(THEME_COLOR, BANNERS[banner_id]);
-    //ImGui::PopStyleVar();
-    if (ImGui::Button("Next"))
-        banner_id = (banner_id + 1) % IM_COUNTOF(BANNERS);
+}
+
+/*
+ * The button in the corner opposite the banner, level with the top of it. Its
+ * label is one glyph of the icon font merged into the default one by
+ * build_font, which is the whole of what makes a character a picture here.
+ *
+ * `level` is where the panel's contents began, in screen coordinates, taken
+ * before the banner moved the cursor down past it.
+ */
+static void draw_about_button(ImVec2 level)
+{
+    float size = ImGui::GetFrameHeight();   /* square: one glyph and its padding */
+    ImVec2 back = ImGui::GetCursorScreenPos();
+    float right = back.x + ImGui::GetContentRegionAvail().x;
+
+    ImGui::SetCursorScreenPos(ImVec2(right - size, level.y));
+    if (ImGui::Button(LABEL_ABOUT, ImVec2(size, size)))
+        g_open_popup = TITLE_ABOUT;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", ABOUT_HINT);   /* an icon on its own says little */
+    ImGui::SetCursorScreenPos(back);
 }
 
 /* The one window, filling the viewport however the frame has been resized. */
 static void draw_panel(void)
 {
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
+    ImVec2 top;
     int taken;
 
     /* Set every frame rather than once: this is what follows a resize. */
@@ -1219,7 +1241,13 @@ static void draw_panel(void)
 
     taken = handle_resize();
     draw_title_bar(taken);
+
+    /* The banner down the left, the About button up in the corner it leaves
+     * free. The button goes in second so that it takes the pointer wherever a
+     * wide banner reaches under it. */
+    top = ImGui::GetCursorScreenPos();
     draw_banner();
+    draw_about_button(top);
 
     ImGui::BeginDisabled(g_pending != ACT_NONE);
     if (ImGui::Button(LABEL_UPDATE))
@@ -1280,6 +1308,22 @@ static void draw_dialogs(void)
     centre_next_window();
     if (ImGui::BeginPopupModal(TITLE_FAILED, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted(g_result_text);
+        ImGui::Separator();
+        if (ImGui::Button(LABEL_OK))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    /* What this is, and where the rest of it lives. The link opens in whatever
+     * the desktop uses for one; Dear ImGui asks the system to do the opening. */
+    centre_next_window();
+    if (ImGui::BeginPopupModal(TITLE_ABOUT, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextColored(THEME_COLOR, "%s %s", TABBER_NAME, TABBER_VERSION);
+        ImGui::TextDisabled("%s", TABBER_DATE);
+        ImGui::Separator();
+        ImGui::TextUnformatted(ABOUT_BLURB);
+        ImGui::Text(ICON_FK_GITHUB); ImGui::SameLine();
+        ImGui::TextLinkOpenURL(ABOUT_REPO, ABOUT_REPO);
         ImGui::Separator();
         if (ImGui::Button(LABEL_OK))
             ImGui::CloseCurrentPopup();
@@ -1363,6 +1407,44 @@ static const char *ini_path(void)
     return path;
 }
 
+/*
+ * The one font: ProggyClean for the text, with ForkAwesome's icons merged into
+ * it so that an icon can be written wherever a character can. The codepoints
+ * they sit on have names of their own, from IconFontCppHeaders.
+ *
+ * Both halves are given the same reference size, and giving it to both is what
+ * Dear ImGui asks for: the advances below are measured against a size, and a
+ * font merged with a size of its own wants a destination that has one too. It
+ * is a reference and not a size on screen — FontScaleDpi in main() decides
+ * that, and scales the pair of them together.
+ *
+ * The atlas is not built here. It is baked when it is first drawn from, by
+ * which time the DPI scale is known.
+ */
+static void build_font(ImGuiIO& io)
+{
+    /* The ranges outlive the call: the atlas keeps the pointer, not a copy. */
+    static const ImWchar icons_ranges[] = { ICON_MIN_FK, ICON_MAX_FK, 0 };
+    ImFontConfig text_config, icons_config;
+
+    /* AddFontDefault only snaps to the pixel grid itself when it is handed no
+     * configuration at all, so say so here as well. */
+    text_config.SizePixels = FONT_SIZE;
+    text_config.PixelSnapH = true;
+    io.Fonts->AddFontDefault(&text_config);
+
+    icons_config.MergeMode = true;  /* into that font, rather than beside it */
+    icons_config.PixelSnapH = true;
+    /* Min and Max together: every icon takes the same width whatever it draws,
+     * so a column of them lines up. Given at FONT_SIZE and scaled from it. */
+    icons_config.GlyphMinAdvanceX = FONT_SIZE;
+    icons_config.GlyphMaxAdvanceX = FONT_SIZE;
+    io.Fonts->AddFontFromMemoryCompressedTTF(font_fk_compressed_data,
+                                             font_fk_compressed_size,
+                                             FONT_SIZE, &icons_config,
+                                             icons_ranges);
+}
+
 int main(int argc, char **argv)
 {
     GLFWwindow *window;
@@ -1416,8 +1498,10 @@ int main(int argc, char **argv)
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    ImGui::GetIO().IniFilename = ini_path();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.IniFilename = ini_path();
+    build_font(io);
     ImGui::StyleColorsDark();
     ImGui::GetStyle().ScaleAllSizes(scale);
     ImGui::GetStyle().FontScaleDpi = scale;

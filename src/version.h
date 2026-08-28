@@ -13,4 +13,10 @@
 #define TABBER_VERSION  "0.3.0"
 #endif
 
+/* The day that version went out, shown in the front-end's About box. It moves
+ * with TABBER_VERSION and is overridable the same way. */
+#ifndef TABBER_DATE
+#define TABBER_DATE     "2026-08-26"
+#endif
+
 #endif /* TABBER_VERSION_H */
