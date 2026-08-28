@@ -121,17 +121,28 @@ from, so everything below the presentation is the code `tabber` runs. The
 headers in `src/` carry `extern "C"` for it.
 
 It draws one window, filling the viewport whatever size it is dragged to. At
-the top, its own [title bar](#the-windows-frame); under that a button that
-refreshes the catalogue — `update`, in so many words — and when the copy on
-disk was last written. Below them, every custom tab in a sortable table: the
-four columns `list` prints, plus two the CLI has no use for.
+the top, its own [title bar](#the-windows-frame); under that a banner down the
+left and the corner described below; then every custom tab in a sortable
+table: the four columns `list` prints, plus two the CLI has no use for.
 
-In the corner opposite the banner sits one button, an information glyph, which
-opens an About box: the name and version the binary was built with, the day
-that version went out, a line on what the program is for, and a link to the
-repository that opens in whatever the desktop uses for one. The glyph is a
-character like any other, from the icon font merged into the default one with
-the rest of the vendored code below.
+In the corner opposite the banner are three rows, each a square button
+carrying one glyph with a line of text right-aligned against it. The glyphs are
+characters like any other, from the icon font merged into the default one with
+the rest of the vendored code below, and each button says what it is for under
+the pointer.
+
+| Row | The line | The button |
+| --- | --- | --- |
+| About | — | Opens a box naming the version, the day it went out, what the program is for, and a link to the repository that opens in whatever the desktop uses for one |
+| [tabber](#in-the-front-end) | `Tabber is updated`, or `Tabber vX.Y.Z is available!` in green | Looks for a newer tabber, or installs the one waiting |
+| The catalogue | `N custom tabs` | Fetches it again — `update`, in so many words |
+
+The two lines that report a moment keep it under the pointer rather than on
+screen: `Last checked: ...`, the date on the state file for tabber's own
+version and the date on the cached catalogue for the tabs. The rows do not move
+the cursor, so the rule under them starts below whichever reaches further down,
+the corner or the banner — the shortest banner is four lines and the corner is
+three buttons, so it is not always the same one.
 
 | Column | |
 | --- | --- |
@@ -1398,8 +1409,8 @@ one of two states:
 
 | | The line says | The button |
 | --- | --- | --- |
-| Nothing newer known | `Up to date (last checked: ...)` | Looks, now |
-| A newer version known | `Version vX.Y.Z available!`, in green | Downloads and installs it |
+| Nothing newer known | `Tabber is updated`, with the moment it last looked under the pointer | Looks, now |
+| A newer version known | `Tabber vX.Y.Z is available!`, in green | Downloads and installs it |
 
 Pressed, the first does exactly what the timer does — and answers either way,
 because a button that can be pressed to no visible effect is a button that

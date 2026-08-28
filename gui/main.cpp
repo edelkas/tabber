@@ -135,6 +135,13 @@ static const double SWEEP_RETRY_SECONDS = 2.0;
  */
 static const float DIALOG_WRAP_WIDTH = 420.0f;
 
+/*
+ * How many rows the corner opposite the banner holds: the About box, tabber's
+ * own updates, and the catalogue of custom tabs. Named because it is also how
+ * far down the corner reaches, which is not always as far as the banner does.
+ */
+static const int CORNER_ROWS = 3;
+
 /* ASCII art banner */
 static const char* BANNERS[] = {
     " _______    _     _               \n"
@@ -287,8 +294,6 @@ enum {
 };
 
 /* Everything the user reads, in one place. */
-static const char *LABEL_UPDATE   = "Update mappack list";
-static const char *LABEL_UPDATED  = "Last updated: ";
 static const char *LABEL_NEVER    = "Never";
 static const char *LABEL_DOWNLOAD = "Download";
 static const char *LABEL_INSTALL  = "Install";
@@ -298,6 +303,7 @@ static const char *LABEL_NO       = "No";
 static const char *LABEL_OK       = "OK";
 static const char *LABEL_ABOUT    = ICON_FK_INFO_CIRCLE;
 static const char *LABEL_LOOK     = ICON_FK_REFRESH;
+static const char *LABEL_PACKS    = ICON_FK_LIST_ALT;
 static const char *LABEL_GET      = ICON_FK_DOWNLOAD;
 static const char *TITLE_DONE     = "Done";
 static const char *TITLE_FAILED   = "Failed";
@@ -310,14 +316,17 @@ static const char *TITLE_CURRENT  = "Up to date";
 /* What the overlay says while the thread is away doing each of them. */
 static const char *BUSY_CHECK     = "Looking for a newer " TABBER_NAME "...";
 static const char *BUSY_UPGRADE   = "Updating " TABBER_NAME "...";
+static const char *BUSY_TABS      = "Updating the mappack list...";
 
-/* The corner: what it says about updates, and what its button offers. The
- * version and the moment are filled in beside these. */
+/* The corner: what each row says, and what its button offers. The version, the
+ * count and the moment are filled in beside these. */
 static const char *STATUS_CURRENT  = "Tabber is updated";
 static const char *STATUS_WAITING  = "Tabber v%s is available!";
+static const char *STATUS_TABS     = "%u custom tab%s";
 static const char *HINT_DATE_CHECK = "Last checked: %s";
 static const char *HINT_LOOK       = "Look for updates";
 static const char *HINT_GET        = "Download update";
+static const char *HINT_TABS       = "Look for new custom tabs";
 
 /* The update prompt. The version numbers are filled in beside these. */
 static const char *UPDATE_QUESTION = "Update now?";
@@ -1557,85 +1566,129 @@ static void draw_banner(void)
 }
 
 /*
- * The button in the corner opposite the banner, level with the top of it. Its
- * label is one glyph of the icon font merged into the default one by
- * build_font, which is the whole of what makes a character a picture here.
+ * The corner opposite the banner. Three rows, top to bottom: what this program
+ * is, how its own version stands, and how the catalogue of custom tabs stands.
+ * Each is a square button carrying one glyph of the icon font merged into the
+ * default one by build_font — which is the whole of what makes a character a
+ * picture here — with a line of text right-aligned against it.
  *
- * `level` is where the panel's contents began, in screen coordinates, taken
- * before the banner moved the cursor down past it.
+ * The rows are drawn in screen coordinates and put the cursor back where they
+ * found it, so the panel carries on below the banner. They are submitted after
+ * the banner so that they take the pointer wherever it reaches under them.
+ *
+ * `level` is where the panel's contents began, taken before the banner moved
+ * the cursor down past it.
  */
-static void draw_about_button(ImVec2 level)
-{
-    float size = ImGui::GetFrameHeight();   /* square: one glyph and its padding */
-    ImVec2 back = ImGui::GetCursorScreenPos();
-    float right = back.x + ImGui::GetContentRegionAvail().x;
 
-    ImGui::SetCursorScreenPos(ImVec2(right - size, level.y));
-    if (ImGui::Button(LABEL_ABOUT, ImVec2(size, size)))
-        g_open_popup = TITLE_ABOUT;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", ABOUT_HINT);   /* an icon on its own says little */
-    ImGui::SetCursorScreenPos(back);
+/* The top-left of row `n`'s button: a button tall and a gap apart, hard
+ * against the right-hand edge of whatever room the panel has. */
+static ImVec2 corner_seat(ImVec2 level, int n)
+{
+    const ImGuiStyle &style = ImGui::GetStyle();
+    float size = ImGui::GetFrameHeight();
+    float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+
+    return ImVec2(right - size, level.y + (float)n * (size + style.ItemSpacing.y));
 }
 
 /*
- * The row under the About button: what is known about newer releases of
- * tabber, and the one thing there is to do about it. Two states, and the line
- * and the button always show the same one — nothing newer, so a look; a
- * version waiting, so a download, which goes ahead without asking again. The
- * question has been put by then, or the button itself is the asking.
- *
- * `level` is where the panel's contents began, as it is for the About button;
- * this sits one button and one gap below that.
+ * One row. `text` is right-aligned against the button and dimmed unless
+ * `colour` says otherwise, with `text_hint` under the pointer when there is
+ * one; the button carries `icon`, and `hint` under the pointer. It is out of
+ * reach while this thread is away doing something else, as every other button
+ * that starts work is. Returns nonzero when it was pressed.
  */
-static void draw_update_corner(ImVec2 level)
+static int draw_corner_row(ImVec2 level, int n, const char *text,
+                           const ImVec4 *colour, const char *text_hint,
+                           const char *icon, const char *hint)
+{
+    const ImGuiStyle &style = ImGui::GetStyle();
+    float size = ImGui::GetFrameHeight();
+    ImVec2 seat = corner_seat(level, n);
+    ImVec2 extent = ImGui::CalcTextSize(text);
+    int pressed;
+
+    /* Dear ImGui keys a button on its label, and two of these rows can be
+     * showing the same glyph — a look for a newer tabber and a look for newer
+     * tabs are the same picture. The row number is what tells them apart. */
+    ImGui::PushID(n);
+
+    /* Ending where the button begins, and centred against it: the line is one
+     * line high and the button is a frame's padding taller. */
+    ImGui::SetCursorScreenPos(ImVec2(seat.x - style.ItemSpacing.x - extent.x,
+                                     seat.y + (size - extent.y) * 0.5f));
+    if (colour)
+        ImGui::TextColored(*colour, "%s", text);
+    else
+        ImGui::TextDisabled("%s", text);   /* nothing to act on: it recedes */
+    if (text_hint && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", text_hint);
+
+    ImGui::SetCursorScreenPos(seat);
+    ImGui::BeginDisabled(g_pending != ACT_NONE);
+    pressed = ImGui::Button(icon, ImVec2(size, size));
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", hint);   /* an icon on its own says little */
+    ImGui::PopID();
+    return pressed;
+}
+
+/*
+ * All three of them. Returns the screen Y just below the last row, which is
+ * not always above where the banner ended: the shortest banner is four lines
+ * and the corner is three buttons, so either can be the taller.
+ */
+static float draw_corner(ImVec2 level)
 {
     const ImGuiStyle &style = ImGui::GetStyle();
     float size = ImGui::GetFrameHeight();
     ImVec2 back = ImGui::GetCursorScreenPos();
-    float right = back.x + ImGui::GetContentRegionAvail().x;
-    float row = level.y + size + style.ItemSpacing.y;
+    ImVec2 seat = corner_seat(level, 0);
     int waiting = g_known_version[0] != '\0';
-    char text[TB_WHEN_LEN + 64];
-    ImVec2 extent, at;
+    const ImVec4 *colour = waiting ? &GREEN_TEXT : NULL;
+    char text[TB_WHEN_LEN + 64], hint[TB_WHEN_LEN + 32];
 
+    /* What this is. Alone in never being out of reach: it starts no work. */
+    ImGui::SetCursorScreenPos(seat);
+    if (ImGui::Button(LABEL_ABOUT, ImVec2(size, size)))
+        g_open_popup = TITLE_ABOUT;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", ABOUT_HINT);
+
+    /*
+     * Tabber itself. The line and the button always show the same state —
+     * nothing newer, so a look; a version waiting, so a download, which goes
+     * ahead without asking again. The question has been put by then, or the
+     * button itself is the asking.
+     */
     if (waiting)
         snprintf(text, sizeof text, STATUS_WAITING, g_known_version);
     else
-        snprintf(text, sizeof text, STATUS_CURRENT);
-
-    /* Ending where the button begins, and centred against it: the line is one
-     * line high and the button is a frame's padding taller. */
-    extent = ImGui::CalcTextSize(text);
-    at = ImVec2(right - size - style.ItemSpacing.x - extent.x,
-                row + (size - extent.y) * 0.5f);
-
-    /* A patch of the window's own background under it, up to the button. A
-     * wide banner reaches this far across at narrow widths, and the art is
-     * decoration where this is not: the line has to stay readable over it. */
-    /* ImGui::GetWindowDrawList()->AddRectFilled(
-        ImVec2(at.x - style.FramePadding.x, at.y - style.FramePadding.y),
-        ImVec2(right - size, at.y + extent.y + style.FramePadding.y),
-        ImGui::GetColorU32(ImGuiCol_WindowBg)); */
-
-    ImGui::SetCursorScreenPos(at);
-    if (waiting)
-        ImGui::TextColored(GREEN_TEXT, "%s", text);
-    else {
-        ImGui::TextDisabled("%s", text);   /* nothing to act on: it recedes */
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(HINT_DATE_CHECK, g_checked_when[0] ? g_checked_when : LABEL_NEVER);
-    }
-
-    ImGui::SetCursorScreenPos(ImVec2(right - size, row));
-    ImGui::BeginDisabled(g_pending != ACT_NONE);
-    if (ImGui::Button(waiting ? LABEL_GET : LABEL_LOOK, ImVec2(size, size)))
+        snprintf(text, sizeof text, "%s", STATUS_CURRENT);
+    snprintf(hint, sizeof hint, HINT_DATE_CHECK, g_checked_when);
+    if (draw_corner_row(level, 1, text, colour, waiting ? NULL : hint,
+                        waiting ? LABEL_GET : LABEL_LOOK,
+                        waiting ? HINT_GET : HINT_LOOK))
         request(waiting ? ACT_UPGRADE : ACT_CHECK_ASKED, NULL,
                 waiting ? BUSY_UPGRADE : BUSY_CHECK);
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", waiting ? HINT_GET : HINT_LOOK);
+
+    /*
+     * The catalogue. How many tabs are in it, and when it was last fetched —
+     * which is the date on the copy on disk, not a date anything writes down.
+     */
+    snprintf(text, sizeof text, STATUS_TABS, (unsigned)g_row_count,
+             g_row_count == 1 ? "" : "s");
+    snprintf(hint, sizeof hint, HINT_DATE_CHECK, g_last_updated);
+    if (draw_corner_row(level, 2, text, NULL, hint, LABEL_PACKS, HINT_TABS))
+        request(ACT_UPDATE, NULL, BUSY_TABS);
+
     ImGui::SetCursorScreenPos(back);
+
+    /* A gap after the last row as well as between them, which is what the
+     * banner leaves behind it too: whichever of the two wins, the rule below
+     * stands the same distance off. */
+    return level.y + (float)CORNER_ROWS * (size + style.ItemSpacing.y);
 }
 
 /* The one window, filling the viewport however the frame has been resized. */
@@ -1643,6 +1696,7 @@ static void draw_panel(void)
 {
     const ImGuiViewport *viewport = ImGui::GetMainViewport();
     ImVec2 top;
+    float corner;
     int taken;
 
     /* Set every frame rather than once: this is what follows a resize. */
@@ -1653,20 +1707,14 @@ static void draw_panel(void)
     taken = handle_resize();
     draw_title_bar(taken);
 
-    /* The banner down the left, and up in the corner it leaves free the About
-     * button with the update row under it. They go in second so that they take
-     * the pointer wherever a wide banner reaches under them. */
+    /* The banner down the left, and the three rows in the corner it leaves
+     * free. Neither moves the cursor, so the rule below starts under whichever
+     * of the two reaches further down. */
     top = ImGui::GetCursorScreenPos();
     draw_banner();
-    draw_about_button(top);
-    draw_update_corner(top);
-
-    ImGui::BeginDisabled(g_pending != ACT_NONE);
-    if (ImGui::Button(LABEL_UPDATE))
-        request(ACT_UPDATE, NULL, "Updating the mappack list...");
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::Text("%s%s", LABEL_UPDATED, g_last_updated);
+    corner = draw_corner(top);
+    if (corner > ImGui::GetCursorScreenPos().y)
+        ImGui::SetCursorScreenPos(ImVec2(top.x, corner));
 
     ImGui::Separator();
     if (g_digest)
