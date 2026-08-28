@@ -297,16 +297,27 @@ static const char *LABEL_YES      = "Yes";
 static const char *LABEL_NO       = "No";
 static const char *LABEL_OK       = "OK";
 static const char *LABEL_ABOUT    = ICON_FK_INFO_CIRCLE;
+static const char *LABEL_LOOK     = ICON_FK_REFRESH;
+static const char *LABEL_GET      = ICON_FK_DOWNLOAD;
 static const char *TITLE_DONE     = "Done";
 static const char *TITLE_FAILED   = "Failed";
 static const char *TITLE_CONFIRM  = "One tab at a time";
 static const char *TITLE_ABOUT    = "About";
 static const char *TITLE_UPDATE   = "Update available";
 static const char *TITLE_UPDATED  = "Updated";
+static const char *TITLE_CURRENT  = "Up to date";
 
 /* What the overlay says while the thread is away doing each of them. */
 static const char *BUSY_CHECK     = "Looking for a newer " TABBER_NAME "...";
 static const char *BUSY_UPGRADE   = "Updating " TABBER_NAME "...";
+
+/* The corner: what it says about updates, and what its button offers. The
+ * version and the moment are filled in beside these. */
+static const char *STATUS_CURRENT  = "Tabber is updated";
+static const char *STATUS_WAITING  = "Tabber v%s is available!";
+static const char *HINT_DATE_CHECK = "Last checked: %s";
+static const char *HINT_LOOK       = "Look for updates";
+static const char *HINT_GET        = "Download update";
 
 /* The update prompt. The version numbers are filled in beside these. */
 static const char *UPDATE_QUESTION = "Update now?";
@@ -337,6 +348,10 @@ static const ImVec4 GREEN_ACTIVE(0.12f, 0.35f, 0.16f, 1.00f);
 static const ImVec4 RED_BUTTON  (0.52f, 0.16f, 0.16f, 1.00f);
 static const ImVec4 RED_HOVER   (0.66f, 0.22f, 0.22f, 1.00f);
 static const ImVec4 RED_ACTIVE  (0.42f, 0.12f, 0.12f, 1.00f);
+
+/* A green for reading rather than for pressing: the button greens above are
+ * too dark to put a line of text in on this background. */
+static const ImVec4 GREEN_TEXT  (0.45f, 0.80f, 0.45f, 1.00f);
 
 /* The close button reddens under the pointer, as it does in every window. */
 static const ImVec4 CLOSE_HOVER (0.75f, 0.16f, 0.16f, 1.00f);
@@ -387,7 +402,7 @@ static int g_sort_ascending = 1;
  * ACT_CHECK is the one nothing clicks: see "Updating tabber itself". */
 typedef enum {
     ACT_NONE, ACT_UPDATE, ACT_DOWNLOAD, ACT_INSTALL, ACT_UNINSTALL, ACT_REPLACE,
-    ACT_CHECK, ACT_UPGRADE
+    ACT_CHECK, ACT_CHECK_ASKED, ACT_UPGRADE
 } ui_action;
 
 static ui_action g_pending = ACT_NONE;
@@ -406,6 +421,15 @@ static int  g_dialog_open = 0;      /* one is on screen and owns the window */
  * copied out because applying it wants the URL, the size and the MD5 too. */
 static update_info g_update;
 static long long g_update_stamp = 0;   /* when the state file was last asked */
+
+/*
+ * What the corner says, mirrored out of the state file. A newer version is
+ * known across runs — the check that found it wrote it down — so this is read
+ * from there rather than from g_update, which is only filled by a check this
+ * session made and is empty in a window opened after one.
+ */
+static char g_known_version[UPDATE_VERSION_MAX] = "";  /* empty: none newer */
+static char g_checked_when[TB_WHEN_LEN] = "";
 
 static void on_glfw_error(int error, const char *description)
 {
@@ -690,7 +714,7 @@ static int run_uninstall(const npp_tab *tab, char *err, size_t errsz)
     return 0;
 }
 
-static void run_check(void);
+static void run_check(int asked);
 static void run_upgrade(void);
 
 /* Carries out whatever the last click asked for, and says how it went. */
@@ -707,8 +731,8 @@ static void run_pending(void)
     g_pending_drawn = 0;
 
     /* Neither of these is about a tab, so neither wants the code below. */
-    if (action == ACT_CHECK) {
-        run_check();
+    if (action == ACT_CHECK || action == ACT_CHECK_ASKED) {
+        run_check(action == ACT_CHECK_ASKED);
         return;
     }
     if (action == ACT_UPGRADE) {
@@ -842,6 +866,36 @@ static void request_install(const npp_tab *tab)
  * the user has not already said no to interrupts them.
  */
 
+/*
+ * Reads what the state file knows about updates into the two strings the
+ * corner draws from. A version at or below this one leaves g_known_version
+ * empty, which is what "up to date" means here: the newest release there is,
+ * as far as the last look could tell.
+ */
+static void read_update_status(config *cfg)
+{
+    const char *latest = config_update_latest(cfg);
+    const char *when = config_update_last_check(cfg);
+
+    g_known_version[0] = '\0';
+    if (latest && update_version_compare(latest, TABBER_VERSION) > 0)
+        snprintf(g_known_version, sizeof g_known_version, "%s", latest);
+    time_local_stamp(when ? time_from_iso8601(when) : 0,
+                     g_checked_when, sizeof g_checked_when);
+}
+
+/* The same, for the places that have no config open already. */
+static void refresh_update_status(void)
+{
+    char err[TB_ERR_LEN];
+    config *cfg = config_load(err, sizeof err);
+
+    if (!cfg)
+        return;
+    read_update_status(cfg);
+    config_free(cfg);
+}
+
 /* Remembers that this version was turned down, so it is offered once and not
  * every day until it is taken. */
 static void decline_update(void)
@@ -857,43 +911,80 @@ static void decline_update(void)
 }
 
 /*
- * Reads the newest release's manifest and, if it is worth saying anything
- * about, puts the question. A check nobody asked for says nothing when it
- * fails: no network is not this window's problem to report.
+ * Reads the newest release's manifest and records that the look happened.
+ * Returns 0 whatever the manifest turned out to say, or -1 with the reason in
+ * `err`; `declined`, when given, comes back saying whether that exact version
+ * has been turned down before.
+ *
+ * Anything newer than what is running is left in g_update, which is what the
+ * corner reads and what applying an update works from — the version alone is
+ * no use for that, since installing it wants the URL and the two promises the
+ * manifest makes about the download.
  */
-static void run_check(void)
+static int look_for_update(int *declined, char *err, size_t errsz)
 {
-    char err[TB_ERR_LEN], sub[TB_ERR_LEN];
+    char sub[TB_ERR_LEN];
     update_info info;
     config *cfg;
-    int found, declined = 0;
+    int rc;
 
-    found = update_check(UPDATE_FLAVOUR_GUI, &info, err, sizeof err) == 0;
+    if (declined)
+        *declined = 0;
+    rc = update_check(UPDATE_FLAVOUR_GUI, &info, err, errsz);
 
-    /* The attempt is recorded whether or not it got through, or a machine
-     * that cannot reach GitHub would pay for a failed lookup every half hour
+    /* The look is recorded whether or not it got through, or a machine that
+     * cannot reach GitHub would pay for a failed lookup every half hour
      * instead of once a day. */
     cfg = config_load(sub, sizeof sub);
     if (cfg) {
-        config_update_checked(cfg, found ? info.version : NULL);
-        if (found)
-            declined = config_update_declined(cfg, info.version);
+        config_update_checked(cfg, rc == 0 ? info.version : NULL);
+        if (rc == 0 && declined)
+            *declined = config_update_declined(cfg, info.version);
         config_save(cfg, sub, sizeof sub);
+        read_update_status(cfg);
         config_free(cfg);
     }
+    if (rc != 0)
+        return -1;
 
-    if (!found)
-        return;
-    if (!info.newer || declined) {
+    update_info_free(&g_update);   /* whatever was known before is older news */
+    if (info.newer)
+        g_update = info;
+    else
         update_info_free(&info);
+    return 0;
+}
+
+/*
+ * A look, and what is said about one that turns up nothing. A look nobody
+ * asked for is silent either way — no network is not this window's problem to
+ * report, and nothing to report is not worth a dialog. One that was asked for
+ * answers both ways, because a button that can be pressed to no visible effect
+ * is a button that looks broken.
+ */
+static void run_check(int asked)
+{
+    char err[TB_ERR_LEN];
+    int declined = 0;
+
+    if (look_for_update(&declined, err, sizeof err) != 0) {
+        if (asked)
+            set_result(TITLE_FAILED, "The newest release could not be looked "
+                                     "up:\n%s", err);
         return;
     }
 
-    /* Held until the question is answered: applying it wants the URL and the
-     * two promises the manifest makes about the download. */
-    update_info_free(&g_update);
-    g_update = info;
-    g_open_popup = TITLE_UPDATE;
+    if (g_known_version[0] == '\0') {
+        if (asked)
+            set_result(TITLE_CURRENT, "%s %s is the newest release.",
+                       TABBER_NAME, TABBER_VERSION);
+        return;
+    }
+
+    /* A version turned down before is not put up again on its own; a look the
+     * user asked for is an answer owed, so it is put up then. */
+    if (asked || !declined)
+        g_open_popup = TITLE_UPDATE;
 }
 
 /*
@@ -905,6 +996,32 @@ static void run_upgrade(void)
     char err[TB_ERR_LEN], sub[TB_ERR_LEN];
     update_plan plan;
     config *cfg;
+
+    /*
+     * A window opened since the look that found the release knows only what
+     * the state file kept — which version, not where to get it — so the
+     * manifest is read again. Which is the honest thing to do in any case:
+     * what gets installed is whatever is newest at the moment the button is
+     * pressed, not what was newest when the corner last drew.
+     */
+    if (!g_update.url && look_for_update(NULL, err, sizeof err) != 0) {
+        set_result(TITLE_FAILED, "The newest release could not be looked up:\n%s\n\n"
+                                 "Nothing has changed; you are still running %s.",
+                   err, TABBER_VERSION);
+        return;
+    }
+    if (g_known_version[0] == '\0') {
+        set_result(TITLE_CURRENT, "%s %s is the newest release.",
+                   TABBER_NAME, TABBER_VERSION);
+        return;
+    }
+    if (!g_update.url) {
+        set_result(TITLE_FAILED, "%s %s ships no build this one can replace "
+                                 "itself with.\n\nIt can be installed by hand "
+                                 "from %s", TABBER_NAME, g_known_version,
+                   g_update.page ? g_update.page : UPDATE_RELEASES_URL);
+        return;
+    }
 
     /* Downloaded and weighed and hashed; still nothing in place. */
     if (update_plan_build(&g_update, &plan, err, sizeof err) != 0) {
@@ -1461,6 +1578,66 @@ static void draw_about_button(ImVec2 level)
     ImGui::SetCursorScreenPos(back);
 }
 
+/*
+ * The row under the About button: what is known about newer releases of
+ * tabber, and the one thing there is to do about it. Two states, and the line
+ * and the button always show the same one — nothing newer, so a look; a
+ * version waiting, so a download, which goes ahead without asking again. The
+ * question has been put by then, or the button itself is the asking.
+ *
+ * `level` is where the panel's contents began, as it is for the About button;
+ * this sits one button and one gap below that.
+ */
+static void draw_update_corner(ImVec2 level)
+{
+    const ImGuiStyle &style = ImGui::GetStyle();
+    float size = ImGui::GetFrameHeight();
+    ImVec2 back = ImGui::GetCursorScreenPos();
+    float right = back.x + ImGui::GetContentRegionAvail().x;
+    float row = level.y + size + style.ItemSpacing.y;
+    int waiting = g_known_version[0] != '\0';
+    char text[TB_WHEN_LEN + 64];
+    ImVec2 extent, at;
+
+    if (waiting)
+        snprintf(text, sizeof text, STATUS_WAITING, g_known_version);
+    else
+        snprintf(text, sizeof text, STATUS_CURRENT);
+
+    /* Ending where the button begins, and centred against it: the line is one
+     * line high and the button is a frame's padding taller. */
+    extent = ImGui::CalcTextSize(text);
+    at = ImVec2(right - size - style.ItemSpacing.x - extent.x,
+                row + (size - extent.y) * 0.5f);
+
+    /* A patch of the window's own background under it, up to the button. A
+     * wide banner reaches this far across at narrow widths, and the art is
+     * decoration where this is not: the line has to stay readable over it. */
+    /* ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(at.x - style.FramePadding.x, at.y - style.FramePadding.y),
+        ImVec2(right - size, at.y + extent.y + style.FramePadding.y),
+        ImGui::GetColorU32(ImGuiCol_WindowBg)); */
+
+    ImGui::SetCursorScreenPos(at);
+    if (waiting)
+        ImGui::TextColored(GREEN_TEXT, "%s", text);
+    else {
+        ImGui::TextDisabled("%s", text);   /* nothing to act on: it recedes */
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(HINT_DATE_CHECK, g_checked_when[0] ? g_checked_when : LABEL_NEVER);
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(right - size, row));
+    ImGui::BeginDisabled(g_pending != ACT_NONE);
+    if (ImGui::Button(waiting ? LABEL_GET : LABEL_LOOK, ImVec2(size, size)))
+        request(waiting ? ACT_UPGRADE : ACT_CHECK_ASKED, NULL,
+                waiting ? BUSY_UPGRADE : BUSY_CHECK);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", waiting ? HINT_GET : HINT_LOOK);
+    ImGui::SetCursorScreenPos(back);
+}
+
 /* The one window, filling the viewport however the frame has been resized. */
 static void draw_panel(void)
 {
@@ -1476,12 +1653,13 @@ static void draw_panel(void)
     taken = handle_resize();
     draw_title_bar(taken);
 
-    /* The banner down the left, the About button up in the corner it leaves
-     * free. The button goes in second so that it takes the pointer wherever a
-     * wide banner reaches under it. */
+    /* The banner down the left, and up in the corner it leaves free the About
+     * button with the update row under it. They go in second so that they take
+     * the pointer wherever a wide banner reaches under them. */
     top = ImGui::GetCursorScreenPos();
     draw_banner();
     draw_about_button(top);
+    draw_update_corner(top);
 
     ImGui::BeginDisabled(g_pending != ACT_NONE);
     if (ImGui::Button(LABEL_UPDATE))
@@ -1554,6 +1732,7 @@ static void draw_dialogs(void)
     draw_result_modal(TITLE_DONE);
     draw_result_modal(TITLE_FAILED);
     draw_result_modal(TITLE_UPDATED);
+    draw_result_modal(TITLE_CURRENT);
 
     /* A newer release, and the choice of whether to take it. Saying no is
      * remembered, so the same version is not put up again tomorrow. */
@@ -1772,8 +1951,10 @@ int main(int argc, char **argv)
     load_digest();
     refresh_rows();
 
-    /* An update this program made of itself, and whether to look for another. */
+    /* An update this program made of itself, what is known about the next one,
+     * and whether it is time to go looking again. */
     announce_update();
+    refresh_update_status();
     poll_for_update();
 
     glfwSetErrorCallback(on_glfw_error);

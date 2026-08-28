@@ -313,6 +313,13 @@ const char *config_update_latest(config *cfg)
     return latest && latest[0] ? latest : NULL;
 }
 
+const char *config_update_last_check(config *cfg)
+{
+    const char *last = json_get_string(update_record(cfg, 0), CJK_LAST_CHECK, NULL);
+
+    return last && last[0] ? last : NULL;
+}
+
 int config_update_declined(config *cfg, const char *version)
 {
     const char *declined = json_get_string(update_record(cfg, 0), CJK_DECLINED, NULL);

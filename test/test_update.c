@@ -578,12 +578,19 @@ static void test_when_to_check(void)
         CHECK(config_update_due(cfg, UPDATE_CHECK_HOURS),
               "and a check is due when none has ever run");
         CHECK(config_update_latest(cfg) == NULL, "nothing has been seen yet");
+        CHECK(config_update_last_check(cfg) == NULL, "and no moment to show for it");
 
         config_update_checked(cfg, "99.0.0");
         CHECK(!config_update_due(cfg, UPDATE_CHECK_HOURS),
               "once one has run, the next is not due");
         CHECK(config_update_due(cfg, 0), "though it is if nothing is allowed to age");
         CHECK_STR(config_update_latest(cfg), "99.0.0", "and what it found is kept");
+
+        /* The same stamp "is another one owed?" is answered from, handed out
+         * for showing rather than for comparing: the front-end says when it
+         * last looked. */
+        CHECK(time_from_iso8601(config_update_last_check(cfg)) > 0,
+              "and the moment it happened, as a timestamp that reads back");
 
         CHECK(!config_update_declined(cfg, "99.0.0"), "nothing is declined yet");
         config_update_decline(cfg, "99.0.0");

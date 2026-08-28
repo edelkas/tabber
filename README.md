@@ -163,8 +163,9 @@ way the outcome is a dialog — what happened, or why it did not.
 
 It also [keeps itself up to date](#in-the-front-end): a look at the newest
 release when the window opens and at most once a day after, and a Yes/No
-dialog when there is one worth taking. Nothing that goes wrong there closes the
-window.
+dialog when there is one worth taking. Under the About button a line says where
+that stands and a button does the one thing there is to do about it — look now,
+or install what is waiting. Nothing that goes wrong there closes the window.
 
 None of that is believed for longer than five minutes. Whether a tab is
 downloaded, which one is installed and when each was last played can all change
@@ -1264,9 +1265,12 @@ not held up by one more than once a day (see
 }
 ```
 
-`check` set to false turns the automatic look off altogether; `declined` is the
-version the user said no to, which is why the offer comes once per release
-rather than once a day. `applied` is news left for another process to give: the
+`check` set to false turns the automatic look off altogether, though a look
+asked for by name still happens; `declined` is the version the user said no to,
+which is why the offer comes once per release rather than once a day.
+`last_check` and `latest` are also what the front-end's corner reads to say
+where things stand before it has been near the network. `applied` is news left
+for another process to give: the
 front-end writes the version there when an update goes through, because it then
 hands over to the binary it installed and is gone before there is anything to
 say. The one that comes up says it once and clears the key.
@@ -1385,14 +1389,40 @@ The same three steps and the same code underneath, with different ends on it.
 
 The window looks when it opens and every half hour it stays open, which is only
 how often the state file is *asked*: the 24-hour rule still decides, so GitHub
-is reached at most once a day however long the window is left up. A check that
+is reached at most once a day however long the window is left up. A look that
 finds nothing, or fails, says nothing at all — there is no line of output here
 to put it in, and no network is not a reason to interrupt anyone.
 
+Under the About button sits a line and a button saying where things stand, in
+one of two states:
+
+| | The line says | The button |
+| --- | --- | --- |
+| Nothing newer known | `Up to date (last checked: ...)` | Looks, now |
+| A newer version known | `Version vX.Y.Z available!`, in green | Downloads and installs it |
+
+Pressed, the first does exactly what the timer does — and answers either way,
+because a button that can be pressed to no visible effect is a button that
+looks broken. Nothing newer gets a dialog saying so; a lookup that fails gets
+the reason. Anything newer goes on as below.
+
+The second is the Yes of that dialog, and asks nothing further: the question
+has been put by then, or pressing a button labelled *Download update* is the
+asking. It re-reads the manifest first, both because a window opened since the
+look knows only what the state file kept — which version, not where to get it —
+and because what should be installed is whatever is newest when the button is
+pressed.
+
+What the line knows comes from `config.json`, not from the run: a version found
+yesterday and turned down is still named today, in a window that has not been
+near the network. That is the case the state file is there for.
+
 A newer version opens a dialog naming it, the version in hand and the release
-notes, and asks. **No** is remembered for that version, as on the terminal.
-**Yes** downloads, verifies and swaps exactly as `upgrade` does, and then the
-two ends part company from the CLI:
+notes, and asks. **No** is remembered for that version, as on the terminal —
+the corner goes on saying it is there, which is what makes a decline something
+other than a decision the user cannot revisit. **Yes** downloads, verifies and
+swaps exactly as `upgrade` does, and then the two ends part company from the
+CLI:
 
 - **Anything that fails** puts the reason in a dialog and leaves the program
   running. That is the one thing an update must never take away, so there is no

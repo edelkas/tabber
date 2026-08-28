@@ -189,6 +189,13 @@ void config_update_checked(config *cfg, const char *latest);
 /* The newest version a check has seen, or NULL when none has. */
 const char *config_update_latest(config *cfg);
 
+/*
+ * When the last check happened, as the fixed-width UTC stamp it is stored as,
+ * or NULL when none has. config_update_due answers "is another one owed?"
+ * without this; this is for showing the moment to somebody.
+ */
+const char *config_update_last_check(config *cfg);
+
 /* Whether the user has already said no to this particular version. */
 int config_update_declined(config *cfg, const char *version);
 
