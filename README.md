@@ -59,6 +59,7 @@ has just been started now that the command line side is complete.
 | Linux / macOS  | `make`      | Any C99 compiler; needs libcurl (`libcurl4-openssl-dev` or equivalent) |
 | Windows (MinGW)| `make`      | Links `advapi32`, `ole32`, `shell32`, `uuid`, `winhttp` |
 | Any, everything | `make all` | The CLI and the GUI, for this machine |
+| Any, from scratch | `build.bat ... clean`, `make clean` | Only what changed is built otherwise |
 
 The binary lands in `build/tabber[.exe]`. HTTP goes through WinHTTP on Windows
 (no dependency) and libcurl elsewhere, both behind the two-function API in
@@ -84,6 +85,22 @@ everything after it reads as usual, so `build.bat x86 test online` is the
 32-bit run of what `build.bat test online` runs. A compiler already on `PATH`
 is used only if it targets what was asked for; otherwise the right `vcvars` is
 imported over it.
+
+Only what changed is compiled. An object older than the source it came from,
+or than the newest header of the group it belongs to, is built again and the
+rest are linked as they already are; the executable itself is relinked only if
+something was. Groups are as fine-grained as the dependency each build system
+can keep: `make` knows exactly which headers every object read, because `-MMD`
+writes them down beside it, while `build.bat` watches `src\*.h` for the tool's
+own code and the vendored headers for the libraries, which change only when a
+new drop of them does. Adding `clean` anywhere on a `build.bat` line discards
+that architecture's objects before it starts, as `make clean` does; that is
+what a changed build script wants, and what to reach for when a source has been
+deleted and its object is still being linked in.
+
+Diagnostics come out in English on a machine that speaks something else, since
+an error message is far easier to look up that way: `VSLANG` sets the language
+MSVC answers in, `LC_ALL` the one the GCC toolchain does.
 
 Where the word size shows is in the places the system splits in two, and both
 are already handled for other reasons: a 32-bit process reads Steam's registry

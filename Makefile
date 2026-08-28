@@ -5,6 +5,9 @@
 #   make test-online / make test-full   include the network tiers
 #   make gui        build the graphical front-end
 #   make all        both of the above, for this machine
+#   make clean      throw the objects away, so the next build starts over
+#
+# Only what changed is rebuilt, headers included; see DEPFLAGS below.
 #
 # Every finished executable is also copied to dist/ under the name it is
 # released as, which carries the front-end and the platform. Nothing else
@@ -14,6 +17,17 @@ CC      ?= cc
 CXX     ?= c++
 CFLAGS  ?= -std=c99 -O2 -Wall -Wextra -pedantic
 CPPFLAGS += -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -D_DARWIN_C_SOURCE
+
+# Diagnostics in English, whatever language the machine speaks: an error
+# message is far easier to look up that way.
+export LC_ALL := C
+
+# Only what changed is rebuilt, and a changed header counts as a change: -MMD
+# writes beside each object the list of headers it read, which is included at
+# the foot of this file. -MP adds a target for each of those headers, so that
+# deleting one leaves a rule with nothing to do rather than an error about a
+# file some .d still remembers. `make clean` is the way to start over.
+DEPFLAGS := -MMD -MP
 
 SRCDIR  := src
 TESTDIR := test
@@ -88,10 +102,10 @@ $(TARGET): $(MAINOBJ) $(LIBOBJ)
 # executable is the whole program: nothing has to ship beside it.
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -c -o $@ $<
 
 $(TESTOBJ)/%.o: $(TESTDIR)/%.c | $(TESTOBJ)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -I$(SRCDIR) -c -o $@ $<
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(DEPFLAGS) -I$(SRCDIR) -c -o $@ $<
 
 $(TESTTARGET): $(TESTOBJS) $(LIBOBJ)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
@@ -162,8 +176,8 @@ GUIOBJS  += $(GUIOBJ)/main.o
 
 # Vendored code is compiled without the project's warning flags: its warnings
 # are upstream's to fix, and they would bury ours. Our own GUI code keeps them.
-VENDORCFLAGS   := -std=c99 -O2 $(GUIDEFS) $(GUIINC)
-VENDORCXXFLAGS := -std=c++11 -O2 $(GUIINC)
+VENDORCFLAGS   := -std=c99 -O2 $(DEPFLAGS) $(GUIDEFS) $(GUIINC)
+VENDORCXXFLAGS := -std=c++11 -O2 $(DEPFLAGS) $(GUIINC)
 
 gui: $(GUITARGET)
 
@@ -189,6 +203,12 @@ $(GUIOBJ)/%.o: $(GLFWDIR)/src/%.c | $(GUIOBJ)
 
 $(GUIOBJ)/%.o: $(GLFWDIR)/src/%.m | $(GUIOBJ)
 	$(CC) $(VENDORCFLAGS) $(CPPFLAGS) -c -o $@ $<
+
+# What each object read, as -MMD left it. They are included last because the
+# GUI's objects are only known by here, and missing on the first build, which
+# is what the leading dash allows.
+DEPFILES := $(MAINOBJ:.o=.d) $(LIBOBJ:.o=.d) $(TESTOBJS:.o=.d) $(GUIOBJS:.o=.d)
+-include $(DEPFILES)
 
 clean:
 	rm -rf $(OBJDIR)
