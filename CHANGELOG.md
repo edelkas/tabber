@@ -1,5 +1,21 @@
 # Changelog
 
+## [[0.4.0] 2026-08-29](https://github.com/edelkas/tabber/releases/tag/v0.4.0)
+
+Main new features:
+- The GUI now supports automatic updates, with a button to trigger them on command.
+- Rendering has been optimized well over tenfold by addressing some driver issues.
+- Tool settings added, with a modal to configure them.
+
+Cosmetic changes:
+- Dark / light theme selector.
+- [ForkAwesome](https://forkaweso.me/Fork-Awesome/icons/) icon font.
+- ASCII art banners with [FIGlet fonts](https://www.figlet.org/).
+
+Internal changes:
+- Rebuilding on Windows optimized: Only changed sources are recompiled, other object files are maintained.
+  And nothing new to compile also implies no relinking.
+
 ## [[0.3.0] 2026-08-26](https://github.com/edelkas/tabber/releases/tag/v0.3.0)
 
 Added graphical interface with world's best toolkit, [Dear ImGui](https://github.com/ocornut/imgui):
