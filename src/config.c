@@ -351,6 +351,36 @@ void config_update_announced(config *cfg)
     json_object_set(update_record(cfg, 1), CJK_APPLIED, json_new_null());
 }
 
+/* ---- What the front-end remembers -------------------------------------- */
+
+/* The "gui" object, created empty the first time something records in it. The
+ * command line writes nothing here; it is the window's own corner of the file. */
+static json_value *gui_record(config *cfg, int create)
+{
+    json_value *record = (json_value *)json_get(cfg->root, CJK_GUI);
+
+    if (record && record->type == JSON_OBJECT)
+        return record;
+    if (!create)
+        return NULL;
+    record = json_new_object();
+    json_object_set(cfg->root, CJK_GUI, record);
+    return record;
+}
+
+const char *config_gui_theme(config *cfg)
+{
+    const char *theme = json_get_string(gui_record(cfg, 0), CJK_THEME, NULL);
+
+    return theme && theme[0] ? theme : NULL;
+}
+
+void config_set_gui_theme(config *cfg, const char *theme)
+{
+    json_object_set(gui_record(cfg, 1), CJK_THEME,
+                    theme ? json_new_string(theme) : json_new_null());
+}
+
 int config_get_palettes(config *cfg, const char *code, str_list *out)
 {
     const json_value *array = json_get(config_find_tab(cfg, code), CJK_PALETTES);

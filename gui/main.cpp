@@ -12,12 +12,12 @@
  * cells that are not shown verbatim live in digest.h.
  *
  * The window has no frame from the system. Its title bar is drawn with the
- * rest of the panel, and the three things a frame used to do — the buttons,
- * dragging the window, pulling on its edges — are done by hand under "The
+ * rest of the panel, and the three things a frame used to do â€” the buttons,
+ * dragging the window, pulling on its edges â€” are done by hand under "The
  * window's own frame" below.
  *
- * A frame is drawn when there is a reason to draw one — an event, or the
- * timer under IDLE_SECONDS below — and the loop sleeps between them rather
+ * A frame is drawn when there is a reason to draw one â€” an event, or the
+ * timer under IDLE_SECONDS below â€” and the loop sleeps between them rather
  * than redrawing an unchanging window sixty times a second. What it sleeps in
  * is worth a look too: see "Pacing the frames".
  *
@@ -72,7 +72,7 @@ static const float FONT_SIZE         = 13.0f;
 /*
  * Waiting instead of spinning. With nothing happening the loop sleeps until
  * something does, waking on its own every IDLE_SECONDS to notice what changes
- * without an event to announce it — the savefile the game rewrites, and the
+ * without an event to announce it â€” the savefile the game rewrites, and the
  * clock LAST USED counts from.
  *
  * SETTLE_FRAMES is how many frames follow the last thing that happened. Dear
@@ -87,7 +87,7 @@ static const int    SETTLE_FRAMES = 3;
  * The window wears no frame of its own: GLFW is asked for an undecorated one
  * and the bar across the top is drawn like everything else in it. That buys
  * one look on every platform, and costs the three things the frame did for
- * free — the buttons, dragging the window about, and pulling on its edges —
+ * free â€” the buttons, dragging the window about, and pulling on its edges â€”
  * all of which are put back by hand further down.
  *
  * These are in the units the style is written in and are scaled with it.
@@ -104,8 +104,8 @@ static const int   ICONIFIED_SLEEP_MS = 10;
 
 /*
  * How often the per-tab state is worked out again. Everything in it can change
- * without tabber being told — the game rewrites the savefile as it is played,
- * and the CLI can install a tab from another window — so it is read afresh on
+ * without tabber being told â€” the game rewrites the savefile as it is played,
+ * and the CLI can install a tab from another window â€” so it is read afresh on
  * a timer rather than only when this program does something.
  */
 static const long long REFRESH_SECONDS = 5 * 60;
@@ -121,7 +121,7 @@ static const long long UPDATE_POLL_SECONDS = 30 * 60;
 
 /*
  * The binary an update replaced cannot be deleted until the process that was
- * running it has gone — and on Windows that process is the one that started
+ * running it has gone â€” and on Windows that process is the one that started
  * this one, still shutting down as this starts. So the sweep at startup is
  * made once more this many seconds in, and only then left to the next run.
  */
@@ -130,7 +130,7 @@ static const double SWEEP_RETRY_SECONDS = 2.0;
 /*
  * How wide the text in a dialog may run before it wraps. A dialog sizes itself
  * to what it holds, and what it holds can be a message from anywhere down the
- * library — a URL, a path, a hash — which without this would push the box
+ * library â€” a URL, a path, a hash â€” which without this would push the box
  * wider than the window it is centred in.
  */
 static const float DIALOG_WRAP_WIDTH = 420.0f;
@@ -141,6 +141,14 @@ static const float DIALOG_WRAP_WIDTH = 420.0f;
  * far down the corner reaches, which is not always as far as the banner does.
  */
 static const int CORNER_ROWS = 3;
+
+/*
+ * How many buttons the widest of those rows holds â€” the strip along the top,
+ * which is the theme, the settings and the About box. Also what keeps the
+ * rows' buttons apart from one another as far as Dear ImGui is concerned:
+ * every seat in the corner has its own number, row by row.
+ */
+static const int CORNER_SLOTS = 3;
 
 /* ASCII art banner */
 static const char* BANNERS[] = {
@@ -305,10 +313,14 @@ static const char *LABEL_ABOUT    = ICON_FK_INFO_CIRCLE;
 static const char *LABEL_LOOK     = ICON_FK_REFRESH;
 static const char *LABEL_PACKS    = ICON_FK_LIST_ALT;
 static const char *LABEL_GET      = ICON_FK_DOWNLOAD;
+static const char *LABEL_SETTINGS = ICON_FK_WRENCH;
+static const char *LABEL_LIGHT    = ICON_FK_SUN;   /* what it would switch to */
+static const char *LABEL_DARK     = ICON_FK_MOON;
 static const char *TITLE_DONE     = "Done";
 static const char *TITLE_FAILED   = "Failed";
 static const char *TITLE_CONFIRM  = "One tab at a time";
 static const char *TITLE_ABOUT    = "About";
+static const char *TITLE_SETTINGS = "Settings";
 static const char *TITLE_UPDATE   = "Update available";
 static const char *TITLE_UPDATED  = "Updated";
 static const char *TITLE_CURRENT  = "Up to date";
@@ -327,6 +339,14 @@ static const char *HINT_DATE_CHECK = "Last checked: %s";
 static const char *HINT_LOOK       = "Look for updates";
 static const char *HINT_GET        = "Download update";
 static const char *HINT_TABS       = "Look for new custom tabs";
+static const char *HINT_SETTINGS   = "Settings";
+static const char *HINT_LIGHT      = "Switch to the light theme";
+static const char *HINT_DARK       = "Switch to the dark theme";
+
+/* What the settings box holds: one line, so far. */
+static const char *SETTING_THEME    = "Theme";
+static const char *THEME_DARK_NAME  = "Dark";
+static const char *THEME_LIGHT_NAME = "Light";
 
 /* The update prompt. The version numbers are filled in beside these. */
 static const char *UPDATE_QUESTION = "Update now?";
@@ -337,15 +357,17 @@ static const char *UPDATE_NO_BUILD =
 /* What the About box says. The name, the version and the date it carries are
  * the release's own, from version.h, so that what is on screen is what was
  * built and not a second copy of it kept up to date by hand. */
-static const char *ABOUT_BLURB = "Installs custom tabs (mappacks) for N++.";
-static const char *ABOUT_REPO  = "https://github.com/edelkas/tabber";
-static const char *ABOUT_HINT  = "About " TABBER_NAME;
+static const char *ABOUT_BLURB   = "Installs custom tabs (mappacks) for N++.";
+static const char *ABOUT_REPO    = "https://github.com/edelkas/tabber";
+static const char *ABOUT_DISCORD = "https://www.discord.gg/nplusplus";
+static const char *ABOUT_HINT    = "About " TABBER_NAME;
 
 /* Identifiers Dear ImGui keys its state on. They are not shown to anyone. */
 static const char *PANEL_ID   = "tabber-panel";
 static const char *TABLE_ID   = "tabber-tabs";
 static const char *BUSY_ID    = "tabber-busy";
 static const char *DRAG_ID    = "##titlebar";
+static const char *BUTTON_ID  = "##corner";   /* the icon goes on by hand */
 static const char *MINIMISE_ID = "##minimise";
 static const char *MAXIMISE_ID = "##maximise";
 static const char *CLOSE_ID    = "##close";
@@ -359,8 +381,13 @@ static const ImVec4 RED_HOVER   (0.66f, 0.22f, 0.22f, 1.00f);
 static const ImVec4 RED_ACTIVE  (0.42f, 0.12f, 0.12f, 1.00f);
 
 /* A green for reading rather than for pressing: the button greens above are
- * too dark to put a line of text in on this background. */
+ * too dark to put a line of text in on a dark background â€” and too pale for
+ * one on a light background, so there is one of each, picked by the theme. */
 static const ImVec4 GREEN_TEXT  (0.45f, 0.80f, 0.45f, 1.00f);
+static const ImVec4 GREEN_ON_LIGHT(0.06f, 0.45f, 0.12f, 1.00f);
+
+/* What goes on top of those button colours, which are dark in either theme. */
+static const ImVec4 WHITE_TEXT  (1.00f, 1.00f, 1.00f, 1.00f);
 
 /* The close button reddens under the pointer, as it does in every window. */
 static const ImVec4 CLOSE_HOVER (0.75f, 0.16f, 0.16f, 1.00f);
@@ -433,12 +460,16 @@ static long long g_update_stamp = 0;   /* when the state file was last asked */
 
 /*
  * What the corner says, mirrored out of the state file. A newer version is
- * known across runs — the check that found it wrote it down — so this is read
+ * known across runs â€” the check that found it wrote it down â€” so this is read
  * from there rather than from g_update, which is only filled by a check this
  * session made and is empty in a window opened after one.
  */
 static char g_known_version[UPDATE_VERSION_MAX] = "";  /* empty: none newer */
 static char g_checked_when[TB_WHEN_LEN] = "";
+
+/* Which of the two themes is on. Dark is what the program has always looked
+ * like, and is what an untouched state file leaves this at. */
+static int g_light = 0;
 
 static void on_glfw_error(int error, const char *description)
 {
@@ -867,7 +898,7 @@ static void request_install(const npp_tab *tab)
  * user already had carries on running, which is the one thing an update must
  * never take away from them. And nothing that goes right can be reported by
  * the process that did it, because on success it hands over to the binary it
- * just installed and exits — so the news is written to the state file and the
+ * just installed and exits â€” so the news is written to the state file and the
  * new process gives it, once.
  *
  * The looking is on a timer rather than a button: at startup and every
@@ -926,7 +957,7 @@ static void decline_update(void)
  * has been turned down before.
  *
  * Anything newer than what is running is left in g_update, which is what the
- * corner reads and what applying an update works from — the version alone is
+ * corner reads and what applying an update works from â€” the version alone is
  * no use for that, since installing it wants the URL and the two promises the
  * manifest makes about the download.
  */
@@ -966,7 +997,7 @@ static int look_for_update(int *declined, char *err, size_t errsz)
 
 /*
  * A look, and what is said about one that turns up nothing. A look nobody
- * asked for is silent either way — no network is not this window's problem to
+ * asked for is silent either way â€” no network is not this window's problem to
  * report, and nothing to report is not worth a dialog. One that was asked for
  * answers both ways, because a button that can be pressed to no visible effect
  * is a button that looks broken.
@@ -1008,7 +1039,7 @@ static void run_upgrade(void)
 
     /*
      * A window opened since the look that found the release knows only what
-     * the state file kept — which version, not where to get it — so the
+     * the state file kept â€” which version, not where to get it â€” so the
      * manifest is read again. Which is the honest thing to do in any case:
      * what gets installed is whatever is newest at the moment the button is
      * pressed, not what was newest when the corner last drew.
@@ -1060,7 +1091,7 @@ static void run_upgrade(void)
     /*
      * Started and not waited for: this process is about to go, and on Windows
      * waiting would keep it holding the binary it was replaced from. If it
-     * will not start, the update itself still stands — the window stays open
+     * will not start, the update itself still stands â€” the window stays open
      * on the old code, and the news above is given whenever it is next opened.
      */
     if (plat_spawn_detached(plan.exe, NULL, 0) != 0) {
@@ -1121,6 +1152,72 @@ static void announce_update(void)
     config_free(cfg);
 }
 
+/* ---- The theme ----------------------------------------------------------
+ *
+ * Two of them, both Dear ImGui's own: the dark one the program has always
+ * worn, and the light one. Which is in use is kept in the state file, so a
+ * window opens the way the last one was left rather than back on the default.
+ */
+
+/* Paints the style, and takes the accent from it: the banner and the version
+ * lines are drawn in the button's colour, which is not the same in the two. */
+static void apply_theme(void)
+{
+    if (g_light)
+        ImGui::StyleColorsLight();
+    else
+        ImGui::StyleColorsDark();
+
+    /* Only the colours: the sizes were scaled to the monitor once, at startup,
+     * and StyleColors* leaves them alone. */
+    THEME_COLOR = ImGui::GetStyleColorVec4(ImGuiCol_Button);
+
+    /* That colour is a tint â€” two fifths opaque â€” which carries as text on the
+     * dark ground and dissolves into the light one, so there it is taken at
+     * full strength. Same hue either way, which is what makes it the accent. */
+    if (g_light)
+        THEME_COLOR.w = 1.0f;
+}
+
+/* Which one the last run was left on. Anything the file does not say is dark. */
+static void read_theme(void)
+{
+    char err[TB_ERR_LEN];
+    config *cfg = config_load(err, sizeof err);
+    const char *theme;
+
+    if (!cfg)
+        return;
+    theme = config_gui_theme(cfg);
+    g_light = theme && strcmp(theme, CONFIG_THEME_LIGHT) == 0;
+    config_free(cfg);
+}
+
+/*
+ * Switches to the one asked for and writes it down. The switch happens whether
+ * or not the writing does: the window has to follow the click either way, and
+ * a state file that could not be written simply opens on the old theme next
+ * time â€” which is a lesser thing to go wrong with than a button that looks
+ * broken. Asking for the one already on does nothing at all, which is what a
+ * radio button pressed where it stands is asking for.
+ */
+static void choose_theme(int light)
+{
+    char err[TB_ERR_LEN];
+    config *cfg;
+
+    if (light == g_light)
+        return;
+    g_light = light;
+    apply_theme();
+    cfg = config_load(err, sizeof err);
+    if (!cfg)
+        return;
+    config_set_gui_theme(cfg, g_light ? CONFIG_THEME_LIGHT : CONFIG_THEME_DARK);
+    config_save(cfg, err, sizeof err);
+    config_free(cfg);
+}
+
 /* ---- Drawing ----------------------------------------------------------- */
 
 static void push_button_colors(const ImVec4 &normal, const ImVec4 &hovered,
@@ -1129,6 +1226,10 @@ static void push_button_colors(const ImVec4 &normal, const ImVec4 &hovered,
     ImGui::PushStyleColor(ImGuiCol_Button, normal);
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hovered);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, active);
+
+    /* The label too: these three are dark whichever theme is on, and the light
+     * one would otherwise write on them in near-black. */
+    ImGui::PushStyleColor(ImGuiCol_Text, WHITE_TEXT);
 }
 
 /*
@@ -1162,12 +1263,12 @@ static void draw_row_button(const npp_tab *tab, const tab_row *row)
         push_button_colors(RED_BUTTON, RED_HOVER, RED_ACTIVE);
         if (ImGui::Button(LABEL_UNINSTALL, size))
             request(ACT_UNINSTALL, tab->code, "Uninstalling...");
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(4);
     } else if (row->downloaded) {
         push_button_colors(GREEN_BUTTON, GREEN_HOVER, GREEN_ACTIVE);
         if (ImGui::Button(LABEL_INSTALL, size))
             request_install(tab);
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(4);
     } else {
         if (ImGui::Button(LABEL_DOWNLOAD, size))
             request(ACT_DOWNLOAD, tab->code, "Downloading...");
@@ -1478,7 +1579,7 @@ static int edges_under_pointer(void)
 /*
  * An undecorated window has no border to take hold of, so the edges are
  * watched here instead. This runs before anything else in the panel is drawn,
- * which is what gives the edges first refusal on the pointer — the title bar
+ * which is what gives the edges first refusal on the pointer â€” the title bar
  * reaches the very top of the window, and the top edge has to win there.
  *
  * Returns nonzero when it has the pointer, so the bar knows to leave it alone.
@@ -1566,11 +1667,15 @@ static void draw_banner(void)
 }
 
 /*
- * The corner opposite the banner. Three rows, top to bottom: what this program
- * is, how its own version stands, and how the catalogue of custom tabs stands.
- * Each is a square button carrying one glyph of the icon font merged into the
- * default one by build_font — which is the whole of what makes a character a
- * picture here — with a line of text right-aligned against it.
+ * The corner opposite the banner. Three rows, top to bottom: what the window
+ * itself is set to, how tabber's own version stands, and how the catalogue of
+ * custom tabs stands. Every button in it is square and carries one glyph of
+ * the icon font merged into the default one by build_font â€” which is the whole
+ * of what makes a character a picture here.
+ *
+ * The top row is a strip of them and says nothing; the two below hold a single
+ * button each, with a line of text right-aligned against it saying what there
+ * is to know about what the button would do.
  *
  * The rows are drawn in screen coordinates and put the cursor back where they
  * found it, so the panel carries on below the banner. They are submitted after
@@ -1580,15 +1685,92 @@ static void draw_banner(void)
  * the cursor down past it.
  */
 
-/* The top-left of row `n`'s button: a button tall and a gap apart, hard
- * against the right-hand edge of whatever room the panel has. */
-static ImVec2 corner_seat(ImVec2 level, int n)
+/*
+ * The top-left of a seat in the corner: row `n` down, `slot` places in from
+ * the right-hand edge of whatever room the panel has, buttons and gaps apart
+ * in both directions. Slot 0 is against the edge, so the rows below the strip
+ * ask for that one and every row lines up on the right whatever it holds.
+ */
+static ImVec2 corner_seat(ImVec2 level, int n, int slot)
 {
-    const ImGuiStyle &style = ImGui::GetStyle();
     float size = ImGui::GetFrameHeight();
     float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
 
-    return ImVec2(right - size, level.y + (float)n * (size + style.ItemSpacing.y));
+    /* The same gap across as down. Dear ImGui's own is wider across than it is
+     * down â€” it is meant to separate words from widgets â€” and a block of
+     * square buttons wants the two to match, or the strip reads as three
+     * things where the column reads as one. */
+    float gap = ImGui::GetStyle().ItemSpacing.y;
+
+    return ImVec2(right - (float)(slot + 1) * size - (float)slot * gap,
+                  level.y + (float)n * (size + gap));
+}
+
+/*
+ * The one code point an icon label holds. Every glyph of the icon font sits in
+ * U+F000..U+F372, which UTF-8 spells in three bytes, so this is the whole of
+ * the decoding these labels ever need.
+ */
+static ImWchar icon_code_point(const char *icon)
+{
+    return (ImWchar)(((icon[0] & 0x0F) << 12) | ((icon[1] & 0x3F) << 6) |
+                     (icon[2] & 0x3F));
+}
+
+/*
+ * Draws one icon in the middle of the square at `seat`, by its marks rather
+ * than by the space the character is given. ForkAwesome draws inside a box
+ * that is neither square nor centred on the pen, and the icons are all given
+ * the same advance besides (see build_font), so a label centred the ordinary
+ * way â€” on that advance, and on a line's height â€” comes out high and to the
+ * right, the same way on every one of them. Taking the glyph's own bounds out
+ * of the atlas puts what is actually drawn in the middle of the button.
+ */
+static void draw_icon_glyph(const char *icon, ImVec2 seat, float size)
+{
+    const ImFontGlyph *g = ImGui::GetFontBaked()->FindGlyph(icon_code_point(icon));
+    ImVec2 at;
+
+    if (!g)
+        return;
+
+    /* AddText places the line box, so the glyph's own offset within it comes
+     * back off again. Whole pixels, or the marks blur. */
+    at.x = (float)(int)(seat.x + (size - (g->X1 - g->X0)) * 0.5f - g->X0 + 0.5f);
+    at.y = (float)(int)(seat.y + (size - (g->Y1 - g->Y0)) * 0.5f - g->Y0 + 0.5f);
+    ImGui::GetWindowDrawList()->AddText(at, ImGui::GetColorU32(ImGuiCol_Text), icon);
+}
+
+/*
+ * One square button carrying one glyph, seated where it is told, with `hint`
+ * under the pointer. `works` says pressing it sets this thread going, in which
+ * case it is out of reach while the thread is away, as every other button that
+ * starts work is. Returns nonzero when it was pressed.
+ */
+static int corner_button(ImVec2 seat, int id, const char *icon,
+                         const char *hint, int works)
+{
+    float size = ImGui::GetFrameHeight();
+    int pressed;
+
+    /* Dear ImGui keys a button on its label, and the corner shows the same
+     * glyph in more than one seat â€” a look for a newer tabber and a look for
+     * newer tabs are the same picture. The seat number is what tells them
+     * apart, so every caller passes its own. */
+    ImGui::PushID(id);
+    ImGui::SetCursorScreenPos(seat);
+    ImGui::BeginDisabled(works && g_pending != ACT_NONE);
+
+    /* An empty button, with the icon drawn on top of it: centring it by hand
+     * is the point, and a label would only put a second copy of it off to one
+     * side. Inside the disabled block, so the icon dims along with the frame. */
+    pressed = ImGui::Button(BUTTON_ID, ImVec2(size, size));
+    draw_icon_glyph(icon, seat, size);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", hint);   /* an icon on its own says little */
+    ImGui::PopID();
+    return pressed;
 }
 
 /*
@@ -1604,14 +1786,8 @@ static int draw_corner_row(ImVec2 level, int n, const char *text,
 {
     const ImGuiStyle &style = ImGui::GetStyle();
     float size = ImGui::GetFrameHeight();
-    ImVec2 seat = corner_seat(level, n);
+    ImVec2 seat = corner_seat(level, n, 0);
     ImVec2 extent = ImGui::CalcTextSize(text);
-    int pressed;
-
-    /* Dear ImGui keys a button on its label, and two of these rows can be
-     * showing the same glyph — a look for a newer tabber and a look for newer
-     * tabs are the same picture. The row number is what tells them apart. */
-    ImGui::PushID(n);
 
     /* Ending where the button begins, and centred against it: the line is one
      * line high and the button is a frame's padding taller. */
@@ -1624,14 +1800,7 @@ static int draw_corner_row(ImVec2 level, int n, const char *text,
     if (text_hint && ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", text_hint);
 
-    ImGui::SetCursorScreenPos(seat);
-    ImGui::BeginDisabled(g_pending != ACT_NONE);
-    pressed = ImGui::Button(icon, ImVec2(size, size));
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", hint);   /* an icon on its own says little */
-    ImGui::PopID();
-    return pressed;
+    return corner_button(seat, n * CORNER_SLOTS, icon, hint, 1);
 }
 
 /*
@@ -1644,20 +1813,33 @@ static float draw_corner(ImVec2 level)
     const ImGuiStyle &style = ImGui::GetStyle();
     float size = ImGui::GetFrameHeight();
     ImVec2 back = ImGui::GetCursorScreenPos();
-    ImVec2 seat = corner_seat(level, 0);
     int waiting = g_known_version[0] != '\0';
-    const ImVec4 *colour = waiting ? &GREEN_TEXT : NULL;
+    const ImVec4 *colour = waiting ? (g_light ? &GREEN_ON_LIGHT : &GREEN_TEXT)
+                                   : NULL;
     char text[TB_WHEN_LEN + 64], hint[TB_WHEN_LEN + 32];
 
-    /* What this is. Alone in never being out of reach: it starts no work. */
-    ImGui::SetCursorScreenPos(seat);
-    if (ImGui::Button(LABEL_ABOUT, ImVec2(size, size)))
+    /*
+     * The strip along the top, right to left: what this is, what can be set,
+     * and which of the two themes the window wears. Alone in never going out
+     * of reach â€” none of the three starts any work, they only open a box or
+     * repaint what is already on screen â€” and alone in carrying no line of
+     * text, there being no state for one to report.
+     */
+    if (corner_button(corner_seat(level, 0, 0), 0, LABEL_ABOUT, ABOUT_HINT, 0))
         g_open_popup = TITLE_ABOUT;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", ABOUT_HINT);
+    if (corner_button(corner_seat(level, 0, 1), 1, LABEL_SETTINGS,
+                      HINT_SETTINGS, 0))
+        g_open_popup = TITLE_SETTINGS;
+
+    /* The glyph is the theme it offers, not the one it is in: a sun to go over
+     * to the light one, a moon to come back. */
+    if (corner_button(corner_seat(level, 0, 2), 2,
+                      g_light ? LABEL_DARK : LABEL_LIGHT,
+                      g_light ? HINT_DARK : HINT_LIGHT, 0))
+        choose_theme(!g_light);
 
     /*
-     * Tabber itself. The line and the button always show the same state —
+     * Tabber itself. The line and the button always show the same state â€”
      * nothing newer, so a look; a version waiting, so a download, which goes
      * ahead without asking again. The question has been put by then, or the
      * button itself is the asking.
@@ -1674,7 +1856,7 @@ static float draw_corner(ImVec2 level)
                 waiting ? BUSY_UPGRADE : BUSY_CHECK);
 
     /*
-     * The catalogue. How many tabs are in it, and when it was last fetched —
+     * The catalogue. How many tabs are in it, and when it was last fetched â€”
      * which is the date on the copy on disk, not a date anything writes down.
      */
     snprintf(text, sizeof text, STATUS_TABS, (unsigned)g_row_count,
@@ -1821,6 +2003,24 @@ static void draw_dialogs(void)
         ImGui::EndPopup();
     }
 
+    /* What can be set. The theme is the whole of it so far, and is the same
+     * setting the strip's own button changes â€” pressed here or there, it goes
+     * through choose_theme and is written down the same way. */
+    centre_next_window();
+    if (ImGui::BeginPopupModal(TITLE_SETTINGS, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted(SETTING_THEME);
+        ImGui::SameLine();
+        if (ImGui::RadioButton(THEME_DARK_NAME, !g_light))
+            choose_theme(0);
+        ImGui::SameLine();
+        if (ImGui::RadioButton(THEME_LIGHT_NAME, g_light))
+            choose_theme(1);
+        ImGui::Separator();
+        if (ImGui::Button(LABEL_OK))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
     /* What this is, and where the rest of it lives. The link opens in whatever
      * the desktop uses for one; Dear ImGui asks the system to do the opening. */
     centre_next_window();
@@ -1831,6 +2031,8 @@ static void draw_dialogs(void)
         ImGui::TextUnformatted(ABOUT_BLURB);
         ImGui::Text(ICON_FK_GITHUB); ImGui::SameLine();
         ImGui::TextLinkOpenURL(ABOUT_REPO, ABOUT_REPO);
+        ImGui::Text(ICON_FK_DISCORD_ALT); ImGui::SameLine();
+        ImGui::TextLinkOpenURL(ABOUT_DISCORD, ABOUT_DISCORD);
         ImGui::Separator();
         if (ImGui::Button(LABEL_OK))
             ImGui::CloseCurrentPopup();
@@ -1861,15 +2063,15 @@ static void draw_dialogs(void)
  * A swap interval of 1 hands the wait for the display's next refresh to the
  * graphics driver, and not every driver sleeps through that wait. Intel's
  * OpenGL driver polls for it instead, which costs a whole core to put sixty
- * unchanging frames on screen. GLFW knows the trick — see swapBuffersWGL in
- * vendor/glfw/src/wgl_context.c — but keeps it for Windows 7 and older, and
+ * unchanging frames on screen. GLFW knows the trick â€” see swapBuffersWGL in
+ * vendor/glfw/src/wgl_context.c â€” but keeps it for Windows 7 and older, and
  * hands the interval to the driver on anything newer.
  *
  * So on Windows the interval is left at zero and DwmFlush does the waiting.
  * It blocks on the compositor's next vertical blank and burns nothing while
  * it waits. It does want a compositor, which a remote session can be without;
  * should it ever fail, the interval goes back on and the driver has the job
- * again, spin and all — a warm laptop beats a window that never draws.
+ * again, spin and all â€” a warm laptop beats a window that never draws.
  */
 
 #ifdef _WIN32
@@ -1927,7 +2129,7 @@ static const char *ini_path(void)
  * Both halves are given the same reference size, and giving it to both is what
  * Dear ImGui asks for: the advances below are measured against a size, and a
  * font merged with a size of its own wants a destination that has one too. It
- * is a reference and not a size on screen — FontScaleDpi in main() decides
+ * is a reference and not a size on screen â€” FontScaleDpi in main() decides
  * that, and scales the pair of them together.
  *
  * The atlas is not built here. It is baked when it is first drawn from, by
@@ -1961,7 +2163,7 @@ static void build_font(ImGuiIO& io)
  * The one argument this program answers, and it is not one to type: an update
  * runs the binary it has just installed with it, and keeps that binary only if
  * it agrees about what version it is. Answered before anything is drawn, and
- * before the sweep below in particular — the binary being replaced is sitting
+ * before the sweep below in particular â€” the binary being replaced is sitting
  * under UPDATE_OLD_SUFFIX at that moment, and it is what a check that fails is
  * rolled back to. Returns 1 when that is all this run is for.
  */
@@ -2049,10 +2251,10 @@ int main(int argc, char **argv)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = ini_path();
     build_font(io);
-    ImGui::StyleColorsDark();
+    read_theme();          /* the one the last window was left on */
+    apply_theme();
     ImGui::GetStyle().ScaleAllSizes(scale);
     ImGui::GetStyle().FontScaleDpi = scale;
-    THEME_COLOR = ImGui::GetStyleColorVec4(ImGuiCol_Button);
 
     /* true: let the backend install its own GLFW callbacks. */
     ImGui_ImplGlfw_InitForOpenGL(window, true);

@@ -125,17 +125,26 @@ the top, its own [title bar](#the-windows-frame); under that a banner down the
 left and the corner described below; then every custom tab in a sortable
 table: the four columns `list` prints, plus two the CLI has no use for.
 
-In the corner opposite the banner are three rows, each a square button
-carrying one glyph with a line of text right-aligned against it. The glyphs are
-characters like any other, from the icon font merged into the default one with
-the rest of the vendored code below, and each button says what it is for under
-the pointer.
+In the corner opposite the banner are three rows of square buttons, each
+carrying one glyph. The glyphs are characters like any other, from the icon
+font merged into the default one with the rest of the vendored code below, and
+every button says what it is for under the pointer. The top row is a strip of
+three and reports nothing; the two below it hold one button each, with a line
+of text right-aligned against it saying where that button's business stands.
 
 | Row | The line | The button |
 | --- | --- | --- |
-| About | — | Opens a box naming the version, the day it went out, what the program is for, and a link to the repository that opens in whatever the desktop uses for one |
+| The window | — | Three: the theme, a box of settings, and About — the version, the day it went out, what the program is for, and a link to the repository that opens in whatever the desktop uses for one |
 | [tabber](#in-the-front-end) | `Tabber is updated`, or `Tabber vX.Y.Z is available!` in green | Looks for a newer tabber, or installs the one waiting |
 | The catalogue | `N custom tabs` | Fetches it again — `update`, in so many words |
+
+The theme is one of Dear ImGui's two, dark or light, and the glyph on its
+button is the one it would switch to: a sun on the dark theme, a moon on the
+light one. The settings box has the same choice as a pair of radio buttons, for
+when the picture is not enough. Which is on is kept in `config.json` under
+`gui`, so a window opens the way the last one was left. The accent the banner is drawn in comes from the
+theme, and takes the button colour at full strength on the light one, where the
+tint it is on the dark one would dissolve into the background.
 
 The two lines that report a moment keep it under the pointer rather than on
 screen: `Last checked: ...`, the date on the state file for tabber's own
@@ -1285,6 +1294,18 @@ for another process to give: the
 front-end writes the version there when an update goes through, because it then
 hands over to the binary it installed and is gone before there is anything to
 say. The one that comes up says it once and clears the key.
+
+`gui` is the graphical front-end's own corner of the file — what the window was
+left set to, which the command line neither reads nor writes:
+
+```json
+"gui": {
+  "theme": "light"
+}
+```
+
+`theme` is `dark` or `light`; anything else, the absent key included, is the
+dark one, which is what the program has always looked like.
 
 The file is edited in place rather than regenerated: keys this version does not
 know about, and fields it does not own, survive a rewrite. If it is missing it

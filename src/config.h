@@ -47,6 +47,11 @@
  * `unbind` and uninstalling put those back and empty it, so it too always
  * describes what is live. A value of "-1" is a binding that had no key to
  * begin with, which is worth recording like any other.
+ *
+ * "gui", last, is the graphical front-end's own corner of the file — what the
+ * window was left set to, which the command line neither reads nor writes:
+ *
+ *   "gui": { "theme": "light" }
  */
 #ifndef TABBER_CONFIG_H
 #define TABBER_CONFIG_H
@@ -84,6 +89,13 @@ extern "C" {
 #define CJK_LATEST           "latest"     /* newest version the check has seen   */
 #define CJK_DECLINED         "declined"   /* version the user said no to         */
 #define CJK_APPLIED          "applied"    /* update installed, not yet announced */
+#define CJK_GUI              "gui"        /* what the front-end was left set to  */
+#define CJK_THEME            "theme"
+
+/* The two themes the front-end draws itself in. Anything else, the absent key
+ * included, is the dark one: it is what the program has always looked like. */
+#define CONFIG_THEME_DARK    "dark"
+#define CONFIG_THEME_LIGHT   "light"
 
 typedef struct {
     json_value *root;   /* whole document, "tabs" included */
@@ -218,6 +230,18 @@ const char *config_update_unannounced(config *cfg);
 
 /* Clears that record, so the news is given once and not on every run after. */
 void config_update_announced(config *cfg);
+
+/* ---- What the front-end remembers -------------------------------------- */
+
+/*
+ * The theme the graphical front-end was last left on, as one of the two
+ * CONFIG_THEME_ strings, or NULL when it has never been set. Owned by the
+ * config, and only good until the next call that writes to it.
+ */
+const char *config_gui_theme(config *cfg);
+
+/* Remembers the one it has just been switched to. */
+void config_set_gui_theme(config *cfg, const char *theme);
 
 #ifdef __cplusplus
 }

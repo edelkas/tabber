@@ -201,6 +201,47 @@ static void test_state_key(void)
     free(root);
 }
 
+/* What the front-end is left set to, which only it writes and reads. */
+static void test_gui_theme(void)
+{
+    char *root = test_dir("state_theme");
+    config *cfg;
+
+    test_case("the theme the window was left on");
+    test_use_root(root);
+    cfg = load_config();
+    if (!cfg) { free(root); return; }
+
+    /* Nothing said is the dark one: the front-end reads an absent key as its
+     * own default rather than as a theme of its own. */
+    CHECK(config_gui_theme(cfg) == NULL, "a fresh state file names no theme");
+    CHECK(json_get(cfg->root, CJK_GUI) == NULL, "...and grows no gui object for it");
+
+    config_set_gui_theme(cfg, CONFIG_THEME_LIGHT);
+    CHECK_STR(config_gui_theme(cfg), CONFIG_THEME_LIGHT, "the light one is recorded");
+    save_config(cfg);
+    config_free(cfg);
+
+    /* It has to survive the window closing, which is the whole point of it. */
+    cfg = load_config();
+    if (!cfg) { free(root); return; }
+    CHECK_STR(config_gui_theme(cfg), CONFIG_THEME_LIGHT, "and read back after a reload");
+    CHECK_STR(json_get_string(json_get(cfg->root, CJK_GUI), CJK_THEME, ""),
+              CONFIG_THEME_LIGHT, "under gui -> theme");
+
+    /* And switching back writes the other one rather than clearing the key. */
+    config_set_gui_theme(cfg, CONFIG_THEME_DARK);
+    CHECK_STR(config_gui_theme(cfg), CONFIG_THEME_DARK, "switching back is recorded too");
+    CHECK_NUM(json_count(json_get(cfg->root, CJK_GUI)), 1, "the gui object holds one key");
+
+    /* A cleared setting reads as none at all, which is the dark one again. */
+    config_set_gui_theme(cfg, NULL);
+    CHECK(config_gui_theme(cfg) == NULL, "a null theme reads as unset");
+
+    config_free(cfg);
+    free(root);
+}
+
 /* ---- Server ------------------------------------------------------------ */
 
 static void test_server_parsing(void)
@@ -502,6 +543,7 @@ void suite_state(void)
     test_lifecycle();
     test_preservation();
     test_state_key();
+    test_gui_theme();
     test_server_parsing();
     test_server_precedence();
     test_uri_budget();
