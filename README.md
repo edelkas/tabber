@@ -153,10 +153,16 @@ when the picture is not enough, and two switches under it:
 The names go down one column and the controls down another, so a setting reads
 across. Beside the box's OK button is one carrying a folder, which opens the
 [tool's own folder](#where-tabber-keeps-its-files) in whatever the desktop
-shows folders with: everything the settings talk about is in there. All three are kept in `config.json` under `gui`, so a window opens the
-way the last one was left. The accent the banner is drawn in comes from the
-theme, and takes the button colour at full strength on the light one, where the
-tint it is on the dark one would dissolve into the background.
+shows folders with: everything the settings talk about is in there. All three
+are kept in `config.json` under `gui`, so a window opens the way the last one
+was left. The accent the banner is drawn in comes from the theme, and takes the
+button colour at full strength on the light one, where the tint it is on the
+dark one would dissolve into the background.
+
+The pointer turns to a hand over anything that can be pressed, the frame's own
+three buttons included, which is what Dear ImGui already does for a link and
+what every button here goes through one call to do. A button that cannot be
+pressed keeps the arrow, and says why it cannot under the pointer.
 
 The two lines that report a moment keep it under the pointer rather than on
 screen: `Last checked: ...`, the date on the state file for tabber's own
@@ -186,6 +192,16 @@ it ends where its last row does instead of trailing an empty band down to the
 bottom edge. Every row's button is cut to the same width, the widest of the
 three labels, so the column does not twitch as tabs change state.
 
+The window opens around all of that rather than at a height picked in advance.
+What it should be cannot be known before there is a frame to measure — the
+banner is chosen at random for the run and they are not all the same height,
+and the table is as tall as the tabs there are up to its ten — so the first
+frame is drawn to a window that is not shown yet, the height that came out of
+it is applied, and the window appears on the frame after. It goes on following
+what is in it until the window is given a size by hand, and then stops for
+good; maximising is not that, so restoring comes back to the height it had,
+whether that was one worked out or one asked for.
+
 The button in each row is the tab's state: **Download** when its files are not
 in the store, green **Install** when they are, red **Uninstall** for the one
 that is in the game. Each runs the call the matching command runs. Installing
@@ -203,6 +219,15 @@ button at the head of the bar opens **Session log**, a scrolling box of every
 line this window has said, oldest first, each stamped with the time of day it
 was said in a dimmed `HH:MM:SS`. It opens showing the newest, which is the one
 the bar was already showing.
+
+The box opens as tall as what is in it, wrapped lines counted as the several
+they take: three lines at the least, and at most three fifths of the window it
+opens over, so a short log gets a short box and a long one stops before it has
+covered everything behind it. Its lower border can be dragged, and a box that
+has been dragged keeps that height for the rest of the session rather than
+being sized again each time it opens. Beside its OK button is one carrying a
+text file, which opens [the logfile](#the-log) in whatever the desktop opens a
+text file with; it is greyed out, and says so, while there is no file yet.
 
 It also [keeps itself up to date](#in-the-front-end): a look at the newest
 release when the window opens and at most once a day after, and a Yes/No
@@ -251,6 +276,11 @@ the [tool's own folder](#where-tabber-keeps-its-files), stamped
 would not say which day a line belongs to. Once it passes a megabyte it is set
 aside as `tabber.log.old`, replacing whatever was there, and the next line
 starts a fresh one — so two files' worth is the most that is ever kept.
+
+The window opens that file for reading from the button beside **Session log**'s
+OK, which asks the desktop to open it the way a link in the About box is
+opened: on Windows that is Notepad, unless something else has been given `.log`
+to open.
 
 Both front-ends write to it, so it is the account of what has been done to this
 machine rather than of one window's sitting. Each controls it in the way that

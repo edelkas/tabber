@@ -105,6 +105,10 @@ void log_set_saving(int on);
  * caller frees it. */
 char *log_file_path(void);
 
+/* Whether there is one to read yet. There is nowhere to keep it, or nothing
+ * has asked for it to be kept, until the first line lands in it. */
+int log_file_exists(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -187,3 +187,23 @@ char *log_file_path(void)
     free(root);
     return path;
 }
+
+int log_file_exists(void)
+{
+    /* The one already worked out when there is one: this is asked on opening
+     * a window, and the answer is a file to open rather than a file to write,
+     * so it is asked whether or not anything is being kept. */
+    char *path = g_path ? g_path : log_file_path();
+    FILE *f;
+    int there;
+
+    if (!path)
+        return 0;
+    f = plat_fopen(path, "rb");
+    there = f != NULL;
+    if (f)
+        fclose(f);
+    if (path != g_path)
+        free(path);
+    return there;
+}

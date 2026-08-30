@@ -62,7 +62,13 @@
  * asks for and the oldest core profile macOS will hand out. */
 static const char *WINDOW_TITLE      = TABBER_NAME " " TABBER_VERSION;
 static const int   WINDOW_WIDTH      = 800;
+
+/* What it is made at, which is a canvas for the first frame rather than a size
+ * anyone sees: the panel is measured on that frame and the window sized to it
+ * before it is shown. FIT_FRAMES is how many frames that takes, one to measure
+ * and one to be seen at what came out of it. */
 static const int   WINDOW_HEIGHT     = 400;
+static const int   FIT_FRAMES        = 2;
 static const int   GL_VERSION_MAJOR  = 3;
 static const int   GL_VERSION_MINOR  = 2;
 static const int   SWAP_INTERVAL     = 1;  /* vsync, where the driver is trusted with it */
@@ -318,6 +324,7 @@ static const char *LABEL_GET      = ICON_FK_DOWNLOAD;
 static const char *LABEL_SETTINGS = ICON_FK_WRENCH;
 static const char *LABEL_LOG      = ICON_FK_ALIGN_JUSTIFY;
 static const char *LABEL_FOLDER   = ICON_FK_FOLDER_OPEN;
+static const char *LABEL_FILE     = ICON_FK_FILE_TEXT;
 static const char *LABEL_LIGHT    = ICON_FK_SUN;   /* what it would switch to */
 static const char *LABEL_DARK     = ICON_FK_MOON;
 static const char *TITLE_DONE     = "Done";
@@ -354,11 +361,17 @@ static const char *STATUS_NO_TAB  = "No custom tabs installed";
 static const char *STATUS_ONE_TAB = "%s tab installed";
 static const char *HINT_LOG       = "Open session log";
 
-/* What the log viewer says when there is nothing in it to show yet. */
+/* What the log viewer says when there is nothing in it to show yet, and what
+ * the button beside its OK offers. */
 static const char *LOG_EMPTY      = "Nothing has happened yet.";
+static const char *HINT_OPEN_LOG  = "Open logfile";
+static const char *HINT_NO_LOG    = "There is no logfile to open";
 
-/* How many lines it shows before it starts scrolling. */
-static const int LOG_VIEW_ROWS = 12;
+/* How tall its region opens: the fewest lines it is worth showing, and the
+ * most of the window it will take to show them. Between the two it is as tall
+ * as the log is long, so a short log opens a short box. */
+static const int   LOG_VIEW_MIN_ROWS = 3;
+static const float LOG_VIEW_MAX_PART = 0.6f;
 
 /* What the settings box holds, one line each. */
 static const char *SETTING_THEME      = "Theme";
@@ -481,7 +494,17 @@ static char g_result_title[64] = "";
 static char g_result_text[TB_ERR_LEN + 256] = "";
 static char g_confirm_text[512] = "";
 static const char *g_open_popup = NULL;
-static int  g_log_at_end = 0;       /* the log viewer opens at its foot */
+/* How tall the panel would have the window be, measured on the frame just
+ * drawn, and the size it was last given, so that a hand on an edge can be told
+ * from our own doing. */
+static float g_panel_wants = 0.0f;
+static int   g_fit_w = 0, g_fit_h = 0;
+static int   g_window_sized = 0;
+
+static int  g_log_at_end = 0;       /* the log viewer opens at its foot   */
+static float g_log_fit = 0.0f;      /* how tall it was opened at, to see a */
+static int  g_log_dragged = 0;      /* drag away from it, after which it   */
+static int  g_log_on_disk = 0;      /* is theirs. And: there is a file.    */
 static int  g_dialog_open = 0;      /* one is on screen and owns the window */
 
 /* The release a check found and has yet to be answered about. Held rather than
@@ -1346,6 +1369,22 @@ static void push_button_colors(const ImVec4 &normal, const ImVec4 &hovered,
 }
 
 /*
+ * A button, and the pointer over it. Dear ImGui points at a link with a hand
+ * and at a button with the same arrow it points at the words beside it with:
+ * both are things to press, and the hand says so before the press does. Every
+ * button in this window goes through here, the drawn ones included, so that
+ * none of them is the odd one out.
+ */
+static int push_button(const char *label, ImVec2 size = ImVec2(0.0f, 0.0f))
+{
+    int pressed = ImGui::Button(label, size);
+
+    if (ImGui::IsItemHovered())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    return pressed;
+}
+
+/*
  * One width for all three buttons: whichever label is longest, plus the usual
  * padding at its sides. A button wide enough for the longest word is wide
  * enough for the other two, and the column then stays still as tabs come and
@@ -1374,16 +1413,16 @@ static void draw_row_button(const npp_tab *tab, const tab_row *row)
     ImGui::BeginDisabled(g_pending != ACT_NONE);
     if (row->installed) {
         push_button_colors(RED_BUTTON, RED_HOVER, RED_ACTIVE);
-        if (ImGui::Button(LABEL_UNINSTALL, size))
+        if (push_button(LABEL_UNINSTALL, size))
             request(ACT_UNINSTALL, tab->code, "Uninstalling...");
         ImGui::PopStyleColor(4);
     } else if (row->downloaded) {
         push_button_colors(GREEN_BUTTON, GREEN_HOVER, GREEN_ACTIVE);
-        if (ImGui::Button(LABEL_INSTALL, size))
+        if (push_button(LABEL_INSTALL, size))
             request_install(tab);
         ImGui::PopStyleColor(4);
     } else {
-        if (ImGui::Button(LABEL_DOWNLOAD, size))
+        if (push_button(LABEL_DOWNLOAD, size))
             request(ACT_DOWNLOAD, tab->code, "Downloading...");
     }
     ImGui::EndDisabled();
@@ -1397,18 +1436,24 @@ static float status_bar_height(void);
  * the table from stretching to the bottom of the window and leaving an empty
  * band below the last row.
  */
-static float table_height(size_t rows)
+static float table_height_wanted(size_t rows)
 {
     float pad = ImGui::GetStyle().CellPadding.y * 2.0f;
     float shown = (float)(rows < VISIBLE_ROWS ? rows : VISIBLE_ROWS);
 
-    /* The bar along the bottom is not the table's to take: it is drawn after
-     * it and outside the flow, so the room it wants comes off here. */
-    float avail = ImGui::GetContentRegionAvail().y - status_bar_height();
-    float height;
-
     /* The header is one line of text; a row is as tall as the button in it. */
-    height = ImGui::GetFontSize() + pad + shown * (ImGui::GetFrameHeight() + pad);
+    return ImGui::GetFontSize() + pad + shown * (ImGui::GetFrameHeight() + pad);
+}
+
+/*
+ * That height, or what is left of the window when the window is shorter than
+ * that. The bar along the bottom is not the table's to take: it is drawn after
+ * it and outside the flow, so the room it wants comes off here.
+ */
+static float table_height(size_t rows)
+{
+    float avail = ImGui::GetContentRegionAvail().y - status_bar_height();
+    float height = table_height_wanted(rows);
 
     /* Never past the bottom of the window, however short it has been dragged. */
     return (avail > 0.0f && height > avail) ? avail : height;
@@ -1582,7 +1627,7 @@ static int title_button(const char *id, bar_icon which, ImVec2 size,
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, style[ImGuiCol_ButtonHovered]);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, style[ImGuiCol_ButtonActive]);
     }
-    pressed = ImGui::Button(id, size);
+    pressed = push_button(id, size);
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar();
 
@@ -1883,7 +1928,7 @@ static int corner_button(ImVec2 seat, int id, const char *icon,
     /* An empty button, with the icon drawn on top of it: centring it by hand
      * is the point, and a label would only put a second copy of it off to one
      * side. Inside the disabled block, so the icon dims along with the frame. */
-    pressed = ImGui::Button(BUTTON_ID, ImVec2(size, size));
+    pressed = push_button(BUTTON_ID, ImVec2(size, size));
     draw_icon_glyph(icon, seat, ImVec2(size, size));
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
@@ -2063,7 +2108,7 @@ static int log_button(ImVec2 seat, ImVec2 size)
     ImGui::SetCursorScreenPos(seat);
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                         ImVec2(ImGui::GetStyle().FramePadding.x, 0.0f));
-    pressed = ImGui::Button(BUTTON_ID, size);
+    pressed = push_button(BUTTON_ID, size);
     ImGui::PopStyleVar();
     draw_icon_glyph(LABEL_LOG, seat, size);
     if (ImGui::IsItemHovered())
@@ -2158,10 +2203,25 @@ static void draw_panel(void)
         ImGui::SetCursorScreenPos(ImVec2(top.x, corner));
 
     ImGui::Separator();
-    if (g_digest)
+
+    /*
+     * What the window would have to be for all of this to fit: where the table
+     * begins, plus the table it would rather be than the one the window has
+     * room for, plus the bar under it and the padding below that.
+     *
+     * Taken here rather than added up from the parts above it, which are the
+     * banner's and the corner's own business and change with both. What is
+     * above the table has already had its say by now, and where it left the
+     * cursor is the whole of what it amounts to.
+     */
+    if (g_digest) {
+        g_panel_wants = ImGui::GetCursorPosY() + table_height_wanted(g_row_count);
         draw_tab_table();
-    else
+    } else {
         ImGui::TextWrapped("%s", g_error);
+        g_panel_wants = ImGui::GetCursorPosY() - ImGui::GetStyle().ItemSpacing.y;
+    }
+    g_panel_wants += status_bar_height() + ImGui::GetStyle().WindowPadding.y;
 
     if (g_status_bar)
         draw_status_bar();
@@ -2192,7 +2252,7 @@ static void draw_result_modal(const char *title)
     ImGui::TextUnformatted(g_result_text);
     ImGui::PopTextWrapPos();
     ImGui::Separator();
-    if (ImGui::Button(LABEL_OK))
+    if (push_button(LABEL_OK))
         ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 }
@@ -2208,25 +2268,85 @@ static int icon_button(const char *icon, const char *hint)
     ImVec2 seat = ImGui::GetCursorScreenPos();
     ImVec2 size(ImGui::CalcTextSize(icon).x + ImGui::GetStyle().FramePadding.x * 2.0f,
                 ImGui::GetFrameHeight());
-    int pressed = ImGui::Button(BUTTON_ID, size);
+    int pressed = push_button(BUTTON_ID, size);
 
     draw_icon_glyph(icon, seat, size);
-    if (hint && ImGui::IsItemHovered())
+
+    /* Hovered even while disabled: a button that cannot be pressed is the one
+     * whose tooltip has something to explain. */
+    if (hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("%s", hint);
     return pressed;
 }
 
 /*
- * Shows the tool's own folder in whatever the desktop shows folders with.
+ * Hands a path to whatever the desktop opens that sort of thing with: the
+ * tool's folder to the file browser, its logfile to whatever a text file is
+ * spoken for by, which on Windows is Notepad.
  * Dear ImGui knows how on all three platforms — it is what a link in the About
  * box is opened through — so this is one call rather than three.
  */
-static void open_app_folder(void)
+static void open_in_shell(const char *path)
 {
     ImGuiPlatformIO &io = ImGui::GetPlatformIO();
 
-    if (g_app_root && io.Platform_OpenInShellFn)
-        io.Platform_OpenInShellFn(ImGui::GetCurrentContext(), g_app_root);
+    if (path && io.Platform_OpenInShellFn)
+        io.Platform_OpenInShellFn(ImGui::GetCurrentContext(), path);
+}
+
+/*
+ * How tall the log's region wants to be: every line in it, the long ones
+ * counted as the several they wrap to, and the padding the border adds. It is
+ * worked out from the text rather than measured off a frame already drawn, so
+ * the box is the right height on the frame it opens on and is never seen to
+ * resize itself.
+ *
+ * `width` is the region's own. What is left of it once the stamp and the gap
+ * after it are out is what the line beside the stamp wraps within, which is
+ * why the stamps are made here as well as there.
+ *
+ * The answer is held between the two ends: below the first, a box is too small
+ * to be worth opening; above the second, it has covered what it was opened
+ * over. Whole pixels, since that is what the size is kept in.
+ */
+static float log_view_height(float width)
+{
+    const ImGuiStyle &style = ImGui::GetStyle();
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    float inner = width - style.WindowPadding.x * 2.0f;
+    float line = ImGui::GetTextLineHeight();
+    float height = style.WindowPadding.y * 2.0f;
+    float least, most;
+    size_t kept = log_count(), i;
+
+    for (i = 0; i < kept; i++) {
+        const log_entry *entry = log_at(i);
+        char clock[TB_CLOCK_LEN];
+        float wrap;
+
+        time_local_clock(entry->when, clock, sizeof clock);
+        wrap = inner - ImGui::CalcTextSize(clock).x - style.ItemSpacing.x;
+        if (wrap < line)
+            wrap = line;   /* narrower than that is not a width to wrap at */
+        height += ImGui::CalcTextSize(entry->text, NULL, false, wrap).y;
+        if (i)
+            height += style.ItemSpacing.y;
+    }
+    if (kept == 0)
+        height += line;    /* the one line it has to say for itself */
+
+    least = (float)LOG_VIEW_MIN_ROWS * ImGui::GetTextLineHeightWithSpacing() +
+            style.WindowPadding.y * 2.0f;
+    if (least < style.WindowMinSize.y)
+        least = style.WindowMinSize.y;   /* what a dragged region cannot go under */
+    most = vp->WorkSize.y * LOG_VIEW_MAX_PART;
+    if (most < least)
+        most = least;
+    if (height < least)
+        height = least;
+    if (height > most)
+        height = most;
+    return (float)(int)height;
 }
 
 /*
@@ -2265,12 +2385,12 @@ static void draw_dialogs(void)
     if (ImGui::BeginPopupModal(TITLE_CONFIRM, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted(g_confirm_text);
         ImGui::Separator();
-        if (ImGui::Button(LABEL_YES)) {
+        if (push_button(LABEL_YES)) {
             request(ACT_REPLACE, g_pending_code, "Replacing the installed tab...");
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button(LABEL_NO))
+        if (push_button(LABEL_NO))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
@@ -2297,12 +2417,12 @@ static void draw_dialogs(void)
         ImGui::Separator();
         if (g_update.url) {
             ImGui::TextUnformatted(UPDATE_QUESTION);
-            if (ImGui::Button(LABEL_YES)) {
+            if (push_button(LABEL_YES)) {
                 request(ACT_UPGRADE, NULL, BUSY_UPGRADE);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button(LABEL_NO)) {
+            if (push_button(LABEL_NO)) {
                 decline_update();
                 ImGui::CloseCurrentPopup();
             }
@@ -2313,7 +2433,7 @@ static void draw_dialogs(void)
             ImGui::TextUnformatted(UPDATE_NO_BUILD);
             ImGui::PopTextWrapPos();
             ImGui::TextLinkOpenURL(g_update.page, g_update.page);
-            if (ImGui::Button(LABEL_OK)) {
+            if (push_button(LABEL_OK)) {
                 decline_update();
                 ImGui::CloseCurrentPopup();
             }
@@ -2355,7 +2475,7 @@ static void draw_dialogs(void)
             ImGui::EndTable();
         }
         ImGui::Separator();
-        if (ImGui::Button(LABEL_OK))
+        if (push_button(LABEL_OK))
             ImGui::CloseCurrentPopup();
 
         /* Beside it: everything the settings talk about — the logfile, the
@@ -2364,7 +2484,7 @@ static void draw_dialogs(void)
         ImGui::SameLine();
         ImGui::BeginDisabled(g_app_root == NULL);
         if (icon_button(LABEL_FOLDER, folder_hint))
-            open_app_folder();
+            open_in_shell(g_app_root);
         ImGui::EndDisabled();
         ImGui::EndPopup();
     }
@@ -2378,10 +2498,37 @@ static void draw_dialogs(void)
     centre_next_window();
     if (ImGui::BeginPopupModal(TITLE_LOG, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
         size_t kept = log_count(), i;
-        ImVec2 box(DIALOG_WRAP_WIDTH * g_scale,
-                   ImGui::GetTextLineHeightWithSpacing() * (float)LOG_VIEW_ROWS);
+        int opening = ImGui::IsWindowAppearing();
+        float grown;
+        ImVec2 box(DIALOG_WRAP_WIDTH * g_scale, g_log_fit);
 
-        ImGui::BeginChild(LOG_ID, box, ImGuiChildFlags_Borders);
+        /*
+         * Opened, the region is as tall as what is in it. Dragged by its lower
+         * border, it stays where it was put, this time and every time after:
+         * a height asked for is a better one than a height worked out.
+         *
+         * The height is only ever forced on the frame it opens on, which is
+         * the one frame nobody can be dragging it on, and is left alone on
+         * every other so that the drag has something to move.
+         */
+        if (opening) {
+            g_log_on_disk = log_file_exists();
+            if (!g_log_dragged) {
+                box.y = g_log_fit = log_view_height(box.x);
+                ImGui::SetNextWindowSize(ImVec2(0.0f, box.y));
+            }
+        }
+        ImGui::BeginChild(LOG_ID, box,
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeY,
+                          ImGuiWindowFlags_NoSavedSettings);
+
+        /* A height that is no longer the one it was opened at is one it was
+         * dragged to. Kept for the session and no longer: the file is what
+         * outlives a sitting, not the shape of the window it was read in. */
+        grown = ImGui::GetWindowSize().y - g_log_fit;
+        if (!opening && (grown > 1.0f || grown < -1.0f))
+            g_log_dragged = 1;
+
         if (kept == 0)
             ImGui::TextDisabled("%s", LOG_EMPTY);
         for (i = kept; i > 0; i--) {
@@ -2406,8 +2553,17 @@ static void draw_dialogs(void)
         }
         ImGui::EndChild();
         ImGui::Separator();
-        if (ImGui::Button(LABEL_OK))
+        if (push_button(LABEL_OK))
             ImGui::CloseCurrentPopup();
+
+        /* Beside it: what is above is this sitting's worth, and the file holds
+         * every sitting there has been. Greyed out when there is none, which
+         * is the case worth a tooltip. */
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!g_log_on_disk);
+        if (icon_button(LABEL_FILE, g_log_on_disk ? HINT_OPEN_LOG : HINT_NO_LOG))
+            open_in_shell(g_log_path);
+        ImGui::EndDisabled();
         ImGui::EndPopup();
     }
 
@@ -2424,7 +2580,7 @@ static void draw_dialogs(void)
         ImGui::Text(ICON_FK_DISCORD_ALT); ImGui::SameLine();
         ImGui::TextLinkOpenURL(ABOUT_DISCORD, ABOUT_DISCORD);
         ImGui::Separator();
-        if (ImGui::Button(LABEL_OK))
+        if (push_button(LABEL_OK))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
@@ -2572,11 +2728,65 @@ static int self_check_only(int argc, char **argv, int *status)
     return 0;
 }
 
+/*
+ * The window, given the height the panel asked for on the frame just drawn.
+ * Only ever the height: the width is the banner's and the table's to spread
+ * into, and neither of them is short of an opinion about it.
+ *
+ * It keeps following what is in the window until the window is given a size by
+ * hand, and then stops for good, a size asked for being a better one than a
+ * size worked out. A maximised window is left alone rather than taken for one
+ * that was resized, so that restoring it comes back to the height it had.
+ *
+ * Returns whether it changed anything, which is a frame owed.
+ */
+static int fit_window(GLFWwindow *window)
+{
+    GLFWmonitor *monitor = glfwGetPrimaryMonitor();
+    int width, height, want;
+    int least = (int)(MIN_HEIGHT * g_scale);
+    int most = least;
+    int mx, my, mw, mh;
+
+    if (g_window_sized || g_panel_wants <= 0.0f)
+        return 0;
+    if (glfwGetWindowAttrib(window, GLFW_MAXIMIZED) ||
+        glfwGetWindowAttrib(window, GLFW_ICONIFIED))
+        return 0;
+
+    /* A size that is no longer the one we gave it is one it was given by
+     * hand, whether by an edge here or by the desktop itself. */
+    glfwGetWindowSize(window, &width, &height);
+    if (g_fit_h && (width != g_fit_w || height != g_fit_h)) {
+        g_window_sized = 1;
+        return 0;
+    }
+
+    /* Not taller than there is screen to put it on, whatever it would like. */
+    if (monitor) {
+        glfwGetMonitorWorkarea(monitor, &mx, &my, &mw, &mh);
+        if (mh > most)
+            most = mh;
+    }
+    want = (int)(g_panel_wants + 0.5f);
+    if (want < least)
+        want = least;
+    if (want > most)
+        want = most;
+
+    g_fit_w = width;
+    g_fit_h = want;
+    if (want == height)
+        return 0;
+    glfwSetWindowSize(window, width, want);
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     GLFWwindow *window;
     float scale;
-    int settle, status = 0, swept = 0;
+    int settle, status = 0, swept = 0, drawn = 0;
 
     plat_init();
 
@@ -2617,6 +2827,11 @@ int main(int argc, char **argv)
 
     /* No frame from the system: the bar at the top of the panel is ours. */
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+
+    /* And nothing on screen until it has been sized to what is in it: opening
+     * at one height and jumping to another is worse than opening a moment
+     * later at the right one. See FIT_FRAMES. */
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
     /* Size the window in the monitor's units, so a 4K display does not get a
      * postage stamp; the same factor scales the style and the font below. */
@@ -2711,6 +2926,13 @@ int main(int argc, char **argv)
         }
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
+
+        /* Now that the panel has said what it wants. Drawn again at the size
+         * it is given, and shown once that frame has been drawn. */
+        if (fit_window(window))
+            settle = SETTLE_FRAMES;
+        if (drawn < FIT_FRAMES && ++drawn == FIT_FRAMES)
+            glfwShowWindow(window);
         pace_frame();
     }
 

@@ -626,6 +626,7 @@ static void test_log_file(void)
         return;
     }
     CHECK(!plat_is_file(path), "and nothing is written there until it is asked for");
+    CHECK(!log_file_exists(), "so there is nothing there to open either");
 
     /* Off by default: a run that does not ask leaves no trace. */
     log_line("Fetching MET (Metanet)...");
@@ -646,6 +647,7 @@ static void test_log_file(void)
               "and the line logged before saving was on is not in it");
         free(text);
     }
+    CHECK(log_file_exists(), "and from then on there is one to open");
 
     /* Appended to, not written over: the file is the account of every run. */
     log_line("Installing MET (Metanet)...");
