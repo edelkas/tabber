@@ -234,6 +234,21 @@ void time_local_stamp(long long when, char *out, size_t outsz)
         snprintf(out, outsz, "unknown");
 }
 
+void time_local_clock(long long when, char *out, size_t outsz)
+{
+    time_t t = (time_t)when;
+    struct tm *local;
+
+    if (!out || outsz == 0)
+        return;
+    local = localtime(&t);
+
+    /* Dashes rather than "unknown": these line up down the left of a list, and
+     * a word among them would push every line beside it out of true. */
+    if (when <= 0 || !local || strftime(out, outsz, "%H:%M:%S", local) == 0)
+        snprintf(out, outsz, "--:--:--");
+}
+
 void str_list_push(str_list *list, char *s)
 {
     if (!s)

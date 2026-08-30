@@ -316,6 +316,7 @@ static const char *LABEL_LOOK     = ICON_FK_REFRESH;
 static const char *LABEL_PACKS    = ICON_FK_LIST_ALT;
 static const char *LABEL_GET      = ICON_FK_DOWNLOAD;
 static const char *LABEL_SETTINGS = ICON_FK_WRENCH;
+static const char *LABEL_LOG      = ICON_FK_ALIGN_JUSTIFY;
 static const char *LABEL_LIGHT    = ICON_FK_SUN;   /* what it would switch to */
 static const char *LABEL_DARK     = ICON_FK_MOON;
 static const char *TITLE_DONE     = "Done";
@@ -323,6 +324,7 @@ static const char *TITLE_FAILED   = "Failed";
 static const char *TITLE_CONFIRM  = "One tab at a time";
 static const char *TITLE_ABOUT    = "About";
 static const char *TITLE_SETTINGS = "Settings";
+static const char *TITLE_LOG      = "Session log";
 static const char *TITLE_UPDATE   = "Update available";
 static const char *TITLE_UPDATED  = "Updated";
 static const char *TITLE_CURRENT  = "Up to date";
@@ -349,6 +351,13 @@ static const char *HINT_DARK       = "Switch to the dark theme";
  * of it is whatever the tool last had to say, which is not ours to word. */
 static const char *STATUS_NO_TAB  = "No custom tabs installed";
 static const char *STATUS_ONE_TAB = "%s tab installed";
+static const char *HINT_LOG       = "Open session log";
+
+/* What the log viewer says when there is nothing in it to show yet. */
+static const char *LOG_EMPTY      = "Nothing has happened yet.";
+
+/* How many lines it shows before it starts scrolling. */
+static const int LOG_VIEW_ROWS = 12;
 
 /* What the settings box holds: one line, so far. */
 static const char *SETTING_THEME    = "Theme";
@@ -374,7 +383,8 @@ static const char *PANEL_ID   = "tabber-panel";
 static const char *TABLE_ID   = "tabber-tabs";
 static const char *BUSY_ID    = "tabber-busy";
 static const char *DRAG_ID    = "##titlebar";
-static const char *BUTTON_ID  = "##corner";   /* the icon goes on by hand */
+static const char *BUTTON_ID  = "##corner";
+static const char *LOG_ID     = "##log";     /* the scrolling region  */   /* the icon goes on by hand */
 static const char *MINIMISE_ID = "##minimise";
 static const char *MAXIMISE_ID = "##maximise";
 static const char *CLOSE_ID    = "##close";
@@ -458,6 +468,7 @@ static char g_result_title[64] = "";
 static char g_result_text[TB_ERR_LEN + 256] = "";
 static char g_confirm_text[512] = "";
 static const char *g_open_popup = NULL;
+static int  g_log_at_end = 0;       /* the log viewer opens at its foot */
 static int  g_dialog_open = 0;      /* one is on screen and owns the window */
 
 /* The release a check found and has yet to be answered about. Held rather than
@@ -1751,9 +1762,10 @@ static ImWchar icon_code_point(const char *icon)
  * the same advance besides (see build_font), so a label centred the ordinary
  * way â€” on that advance, and on a line's height â€” comes out high and to the
  * right, the same way on every one of them. Taking the glyph's own bounds out
- * of the atlas puts what is actually drawn in the middle of the button.
+ * of the atlas puts what is actually drawn in the middle of the button,
+ * whatever shape the button is.
  */
-static void draw_icon_glyph(const char *icon, ImVec2 seat, float size)
+static void draw_icon_glyph(const char *icon, ImVec2 seat, ImVec2 size)
 {
     const ImFontGlyph *g = ImGui::GetFontBaked()->FindGlyph(icon_code_point(icon));
     ImVec2 at;
@@ -1763,8 +1775,8 @@ static void draw_icon_glyph(const char *icon, ImVec2 seat, float size)
 
     /* AddText places the line box, so the glyph's own offset within it comes
      * back off again. Whole pixels, or the marks blur. */
-    at.x = (float)(int)(seat.x + (size - (g->X1 - g->X0)) * 0.5f - g->X0 + 0.5f);
-    at.y = (float)(int)(seat.y + (size - (g->Y1 - g->Y0)) * 0.5f - g->Y0 + 0.5f);
+    at.x = (float)(int)(seat.x + (size.x - (g->X1 - g->X0)) * 0.5f - g->X0 + 0.5f);
+    at.y = (float)(int)(seat.y + (size.y - (g->Y1 - g->Y0)) * 0.5f - g->Y0 + 0.5f);
     ImGui::GetWindowDrawList()->AddText(at, ImGui::GetColorU32(ImGuiCol_Text), icon);
 }
 
@@ -1792,7 +1804,7 @@ static int corner_button(ImVec2 seat, int id, const char *icon,
      * is the point, and a label would only put a second copy of it off to one
      * side. Inside the disabled block, so the icon dims along with the frame. */
     pressed = ImGui::Button(BUTTON_ID, ImVec2(size, size));
-    draw_icon_glyph(icon, seat, size);
+    draw_icon_glyph(icon, seat, ImVec2(size, size));
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", hint);   /* an icon on its own says little */
@@ -1954,6 +1966,28 @@ static const char *fit_text(const char *text, float width, char *out, size_t out
     return out;
 }
 
+/*
+ * The button at the head of the bar, which opens the log. A small one, in the
+ * sense Dear ImGui means by it: no padding above or below, so it is a line of
+ * text tall and sits in the bar without setting the line askew. Its width is
+ * the icon's own, every icon having the same (see build_font), and the glyph
+ * is centred on the button by hand like every other one in this window.
+ */
+static int log_button(ImVec2 seat, ImVec2 size)
+{
+    int pressed;
+
+    ImGui::SetCursorScreenPos(seat);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ImGui::GetStyle().FramePadding.x, 0.0f));
+    pressed = ImGui::Button(BUTTON_ID, size);
+    ImGui::PopStyleVar();
+    draw_icon_glyph(LABEL_LOG, seat, size);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", HINT_LOG);
+    return pressed;
+}
+
 static void draw_status_bar(void)
 {
     const ImGuiViewport *vp = ImGui::GetMainViewport();
@@ -1966,6 +2000,7 @@ static void draw_status_bar(void)
     float top = vp->WorkPos.y + vp->WorkSize.y - style.WindowPadding.y - line;
     float rule = top - style.ItemSpacing.y * 0.5f;
     float width, room;
+    ImVec2 button;
 
     if (g_installed_code[0] != '\0') {
         digest_code_upper(upper, sizeof upper, g_installed_code);
@@ -1987,6 +2022,14 @@ static void draw_status_bar(void)
     ImGui::GetWindowDrawList()->AddLine(ImVec2(left_edge, rule),
                                         ImVec2(right_edge, rule),
                                         ImGui::GetColorU32(ImGuiCol_Separator));
+
+    /* The button first, and the line begins after it. */
+    button = ImVec2(ImGui::CalcTextSize(LABEL_LOG).x + style.FramePadding.x * 2.0f, line);
+    if (log_button(ImVec2(left_edge, top), button)) {
+        g_open_popup = TITLE_LOG;
+        g_log_at_end = 1;
+    }
+    left_edge += button.x + style.ItemSpacing.x;
 
     room = right_edge - width - style.ItemSpacing.x * 2.0f - left_edge;
     if (last && room > 0.0f) {
@@ -2152,6 +2195,48 @@ static void draw_dialogs(void)
         ImGui::SameLine();
         if (ImGui::RadioButton(THEME_LIGHT_NAME, g_light))
             choose_theme(1);
+        ImGui::Separator();
+        if (ImGui::Button(LABEL_OK))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    /*
+     * Everything this window has said since it opened, oldest first, each line
+     * stamped with the moment it was said. It opens showing the newest, which
+     * is the one the bar was already showing and the one the reader came for;
+     * anything before it is a scroll up.
+     */
+    centre_next_window();
+    if (ImGui::BeginPopupModal(TITLE_LOG, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        size_t kept = log_count(), i;
+        ImVec2 box(DIALOG_WRAP_WIDTH * g_scale,
+                   ImGui::GetTextLineHeightWithSpacing() * (float)LOG_VIEW_ROWS);
+
+        ImGui::BeginChild(LOG_ID, box, ImGuiChildFlags_Borders);
+        if (kept == 0)
+            ImGui::TextDisabled("%s", LOG_EMPTY);
+        for (i = kept; i > 0; i--) {
+            const log_entry *entry = log_at(i - 1);
+            char clock[TB_CLOCK_LEN];
+
+            /* The moment recedes: it is what tells two lines apart, not what
+             * either of them says. */
+            time_local_clock(entry->when, clock, sizeof clock);
+            ImGui::TextDisabled("%s", clock);
+            ImGui::SameLine();
+
+            /* Wrapped at the edge of the region rather than run off it: a line
+             * can be as long as a failure from anywhere down the library. */
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextUnformatted(entry->text);
+            ImGui::PopTextWrapPos();
+        }
+        if (g_log_at_end) {
+            ImGui::SetScrollHereY(1.0f);   /* the last line submitted */
+            g_log_at_end = 0;
+        }
+        ImGui::EndChild();
         ImGui::Separator();
         if (ImGui::Button(LABEL_OK))
             ImGui::CloseCurrentPopup();

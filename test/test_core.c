@@ -125,7 +125,9 @@ static void test_timestamps(void)
 {
     char out[TB_WHEN_LEN];
     char stamp[TB_TIMESTAMP_LEN + 1];
+    char clock[TB_CLOCK_LEN], later[TB_CLOCK_LEN];
     long long now = 1787747696LL;   /* 2026-08-26T12:34:56Z */
+    int i;
 
     test_case("timestamps");
 
@@ -174,6 +176,26 @@ static void test_timestamps(void)
     CHECK_STR(out, "1 month ago", "past a month, months");
     time_relative(now - 400 * 86400, now, "Never", out, sizeof out);
     CHECK_STR(out, "1 year ago", "and past a year, years");
+
+    /* The clock a logged line is stamped with. Which hour it reads is the
+     * machine's own business, so what is checked is its shape and that it
+     * follows the moment it is given. */
+    time_local_clock(now, clock, sizeof clock);
+    CHECK_NUM(strlen(clock), TB_CLOCK_LEN - 1, "a clock fills its buffer exactly");
+    CHECK(clock[2] == ':' && clock[5] == ':', "with the colons where they belong");
+    for (i = 0; i < 8; i++) {
+        if (i == 2 || i == 5)
+            continue;
+        if (clock[i] < '0' || clock[i] > '9') {
+            CHECK(0, "and digits everywhere else");
+            break;
+        }
+    }
+    time_local_clock(now + 1, later, sizeof later);
+    CHECK(strcmp(clock, later) != 0, "a second later reads as a second later");
+
+    time_local_clock(0, clock, sizeof clock);
+    CHECK_STR(clock, "--:--:--", "no moment at all reads as dashes, which line up");
 }
 
 static void test_buffers(void)

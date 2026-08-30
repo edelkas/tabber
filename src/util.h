@@ -87,6 +87,15 @@ void time_relative(long long when, long long now, const char *never,
 /* A local date and time, "YYYY-MM-DD HH:MM", for showing an exact moment. */
 void time_local_stamp(long long when, char *out, size_t outsz);
 
+/*
+ * Just the local time of day, "HH:MM:SS", for a list of moments that are all
+ * from the same sitting and only differ in when during it they happened.
+ * Length TB_CLOCK_LEN, terminator included.
+ */
+#define TB_CLOCK_LEN 9
+
+void time_local_clock(long long when, char *out, size_t outsz);
+
 /* ---- Growable list of owned strings ------------------------------------ */
 
 typedef struct {

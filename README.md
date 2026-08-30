@@ -187,7 +187,11 @@ the longest thing it can say so that nothing beside it shifts about, is what the
 game has in it: `MET tab installed`, or a dimmed `No custom tabs installed`. On
 the left is the newest line of the [log](#the-log), which takes whatever room
 the right-hand section leaves however the window is resized; what does not fit
-is cut with an ellipsis, and the whole of it is under the pointer.
+is cut with an ellipsis, and the whole of it is under the pointer. A small
+button at the head of the bar opens **Session log**, a scrolling box of every
+line this window has said, oldest first, each stamped with the time of day it
+was said in a dimmed `HH:MM:SS`. It opens showing the newest, which is the one
+the bar was already showing.
 
 It also [keeps itself up to date](#in-the-front-end): a look at the newest
 release when the window opens and at most once a day after, and a Yes/No
@@ -225,6 +229,10 @@ of whitespace and all, and cut with an ellipsis past 512 bytes, which is what
 lets the same call serve a paragraph in a dialog and a line in a status bar:
 the front-end logs what each dialog says as it puts it up, so the news survives
 the dialog being dismissed.
+
+What is kept is a session's worth — the newest 128 lines, the oldest falling
+off the end — and it is kept in memory only. Nothing is written to disk: this
+is what the window has done since it opened, not a history of the tool.
 
 What the log is not is the tool's error reporting. What goes wrong is still
 handed back to the caller in its own buffer and reported by whoever asked for
