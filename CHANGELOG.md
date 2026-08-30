@@ -1,5 +1,23 @@
 # Changelog
 
+## [[0.5.0] 2026-08-30](https://github.com/edelkas/tabber/releases/tag/v0.5.0)
+
+New features:
+- **Status bar**: Shows the last logged line, and also which tab is currently installed. It can be hidden from the settings.
+- **Log viewer**: Allows to read the session log, all of which are also exported to the logfile. This can be disabled from the settings.
+- Persisting settings is deferred now: Pressing `Cancel` discards them.
+
+QOL changes:
+- Main window auto-sizing: The height is automatically calculated to fit the content, unless manually resized.
+- Show hand cursor when hovering buttons.
+- Pressing `Esc` dismisses modals.
+- Button to open config folder in the settings window.
+- Button to open logfile in the log viewer window.
+- Log settings which are changed.
+
+Internal changes:
+- Fix in Windows' build script (`build.bat`): extra keywords (`all`, `gui`, `clean`) no longer skip the test suite if `test` is specified.
+
 ## [[0.4.0] 2026-08-29](https://github.com/edelkas/tabber/releases/tag/v0.4.0)
 
 Main new features:

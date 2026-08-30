@@ -141,23 +141,59 @@ of text right-aligned against it saying where that button's business stands.
 
 The theme is one of Dear ImGui's two, dark or light, and the glyph on its
 button is the one it would switch to: a sun on the dark theme, a moon on the
-light one. The settings box has the same choice as a pair of radio buttons, for
-when the picture is not enough, and two switches under it:
+light one. The settings box holds that same choice as a pair of radio buttons,
+for when the picture is not enough, among five settings in three tabs — what
+the tool keeps, what the window looks like, and what it does about its own
+updates:
 
-| Setting | |
-| --- | --- |
-| `Theme` | Dark or light, the same choice the strip's own button makes |
-| `Show status bar` | Whether the bar along the bottom is drawn at all. On |
-| `Save logs to disk` | Whether what it says is [kept in a file](#the-log). On |
+| Tab | Setting | |
+| --- | --- | --- |
+| General | `Save logs to disk` | Whether what the bar says is [kept in a file](#the-log). On |
+| Interface | `Theme` | Dark or light, the same choice the strip's own button makes |
+| Interface | `Show status bar` | Whether the bar along the bottom is drawn at all. On |
+| Updates | `Update policy` | What to do when a newer tabber turns up. Automatically |
+| Updates | `Update frequency` | How long between one look for one and the next. A day |
 
 The names go down one column and the controls down another, so a setting reads
-across. Beside the box's OK button is one carrying a folder, which opens the
+across, and every tab is given the room the largest of them needs, so switching
+between them does not resize the box under the pointer that switched it.
+
+A change is followed the moment it is made — a theme is worth looking at
+rather than imagining — but nothing is written until **OK**. **Cancel** puts
+back whatever the box was opened on and writes nothing, so a theme tried and
+thought better of leaves no trace of itself. Only what actually changed is
+written, so a box opened and shut on the same settings does not touch the file
+at all. The strip's own theme button is not part of that bargain: pressed with
+the box shut, it saves as it always has.
+
+What OK writes it also says, in [the log](#the-log): `Changed settings:`
+followed by each setting that moved and what it moved to, as
+`Theme: Light, Update frequency: 6 hours`. A setting kept and a setting changed
+look the same once the box is shut, and this is what tells them apart later. A
+box that wrote nothing says nothing either.
+
+**Escape** is Cancel, and every box this window puts up answers it the same
+way: one with a single button presses it, one with a pair takes the safer of
+them, so Escape never installs anything, replaces anything or writes anything
+down. A menu opened inside a box, like the policy one, takes the first Escape
+for itself and leaves the box standing.
+
+Beside those two is a button carrying a folder, which opens the
 [tool's own folder](#where-tabber-keeps-its-files) in whatever the desktop
-shows folders with: everything the settings talk about is in there. All three
-are kept in `config.json` under `gui`, so a window opens the way the last one
-was left. The accent the banner is drawn in comes from the theme, and takes the
-button colour at full strength on the light one, where the tint it is on the
-dark one would dissolve into the background.
+shows folders with: everything the settings talk about is in there. The first
+three are kept in `config.json` under `gui` and the other two under `update`,
+so a window opens the way the last one was left. The accent the banner is drawn
+in comes from the theme, and takes the button colour at full strength on the
+light one, where the tint it is on the dark one would dissolve into the
+background.
+
+`Update policy` is a menu of the three things that can be done about a release
+when a look finds one, and `Update frequency` is a number and the unit it
+counts in, so the looking can be every 6 hours or every 10 days or anything of
+that shape. The number cannot go under one, and is kept in the file as the
+hours it comes to, which is the [one figure both front-ends read](#when-it-looks):
+the command line looks no oftener than this either. The policy is the window's
+alone; the command line still says what it found and asks.
 
 The pointer turns to a hand over anything that can be pressed, the frame's own
 three buttons included, which is what Dear ImGui already does for a link and
@@ -1374,6 +1410,8 @@ not held up by one more than once a day (see
 ```json
 "update": {
   "check": true,
+  "policy": "auto",
+  "interval_hours": 24,
   "last_check": "2026-08-24T18:00:00Z",
   "latest": "0.3.0",
   "declined": null,
@@ -1384,6 +1422,14 @@ not held up by one more than once a day (see
 `check` set to false turns the automatic look off altogether, though a look
 asked for by name still happens; `declined` is the version the user said no to,
 which is why the offer comes once per release rather than once a day.
+
+`policy` is what the window does about a release it finds — `auto` to take it,
+`prompt` to ask first, `none` to leave the corner to mention it — and
+`interval_hours` is how long a look stays good for, which is what decides when
+the next one is owed. Both are set in the front-end's
+[settings box](#the-graphical-front-end); anything else in `policy`, and
+anything in `interval_hours` that is not a number of at least one, is read as
+the default rather than refused.
 `last_check` and `latest` are also what the front-end's corner reads to say
 where things stand before it has been near the network. `applied` is news left
 for another process to give: the
@@ -1502,8 +1548,11 @@ written on.
 `tabber upgrade` checks and installs in one go, without asking: it was asked
 for by name.
 
-Every other command checks too, but quietly and **at most once every 24 hours**,
-with the result kept in `config.json`. On a terminal a newer version is offered
+Every other command checks too, but quietly and **at most once every 24 hours**
+by default, with the result kept in `config.json`. That distance is
+`"update": { "interval_hours": N }`, set in the front-end's
+[settings box](#the-graphical-front-end) and read here as well, so both
+front-ends look as often as each other. On a terminal a newer version is offered
 (`Update now? [Y/n]`), and saying yes updates and then re-runs the command that
 was typed, on the new version. Anywhere else — a pipe, a script, `--bare` — it
 prints one line to stderr naming `tabber upgrade` and gets out of the way.
@@ -1518,10 +1567,26 @@ being unreachable is not this command's problem. `--offline` and
 The same three steps and the same code underneath, with different ends on it.
 
 The window looks when it opens and every half hour it stays open, which is only
-how often the state file is *asked*: the 24-hour rule still decides, so GitHub
-is reached at most once a day however long the window is left up. A look that
-finds nothing, or fails, says nothing at all — there is no line of output here
-to put it in, and no network is not a reason to interrupt anyone.
+how often the state file is *asked*: `interval_hours` still decides, so GitHub
+is reached at most once a day however long the window is left up, unless that
+has been set to something else. A look that finds nothing, or fails, says
+nothing at all — there is no line of output here to put it in, and no network
+is not a reason to interrupt anyone.
+
+What a look does with what it finds is the `Update policy` setting, given once
+rather than asked every time:
+
+| Policy | A look that finds a release |
+| --- | --- |
+| `Update automatically` | Takes it, and is the default. Nothing is asked, and the window comes back on the new version |
+| `Prompt for confirmation` | Puts the dialog below, once per release |
+| `None` | Says nothing. The corner still shows it, and its button still installs it |
+
+Taking it is *queued* rather than done on the spot: the look is itself work the
+window is already busy with, so the update is asked for the way a button asks
+for one, waits for anything under way, and announces itself when its turn
+comes. Nothing goes looking because the policy changed — it says what the next
+look due is to do, not that one is due now.
 
 Under the About button sits a line and a button saying where things stand, in
 one of two states:
@@ -1548,7 +1613,8 @@ yesterday and turned down is still named today, in a window that has not been
 near the network. That is the case the state file is there for.
 
 A newer version opens a dialog naming it, the version in hand and the release
-notes, and asks. **No** is remembered for that version, as on the terminal —
+notes, and asks. **No**, or the Escape that stands for it, is remembered for
+that version, as on the terminal —
 the corner goes on saying it is there, which is what makes a decline something
 other than a decision the user cannot revisit. **Yes** downloads, verifies and
 swaps exactly as `upgrade` does, and then the two ends part company from the
