@@ -604,11 +604,115 @@ static void test_log(void)
     log_set_echo(1);
 }
 
+/*
+ * The same log, kept on disk. Every line is appended to one file in the tool's
+ * folder, dated as well as timed, because that file holds more than one run.
+ */
+static void test_log_file(void)
+{
+    char *root = test_dir("logfile");
+    char *path, *text, *old, *big;
+    size_t i;
+
+    test_case("the log on disk");
+    test_use_root(root);
+    log_set_echo(0);
+    log_clear();
+
+    path = log_file_path();
+    if (!CHECK(path != NULL, "the file has a place in the tool's folder")) {
+        log_set_echo(1);
+        free(root);
+        return;
+    }
+    CHECK(!plat_is_file(path), "and nothing is written there until it is asked for");
+
+    /* Off by default: a run that does not ask leaves no trace. */
+    log_line("Fetching MET (Metanet)...");
+    CHECK(!plat_is_file(path), "a line logged with saving off does not make one");
+
+    log_set_saving(1);
+    log_line("MET fetched successfully.");
+    text = plat_read_file(path, NULL);
+    if (CHECK(text != NULL, "the first line saved makes the file")) {
+        CHECK(strstr(text, "MET fetched successfully.") != NULL, "with the line in it");
+        CHECK_NUM(strlen(text), TB_STAMP_LEN - 1 + 2 +
+                  strlen("MET fetched successfully.") + 1,
+                  "a stamp, two spaces, the line and a newline");
+        CHECK(text[4] == '-' && text[7] == '-' && text[10] == ' ' &&
+              text[13] == ':' && text[16] == ':',
+              "the stamp carries the date as well as the time (got '%.19s')", text);
+        CHECK(strstr(text, "Fetching MET") == NULL,
+              "and the line logged before saving was on is not in it");
+        free(text);
+    }
+
+    /* Appended to, not written over: the file is the account of every run. */
+    log_line("Installing MET (Metanet)...");
+    text = plat_read_file(path, NULL);
+    if (CHECK(text != NULL, "the file survives a second line")) {
+        CHECK(strstr(text, "MET fetched successfully.") != NULL, "the first is still there");
+        CHECK(strstr(text, "Installing MET (Metanet)...") != NULL, "and the second is after it");
+        free(text);
+    }
+
+    log_set_saving(0);
+    log_line("MET installed successfully.");
+    text = plat_read_file(path, NULL);
+    if (CHECK(text != NULL, "switching it off leaves what is already written")) {
+        CHECK(strstr(text, "MET installed successfully.") == NULL,
+              "but adds nothing more to it");
+        free(text);
+    }
+
+    /* Past the cap, the file is set aside and a fresh one started, so two
+     * files' worth is the most the folder ever holds. */
+    big = (char *)xmalloc(LOG_FILE_MAX);
+    memset(big, 'x', LOG_FILE_MAX);
+    CHECK_NUM(test_write_bytes(path, big, LOG_FILE_MAX), 0, "a file at the cap");
+    free(big);
+    old = str_fmt("%s%s", path, LOG_OLD_SUFFIX);
+    log_set_saving(1);
+    log_line("Uninstalling MET (Metanet)...");
+    CHECK(plat_is_file(old), "one line past the cap sets the file aside");
+    text = plat_read_file(path, NULL);
+    CHECK(text == NULL, "and the next line starts a fresh one");
+    free(text);
+    text = plat_read_file(old, NULL);
+    if (CHECK(text != NULL, "what was set aside is the file that was too big")) {
+        CHECK(strstr(text, "Uninstalling MET (Metanet)...") != NULL,
+              "with the line that tipped it over on the end");
+        free(text);
+    }
+
+    /* And only ever one of them: a second roll-over replaces the first. */
+    for (i = 0; i < 2; i++) {
+        big = (char *)xmalloc(LOG_FILE_MAX);
+        memset(big, 'x', LOG_FILE_MAX);
+        test_write_bytes(path, big, LOG_FILE_MAX);
+        free(big);
+        log_line("Removing MET...");
+    }
+    text = plat_read_file(old, NULL);
+    if (CHECK(text != NULL, "the one before it is kept")) {
+        CHECK(strstr(text, "Removing MET...") != NULL, "and is the one just set aside");
+        free(text);
+    }
+
+    log_set_saving(0);
+    log_clear();
+    log_set_echo(1);
+    free(old);
+    free(path);
+    free(root);
+}
+
 void suite_core(void)
 {
     test_suite("core");
     test_strings();
     test_log();
+    test_log_file();
     test_tab_columns();
     test_timestamps();
     test_buffers();

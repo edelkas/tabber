@@ -202,12 +202,12 @@ static void test_state_key(void)
 }
 
 /* What the front-end is left set to, which only it writes and reads. */
-static void test_gui_theme(void)
+static void test_gui_settings(void)
 {
     char *root = test_dir("state_theme");
     config *cfg;
 
-    test_case("the theme the window was left on");
+    test_case("what the window was left set to");
     test_use_root(root);
     cfg = load_config();
     if (!cfg) { free(root); return; }
@@ -237,6 +237,28 @@ static void test_gui_theme(void)
     /* A cleared setting reads as none at all, which is the dark one again. */
     config_set_gui_theme(cfg, NULL);
     CHECK(config_gui_theme(cfg) == NULL, "a null theme reads as unset");
+
+    /* The two switches, which are on unless the file says they are not: that
+     * is how the window behaved before there was anything to say it. */
+    CHECK_NUM(config_gui_status_bar(cfg), 1, "the status bar is shown by default");
+    CHECK_NUM(config_gui_save_logs(cfg), 1, "and the log is kept by default");
+
+    config_set_gui_status_bar(cfg, 0);
+    config_set_gui_save_logs(cfg, 0);
+    CHECK_NUM(config_gui_status_bar(cfg), 0, "switching the bar off is recorded");
+    CHECK_NUM(config_gui_save_logs(cfg), 0, "...and so is switching the log off");
+    save_config(cfg);
+    config_free(cfg);
+
+    cfg = load_config();
+    if (!cfg) { free(root); return; }
+    CHECK_NUM(config_gui_status_bar(cfg), 0, "the bar is still off after a reload");
+    CHECK_NUM(config_gui_save_logs(cfg), 0, "...and the log is still not kept");
+    CHECK_NUM(json_count(json_get(cfg->root, CJK_GUI)), 3,
+              "the gui object holds the three settings");
+
+    config_set_gui_status_bar(cfg, 1);
+    CHECK_NUM(config_gui_status_bar(cfg), 1, "and switching one back on is recorded too");
 
     config_free(cfg);
     free(root);
@@ -543,7 +565,7 @@ void suite_state(void)
     test_lifecycle();
     test_preservation();
     test_state_key();
-    test_gui_theme();
+    test_gui_settings();
     test_server_parsing();
     test_server_precedence();
     test_uri_budget();

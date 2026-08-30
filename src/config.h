@@ -51,7 +51,7 @@
  * "gui", last, is the graphical front-end's own corner of the file — what the
  * window was left set to, which the command line neither reads nor writes:
  *
- *   "gui": { "theme": "light" }
+ *   "gui": { "theme": "light", "status_bar": true, "save_logs": true }
  */
 #ifndef TABBER_CONFIG_H
 #define TABBER_CONFIG_H
@@ -91,6 +91,8 @@ extern "C" {
 #define CJK_APPLIED          "applied"    /* update installed, not yet announced */
 #define CJK_GUI              "gui"        /* what the front-end was left set to  */
 #define CJK_THEME            "theme"
+#define CJK_STATUS_BAR       "status_bar" /* is the bar along the bottom shown?  */
+#define CJK_SAVE_LOGS        "save_logs"  /* ...and is what it says kept on disk? */
 
 /* The two themes the front-end draws itself in. Anything else, the absent key
  * included, is the dark one: it is what the program has always looked like. */
@@ -242,6 +244,18 @@ const char *config_gui_theme(config *cfg);
 
 /* Remembers the one it has just been switched to. */
 void config_set_gui_theme(config *cfg, const char *theme);
+
+/*
+ * The two things the window can be told to stop doing: showing the bar along
+ * its bottom, and keeping what that bar says in the logfile. Both are on when
+ * the key is absent, which is how a state file that has never been written to
+ * leaves them, and how they have always behaved.
+ */
+int config_gui_status_bar(config *cfg);
+void config_set_gui_status_bar(config *cfg, int on);
+
+int config_gui_save_logs(config *cfg);
+void config_set_gui_save_logs(config *cfg, int on);
 
 #ifdef __cplusplus
 }

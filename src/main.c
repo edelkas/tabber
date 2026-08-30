@@ -64,6 +64,7 @@ typedef struct {
     int keep_palettes;           /* leave the tab's palettes behind on uninstall */
     loc_langs languages;         /* which languages of the in-game texts to write */
     int no_update_check;         /* do not look for a newer tabber this run */
+    int no_logfile;              /* say what happened, but do not keep it     */
 } options;
 
 /* Turns the command line into what install and uninstall take. */
@@ -105,6 +106,8 @@ static void print_usage(FILE *out)
         "  -o, --offline    Skip the automatic digest refresh, use the cached copy\n"
         "      --no-update-check\n"
         "                   Do not look for a newer tabber on this run\n"
+        "      --no-logfile\n"
+        "                   Do not append what happens to the logfile\n"
         "  -c, --force-compress\n"
         "                   Gzip the savefile put in place, when the game reads gzip\n"
         "      --cloud-mode MODE\n"
@@ -1565,6 +1568,8 @@ int main(int argc, char **argv)
             opts.offline = 1;
         } else if (!strcmp(arg, "--no-update-check")) {
             opts.no_update_check = 1;
+        } else if (!strcmp(arg, "--no-logfile")) {
+            opts.no_logfile = 1;
         } else if (!strcmp(arg, "-c") || !strcmp(arg, "--force-compress")) {
             opts.compress = 1;
         } else if (!strncmp(arg, "--cloud-mode", 12)) {
@@ -1613,6 +1618,13 @@ int main(int argc, char **argv)
             return EXIT_USAGE;
         }
     }
+
+    /*
+     * What this run does goes in the logfile as well as on the console, unless
+     * this run was told not to keep it. Set before anything is done and after
+     * the arguments are read, which is the whole of the window between the two.
+     */
+    log_set_saving(!opts.no_logfile);
 
     /* Before the command, so that saying yes to an update means the command
      * runs on the new version rather than the one being replaced. */

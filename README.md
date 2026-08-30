@@ -142,8 +142,19 @@ of text right-aligned against it saying where that button's business stands.
 The theme is one of Dear ImGui's two, dark or light, and the glyph on its
 button is the one it would switch to: a sun on the dark theme, a moon on the
 light one. The settings box has the same choice as a pair of radio buttons, for
-when the picture is not enough. Which is on is kept in `config.json` under
-`gui`, so a window opens the way the last one was left. The accent the banner is drawn in comes from the
+when the picture is not enough, and two switches under it:
+
+| Setting | |
+| --- | --- |
+| `Theme` | Dark or light, the same choice the strip's own button makes |
+| `Show status bar` | Whether the bar along the bottom is drawn at all. On |
+| `Save logs to disk` | Whether what it says is [kept in a file](#the-log). On |
+
+The names go down one column and the controls down another, so a setting reads
+across. Beside the box's OK button is one carrying a folder, which opens the
+[tool's own folder](#where-tabber-keeps-its-files) in whatever the desktop
+shows folders with: everything the settings talk about is in there. All three are kept in `config.json` under `gui`, so a window opens the
+way the last one was left. The accent the banner is drawn in comes from the
 theme, and takes the button colour at full strength on the light one, where the
 tint it is on the dark one would dissolve into the background.
 
@@ -230,9 +241,25 @@ lets the same call serve a paragraph in a dialog and a line in a status bar:
 the front-end logs what each dialog says as it puts it up, so the news survives
 the dialog being dismissed.
 
-What is kept is a session's worth — the newest 128 lines, the oldest falling
-off the end — and it is kept in memory only. Nothing is written to disk: this
-is what the window has done since it opened, not a history of the tool.
+What the window keeps in memory is a session's worth — the newest 128 lines,
+the oldest falling off the end — and that is what **Session log** shows.
+
+What it keeps on disk is longer. With `Save logs to disk` on, which it is
+unless it has been turned off, every line is also appended to `tabber.log` in
+the [tool's own folder](#where-tabber-keeps-its-files), stamped
+`YYYY-MM-DD HH:MM:SS`: that file holds more than one sitting, so the hour alone
+would not say which day a line belongs to. Once it passes a megabyte it is set
+aside as `tabber.log.old`, replacing whatever was there, and the next line
+starts a fresh one — so two files' worth is the most that is ever kept.
+
+Both front-ends write to it, so it is the account of what has been done to this
+machine rather than of one window's sitting. Each controls it in the way that
+suits it: the window with a setting it remembers, the command line with
+`--no-logfile`, which switches it off for that run and is not remembered.
+
+Nothing is logged before a front-end has said which it wants. A run that is
+only being asked a question — `--version`, the self-check an update makes —
+leaves nothing behind.
 
 What the log is not is the tool's error reporting. What goes wrong is still
 handed back to the caller in its own buffer and reported by whoever asked for
@@ -408,6 +435,8 @@ tabber [options] [command]
   -o, --offline    Skip the automatic digest refresh, use the cached copy
       --no-update-check
                    Do not look for a newer tabber on this run
+      --no-logfile
+                   Do not append what happens to the logfile
   -c, --force-compress
                    Gzip the savefile put in place, when the game reads gzip
       --cloud-mode MODE
@@ -1229,9 +1258,9 @@ not the other way round.
 
 ## Where tabber keeps its files
 
-Everything the tool owns — `config.json`, the cached `digest.json` and the
-`tabs/` store — lives in one folder, the one each system sets aside for a
-program's per-user data:
+Everything the tool owns — `config.json`, the cached `digest.json`, the `tabs/`
+store and the window's `tabber.log` — lives in one folder, the one each system
+sets aside for a program's per-user data:
 
 | System | Folder |
 | --- | --- |
@@ -1337,7 +1366,9 @@ left set to, which the command line neither reads nor writes:
 
 ```json
 "gui": {
-  "theme": "light"
+  "theme": "light",
+  "status_bar": true,
+  "save_logs": true
 }
 ```
 

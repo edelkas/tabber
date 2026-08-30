@@ -2,17 +2,24 @@
  * log.c - Implementation of the message log. See log.h.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "log.h"
 #include "platform.h"
+#include "util.h"
 
 /* The lines, oldest first once it has wrapped, and where the next one goes. */
 static log_entry g_lines[LOG_HISTORY];
 static size_t g_count;
 static size_t g_next;
 static int g_echo = 1;
+
+/* Whether the lines are kept on disk, and where. The path is worked out once
+ * and held for the life of the process: it cannot change under us. */
+static int g_saving;
+static char *g_path;
 
 /* Whether `c` is one of the characters a line is folded on. */
 static int is_space(char c)
@@ -55,6 +62,49 @@ static void fold(const char *in, char *out, size_t outsz)
     out[len] = '\0';
 }
 
+/*
+ * Sets the file aside under LOG_OLD_SUFFIX once it has grown past the cap,
+ * replacing whatever was there. What it leaves is two files: the one being
+ * written and the one before it, and never a third.
+ */
+static void roll_over(void)
+{
+    char *old = str_fmt("%s%s", g_path, LOG_OLD_SUFFIX);
+
+    plat_replace_file(g_path, old);
+    free(old);
+}
+
+/*
+ * Appends one line to the file, dated as well as timed: it holds more than one
+ * sitting, so the hour alone would not say which day it happened on. Anything
+ * that goes wrong here is passed over in silence — a line about what the tool
+ * did is not worth a complaint about where it could not be written.
+ */
+static void write_to_file(const log_entry *entry)
+{
+    char stamp[TB_STAMP_LEN];
+    long size;
+    FILE *f;
+
+    if (!g_path)
+        g_path = log_file_path();
+    if (!g_path)
+        return;
+    f = plat_fopen(g_path, "ab");
+    if (!f)
+        return;
+    time_local_full(entry->when, stamp, sizeof stamp);
+    fprintf(f, "%s  %s\n", stamp, entry->text);
+
+    /* The size is asked of the handle that has just written it rather than of
+     * the file, so the cap costs no second look at the disk. */
+    size = ftell(f);
+    fclose(f);
+    if (size >= LOG_FILE_MAX)
+        roll_over();
+}
+
 void log_linev(const char *fmt, va_list ap)
 {
     /* Room to form the message before it is folded: what arrives with newlines
@@ -79,6 +129,8 @@ void log_linev(const char *fmt, va_list ap)
         fputc('\n', stdout);
         fflush(stdout);
     }
+    if (g_saving)
+        write_to_file(entry);
 }
 
 void log_line(const char *fmt, ...)
@@ -117,4 +169,21 @@ void log_clear(void)
 void log_set_echo(int on)
 {
     g_echo = on;
+}
+
+void log_set_saving(int on)
+{
+    g_saving = on;
+}
+
+char *log_file_path(void)
+{
+    char *root = plat_app_root();
+    char *path;
+
+    if (!root)
+        return NULL;      /* nowhere of ours to write to: nothing is kept */
+    path = path_join(root, LOG_FILENAME);
+    free(root);
+    return path;
 }

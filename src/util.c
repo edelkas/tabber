@@ -249,6 +249,18 @@ void time_local_clock(long long when, char *out, size_t outsz)
         snprintf(out, outsz, "--:--:--");
 }
 
+void time_local_full(long long when, char *out, size_t outsz)
+{
+    time_t t = (time_t)when;
+    struct tm *local;
+
+    if (!out || outsz == 0)
+        return;
+    local = localtime(&t);
+    if (when <= 0 || !local || strftime(out, outsz, "%Y-%m-%d %H:%M:%S", local) == 0)
+        snprintf(out, outsz, "---------- --:--:--");
+}
+
 void str_list_push(str_list *list, char *s)
 {
     if (!s)

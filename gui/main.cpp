@@ -317,6 +317,7 @@ static const char *LABEL_PACKS    = ICON_FK_LIST_ALT;
 static const char *LABEL_GET      = ICON_FK_DOWNLOAD;
 static const char *LABEL_SETTINGS = ICON_FK_WRENCH;
 static const char *LABEL_LOG      = ICON_FK_ALIGN_JUSTIFY;
+static const char *LABEL_FOLDER   = ICON_FK_FOLDER_OPEN;
 static const char *LABEL_LIGHT    = ICON_FK_SUN;   /* what it would switch to */
 static const char *LABEL_DARK     = ICON_FK_MOON;
 static const char *TITLE_DONE     = "Done";
@@ -359,10 +360,19 @@ static const char *LOG_EMPTY      = "Nothing has happened yet.";
 /* How many lines it shows before it starts scrolling. */
 static const int LOG_VIEW_ROWS = 12;
 
-/* What the settings box holds: one line, so far. */
-static const char *SETTING_THEME    = "Theme";
-static const char *THEME_DARK_NAME  = "Dark";
-static const char *THEME_LIGHT_NAME = "Light";
+/* What the settings box holds, one line each. */
+static const char *SETTING_THEME      = "Theme";
+static const char *SETTING_STATUS_BAR = "Show status bar";
+static const char *SETTING_SAVE_LOGS  = "Save logs to disk";
+static const char *THEME_DARK_NAME    = "Dark";
+static const char *THEME_LIGHT_NAME   = "Light";
+
+/* Where the logfile is, under the setting that fills it, and where the folder
+ * holding it is, under the button that opens that folder. */
+static const char *HINT_SAVE_LOGS   = "Appended to %s";
+static const char *HINT_NO_LOG_FILE = "There is nowhere to write it";
+static const char *HINT_FOLDER      = "Open config folder";
+static const char *HINT_NO_FOLDER   = "Config folder not found";
 
 /* The update prompt. The version numbers are filled in beside these. */
 static const char *UPDATE_QUESTION = "Update now?";
@@ -384,7 +394,10 @@ static const char *TABLE_ID   = "tabber-tabs";
 static const char *BUSY_ID    = "tabber-busy";
 static const char *DRAG_ID    = "##titlebar";
 static const char *BUTTON_ID  = "##corner";
-static const char *LOG_ID     = "##log";     /* the scrolling region  */   /* the icon goes on by hand */
+static const char *LOG_ID     = "##log";     /* the scrolling region  */
+static const char *SETTINGS_ID = "##settings";  /* its two columns       */
+static const char *BAR_ID      = "##statusbar"; /* and the two switches  */
+static const char *SAVE_ID     = "##savelogs";   /* the icon goes on by hand */
 static const char *MINIMISE_ID = "##minimise";
 static const char *MAXIMISE_ID = "##maximise";
 static const char *CLOSE_ID    = "##close";
@@ -488,6 +501,18 @@ static char g_checked_when[TB_WHEN_LEN] = "";
 /* Which of the two themes is on. Dark is what the program has always looked
  * like, and is what an untouched state file leaves this at. */
 static int g_light = 0;
+
+/* The other two things that can be set: whether the bar along the bottom is
+ * drawn at all, and whether what it says is kept in the logfile. Both on
+ * unless the state file says otherwise, which is how they have always been. */
+static int g_status_bar = 1;
+static int g_save_logs = 1;
+
+/* That file, and the folder it and everything else of ours sits in, for the
+ * settings box to name and to open. NULL when there is nowhere to put one;
+ * worked out once, since neither can move under us. */
+static char *g_log_path = NULL;
+static char *g_app_root = NULL;
 
 static void on_glfw_error(int error, const char *description)
 {
@@ -1212,18 +1237,81 @@ static void apply_theme(void)
         THEME_COLOR.w = 1.0f;
 }
 
-/* Which one the last run was left on. Anything the file does not say is dark. */
-static void read_theme(void)
+/*
+ * What the last window was left set to. Read before anything else happens, so
+ * that the lines the startup itself logs are kept if the user asked for them
+ * to be; the theme it reads is not painted until there is a style to paint.
+ * Anything the file does not say is what it has always been.
+ */
+static void read_settings(void)
 {
     char err[TB_ERR_LEN];
     config *cfg = config_load(err, sizeof err);
     const char *theme;
 
+    g_app_root = plat_app_root();
+    g_log_path = log_file_path();
     if (!cfg)
         return;
     theme = config_gui_theme(cfg);
     g_light = theme && strcmp(theme, CONFIG_THEME_LIGHT) == 0;
+    g_status_bar = config_gui_status_bar(cfg);
+    g_save_logs = config_gui_save_logs(cfg);
     config_free(cfg);
+    log_set_saving(g_save_logs && g_log_path != NULL);
+
+    char *path = config_path();
+    log_line("Loaded settings from %s", path);
+    free(path);
+}
+
+/* The three of them, for the one function that writes one down. */
+typedef enum { SET_THEME, SET_STATUS_BAR, SET_SAVE_LOGS } ui_setting;
+
+/*
+ * Records what the window has just been told. The window has already followed
+ * the click by the time this runs, and follows it whether or not the writing
+ * gets through: a state file that cannot be written means the next window
+ * opens on the old setting, which is a lesser thing to go wrong with than a
+ * control that does not move when it is pressed.
+ */
+static void remember_setting(ui_setting which, int value)
+{
+    char err[TB_ERR_LEN];
+    config *cfg = config_load(err, sizeof err);
+
+    if (!cfg)
+        return;
+    switch (which) {
+    case SET_THEME:
+        config_set_gui_theme(cfg, value ? CONFIG_THEME_LIGHT : CONFIG_THEME_DARK);
+        break;
+    case SET_STATUS_BAR:
+        config_set_gui_status_bar(cfg, value);
+        break;
+    case SET_SAVE_LOGS:
+        config_set_gui_save_logs(cfg, value);
+        break;
+    }
+    config_save(cfg, err, sizeof err);
+    config_free(cfg);
+}
+
+/* Whether the bar is drawn. Nothing else changes: the log is kept either way,
+ * and the button that reads it is on the bar, so hiding it hides that too. */
+static void choose_status_bar(int on)
+{
+    g_status_bar = on;
+    remember_setting(SET_STATUS_BAR, on);
+}
+
+/* Whether the lines are kept on disk. What is already in the file stays there:
+ * switching this off stops the writing, it does not undo it. */
+static void choose_save_logs(int on)
+{
+    g_save_logs = on;
+    log_set_saving(on && g_log_path != NULL);
+    remember_setting(SET_SAVE_LOGS, on);
 }
 
 /*
@@ -1236,19 +1324,11 @@ static void read_theme(void)
  */
 static void choose_theme(int light)
 {
-    char err[TB_ERR_LEN];
-    config *cfg;
-
     if (light == g_light)
         return;
     g_light = light;
     apply_theme();
-    cfg = config_load(err, sizeof err);
-    if (!cfg)
-        return;
-    config_set_gui_theme(cfg, g_light ? CONFIG_THEME_LIGHT : CONFIG_THEME_DARK);
-    config_save(cfg, err, sizeof err);
-    config_free(cfg);
+    remember_setting(SET_THEME, light);
 }
 
 /* ---- Drawing ----------------------------------------------------------- */
@@ -1924,9 +2004,12 @@ static float draw_corner(ImVec2 level)
  * and what does not fit in it is cut rather than allowed to run underneath.
  */
 
-/* What the bar wants under the table: the line, and the gap above it. */
+/* What the bar wants under the table: the line, and the gap above it. None of
+ * it when it is not being drawn, so the table has the whole window again. */
 static float status_bar_height(void)
 {
+    if (!g_status_bar)
+        return 0.0f;
     return ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
 }
 
@@ -2046,10 +2129,7 @@ static void draw_status_bar(void)
 
     /* Right-aligned, the right-hand end of its section being the panel's own. */
     ImGui::SetCursorScreenPos(ImVec2(right_edge - ImGui::CalcTextSize(right).x, top));
-    if (g_installed_code[0] != '\0')
-        ImGui::TextUnformatted(right);
-    else
-        ImGui::TextDisabled("%s", right);   /* nothing in: nothing to report */
+    ImGui::TextColored(THEME_COLOR, right);
 }
 
 /* The one window, filling the viewport however the frame has been resized. */
@@ -2083,7 +2163,8 @@ static void draw_panel(void)
     else
         ImGui::TextWrapped("%s", g_error);
 
-    draw_status_bar();
+    if (g_status_bar)
+        draw_status_bar();
     ImGui::End();
 }
 
@@ -2116,8 +2197,65 @@ static void draw_result_modal(const char *title)
     ImGui::EndPopup();
 }
 
+/*
+ * An icon on an ordinary button, at the cursor, for the ones that stand in a
+ * row laid out the usual way rather than seated by hand as the corner's are.
+ * The same trick as there: the button carries no label of its own and the
+ * glyph is drawn centred on it, ForkAwesome's own centring being what it is.
+ */
+static int icon_button(const char *icon, const char *hint)
+{
+    ImVec2 seat = ImGui::GetCursorScreenPos();
+    ImVec2 size(ImGui::CalcTextSize(icon).x + ImGui::GetStyle().FramePadding.x * 2.0f,
+                ImGui::GetFrameHeight());
+    int pressed = ImGui::Button(BUTTON_ID, size);
+
+    draw_icon_glyph(icon, seat, size);
+    if (hint && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", hint);
+    return pressed;
+}
+
+/*
+ * Shows the tool's own folder in whatever the desktop shows folders with.
+ * Dear ImGui knows how on all three platforms — it is what a link in the About
+ * box is opened through — so this is one call rather than three.
+ */
+static void open_app_folder(void)
+{
+    ImGuiPlatformIO &io = ImGui::GetPlatformIO();
+
+    if (g_app_root && io.Platform_OpenInShellFn)
+        io.Platform_OpenInShellFn(ImGui::GetCurrentContext(), g_app_root);
+}
+
+/*
+ * One setting's name, in the left column, with the row's control to follow in
+ * the right one. Lined up with that control rather than with the top of the
+ * row, since the control is a frame's padding taller than the words are.
+ */
+static void setting_row(const char *name, const char *hint)
+{
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(name);
+    if (hint && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", hint);
+    ImGui::TableSetColumnIndex(1);
+}
+
 static void draw_dialogs(void)
 {
+    /* Named rather than described: the one question the settings raise is
+     * where the file and the folder are, and the answers are too long to sit
+     * in the box. */
+    char log_hint[TB_ERR_LEN], folder_hint[TB_ERR_LEN];
+
+    snprintf(log_hint, sizeof log_hint, g_log_path ? HINT_SAVE_LOGS : HINT_NO_LOG_FILE,
+             g_log_path);
+    snprintf(folder_hint, sizeof folder_hint, g_app_root ? HINT_FOLDER : HINT_NO_FOLDER);
+
     if (g_open_popup) {
         ImGui::OpenPopup(g_open_popup);
         g_open_popup = NULL;
@@ -2188,16 +2326,46 @@ static void draw_dialogs(void)
      * through choose_theme and is written down the same way. */
     centre_next_window();
     if (ImGui::BeginPopupModal(TITLE_SETTINGS, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextUnformatted(SETTING_THEME);
-        ImGui::SameLine();
-        if (ImGui::RadioButton(THEME_DARK_NAME, !g_light))
-            choose_theme(0);
-        ImGui::SameLine();
-        if (ImGui::RadioButton(THEME_LIGHT_NAME, g_light))
-            choose_theme(1);
+        bool on;
+
+        /* Two columns, both as wide as the widest thing in them: the names
+         * down one side and the controls down the other, so the eye reads a
+         * setting across rather than hunting for where its control begins. */
+        if (ImGui::BeginTable(SETTINGS_ID, 2, ImGuiTableFlags_SizingFixedFit)) {
+            setting_row(SETTING_THEME, NULL);
+            if (ImGui::RadioButton(THEME_DARK_NAME, !g_light))
+                choose_theme(0);
+            ImGui::SameLine();
+            if (ImGui::RadioButton(THEME_LIGHT_NAME, g_light))
+                choose_theme(1);
+
+            setting_row(SETTING_STATUS_BAR, NULL);
+            on = g_status_bar != 0;
+            if (ImGui::Checkbox(BAR_ID, &on))
+                choose_status_bar(on);
+
+            setting_row(SETTING_SAVE_LOGS, log_hint);
+            on = g_save_logs != 0;
+            ImGui::BeginDisabled(g_log_path == NULL);
+            if (ImGui::Checkbox(SAVE_ID, &on))
+                choose_save_logs(on);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", log_hint);
+            ImGui::EndTable();
+        }
         ImGui::Separator();
         if (ImGui::Button(LABEL_OK))
             ImGui::CloseCurrentPopup();
+
+        /* Beside it: everything the settings talk about — the logfile, the
+         * state file they are written to — is in one folder, and this opens it
+         * rather than asking anyone to copy a path out of a tooltip. */
+        ImGui::SameLine();
+        ImGui::BeginDisabled(g_app_root == NULL);
+        if (icon_button(LABEL_FOLDER, folder_hint))
+            open_app_folder();
+        ImGui::EndDisabled();
         ImGui::EndPopup();
     }
 
@@ -2415,6 +2583,11 @@ int main(int argc, char **argv)
     if (self_check_only(argc, argv, &status))
         return status;
 
+    /* Before anything that logs: what this run does is kept from its first
+     * line, or from none of it, according to what the last run was left on. */
+    read_settings();
+    log_line("Started %s %s", TABBER_NAME, TABBER_VERSION);
+    
     /* A binary an earlier update moved aside can only be deleted once the run
      * that was using it has ended. Tried again a moment in; see
      * SWEEP_RETRY_SECONDS. */
@@ -2473,8 +2646,7 @@ int main(int argc, char **argv)
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = ini_path();
     build_font(io);
-    read_theme();          /* the one the last window was left on */
-    apply_theme();
+    apply_theme();         /* the one read_settings found, now there is a style */
     ImGui::GetStyle().ScaleAllSizes(scale);
     ImGui::GetStyle().FontScaleDpi = scale;
 
@@ -2549,6 +2721,8 @@ int main(int argc, char **argv)
     glfwTerminate();
     digest_free(g_digest);
     update_info_free(&g_update);
+    free(g_log_path);
+    free(g_app_root);
     free(g_rows);
     free(g_order);
     return 0;

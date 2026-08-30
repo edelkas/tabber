@@ -381,6 +381,26 @@ void config_set_gui_theme(config *cfg, const char *theme)
                     theme ? json_new_string(theme) : json_new_null());
 }
 
+int config_gui_status_bar(config *cfg)
+{
+    return json_get_bool(gui_record(cfg, 0), CJK_STATUS_BAR, 1);
+}
+
+void config_set_gui_status_bar(config *cfg, int on)
+{
+    json_object_set(gui_record(cfg, 1), CJK_STATUS_BAR, json_new_bool(on));
+}
+
+int config_gui_save_logs(config *cfg)
+{
+    return json_get_bool(gui_record(cfg, 0), CJK_SAVE_LOGS, 1);
+}
+
+void config_set_gui_save_logs(config *cfg, int on)
+{
+    json_object_set(gui_record(cfg, 1), CJK_SAVE_LOGS, json_new_bool(on));
+}
+
 int config_get_palettes(config *cfg, const char *code, str_list *out)
 {
     const json_value *array = json_get(config_find_tab(cfg, code), CJK_PALETTES);

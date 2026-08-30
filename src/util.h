@@ -96,6 +96,15 @@ void time_local_stamp(long long when, char *out, size_t outsz);
 
 void time_local_clock(long long when, char *out, size_t outsz);
 
+/*
+ * Both together, "YYYY-MM-DD HH:MM:SS", for a moment in a file that outlives
+ * the run that wrote it and where the day is as much in question as the hour.
+ * Length TB_STAMP_LEN, terminator included.
+ */
+#define TB_STAMP_LEN 20
+
+void time_local_full(long long when, char *out, size_t outsz);
+
 /* ---- Growable list of owned strings ------------------------------------ */
 
 typedef struct {
