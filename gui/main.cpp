@@ -381,6 +381,7 @@ static const char *TAB_GENERAL        = "General";
 static const char *TAB_INTERFACE      = "Interface";
 static const char *TAB_UPDATES        = "Updates";
 static const char *SETTINGS_LOAD      = "Loaded settings";
+static const char *SETTINGS_CHANGED   = "Changed settings = %s";
 static const char *SETTING_THEME      = "Theme";
 static const char *SETTING_STATUS_BAR = "Show status bar";
 static const char *SETTING_SAVE_LOGS  = "Save logs to disk";
@@ -388,6 +389,12 @@ static const char *SETTING_POLICY     = "Update policy";
 static const char *SETTING_FREQUENCY  = "Update frequency";
 static const char *THEME_DARK_NAME    = "Dark";
 static const char *THEME_LIGHT_NAME   = "Light";
+
+/* How the two switches read where they are named rather than drawn, and how
+ * long a line naming every setting at once can run to. */
+static const char *VALUE_ON  = "on";
+static const char *VALUE_OFF = "off";
+#define SETTINGS_LINE_LEN 256
 
 /* The three answers to "a newer tabber has turned up", in the order the
  * update_policy values run in: the list hands back one of those. */
@@ -403,6 +410,8 @@ static const char *HINT_POLICY = "What to do when updates are available";
  * (CONFIG_INTERVAL_MAX). Four figures of days is twenty-seven years. */
 static const char *UNIT_HOURS  = "Hours";
 static const char *UNIT_DAYS   = "Days";
+static const char *UNIT_HOUR   = "hour";   /* ...as the log says them, where */
+static const char *UNIT_DAY    = "day";    /* one of a thing has a number   */
 static const int   HOURS_A_DAY = 24;
 static const int   EVERY_MAX   = 9999;
 
@@ -1553,50 +1562,72 @@ static void settings_restore(const ui_settings *s)
     g_in_days = s->in_days;
 }
 
+/* Adds one setting and its new value to the line the write is saying itself
+ * in, after whatever is already there. */
+static void note_change(char *line, size_t len, const char *name, const char *value)
+{
+    size_t at = strlen(line);
+
+    snprintf(line + at, len - at, "%s%s: %s", at ? ", " : "", name, value);
+}
+
 /*
  * What OK keeps: whatever is no longer what the box opened on, in one pass
  * over the state file rather than one per setting. A file that will not load
  * is not written to, which leaves the next window opening on the old settings
  * while this one goes on showing the new ones — the same way a single setting
  * has always failed.
+ *
+ * What is written is also said, since a setting changed and a setting kept
+ * look the same afterwards: the line names each one that moved and where it
+ * moved to, and there is no line when nothing did, there being no write to
+ * report.
  */
 static void settings_write(const ui_settings *was)
 {
-    char err[TB_ERR_LEN];
+    char err[TB_ERR_LEN], line[SETTINGS_LINE_LEN], every[32];
     ui_settings now;
     config *cfg;
-    int changed = 0;
 
     settings_now(&now);
     cfg = config_load(err, sizeof err);
     if (!cfg)
         return;
+    line[0] = '\0';
 
     if (now.light != was->light) {
         config_set_gui_theme(cfg, now.light ? CONFIG_THEME_LIGHT : CONFIG_THEME_DARK);
-        changed = 1;
+        note_change(line, sizeof line, SETTING_THEME,
+                    now.light ? THEME_LIGHT_NAME : THEME_DARK_NAME);
     }
     if (now.status_bar != was->status_bar) {
         config_set_gui_status_bar(cfg, now.status_bar);
-        changed = 1;
+        note_change(line, sizeof line, SETTING_STATUS_BAR,
+                    now.status_bar ? VALUE_ON : VALUE_OFF);
     }
     if (now.save_logs != was->save_logs) {
         config_set_gui_save_logs(cfg, now.save_logs);
-        changed = 1;
+        note_change(line, sizeof line, SETTING_SAVE_LOGS,
+                    now.save_logs ? VALUE_ON : VALUE_OFF);
     }
     if (now.policy != was->policy) {
         config_set_update_policy(cfg, (update_policy)now.policy);
-        changed = 1;
+        note_change(line, sizeof line, SETTING_POLICY, POLICY_NAMES[now.policy]);
     }
     if (now.every != was->every || now.in_days != was->in_days) {
         config_set_update_interval(cfg,
             now.every * (now.in_days ? HOURS_A_DAY : 1));
-        changed = 1;
+        snprintf(every, sizeof every, "%d %s%s", now.every,
+                 now.in_days ? UNIT_DAY : UNIT_HOUR, now.every == 1 ? "" : "s");
+        note_change(line, sizeof line, SETTING_FREQUENCY, every);
     }
 
-    /* A box opened and shut on the same settings leaves the file alone. */
-    if (changed)
+    /* A box opened and shut on the same settings leaves the file alone, and
+     * has nothing to say about it either. */
+    if (line[0] != '\0') {
         config_save(cfg, err, sizeof err);
+        log_line(SETTINGS_CHANGED, line);
+    }
     config_free(cfg);
 }
 
