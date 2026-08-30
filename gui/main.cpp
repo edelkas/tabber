@@ -311,6 +311,7 @@ enum {
 };
 
 /* Everything the user reads, in one place. */
+static const char *TABBER_START   = "Started %s %s";
 static const char *LABEL_NEVER    = "Never";
 static const char *LABEL_DOWNLOAD = "Download";
 static const char *LABEL_INSTALL  = "Install";
@@ -379,6 +380,7 @@ static const float LOG_VIEW_MAX_PART = 0.6f;
 static const char *TAB_GENERAL        = "General";
 static const char *TAB_INTERFACE      = "Interface";
 static const char *TAB_UPDATES        = "Updates";
+static const char *SETTINGS_LOAD      = "Loaded settings";
 static const char *SETTING_THEME      = "Theme";
 static const char *SETTING_STATUS_BAR = "Show status bar";
 static const char *SETTING_SAVE_LOGS  = "Save logs to disk";
@@ -554,6 +556,7 @@ static float g_log_fit = 0.0f;      /* how tall it was opened at, to see a */
 static int  g_log_dragged = 0;      /* drag away from it, after which it   */
 static int  g_log_on_disk = 0;      /* is theirs. And: there is a file.    */
 static int  g_dialog_open = 0;      /* one is on screen and owns the window */
+static int  g_menu_open = 0;        /* ...and had a menu open on it, last frame */
 
 /* The release a check found and has yet to be answered about. Held rather than
  * copied out because applying it wants the URL, the size and the MD5 too. */
@@ -1397,9 +1400,7 @@ static void read_settings(void)
     config_free(cfg);
     log_set_saving(g_save_logs && g_log_path != NULL);
 
-    char *path = config_path();
-    log_line("Loaded settings from %s", path);
-    free(path);
+    log_line(SETTINGS_LOAD);
 }
 
 /* Every one of them, for the one function that writes one down. */
@@ -2491,6 +2492,23 @@ static void centre_next_window(void)
 }
 
 /*
+ * Whether Escape has just been pressed at the box being drawn, which is a way
+ * of asking to be let out of it. Every box answers it with its safest button:
+ * one with a single button presses it, one with two refuses.
+ *
+ * A menu opened inside a box takes the first Escape for itself. Dear ImGui has
+ * already closed it by the time the frame reaches here, so there is nothing
+ * left to see; what is left is the frame before, which g_menu_open remembers.
+ */
+static int escaped(void)
+{
+    int over_a_menu = g_menu_open;
+
+    g_menu_open = 0;
+    return !over_a_menu && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+}
+
+/*
  * What set_result last wrote, under whichever of the titles it wrote it. They
  * differ in the title alone, which is the point: what happened is readable
  * from the top of the box without reading the box.
@@ -2504,7 +2522,7 @@ static void draw_result_modal(const char *title)
     ImGui::TextUnformatted(g_result_text);
     ImGui::PopTextWrapPos();
     ImGui::Separator();
-    if (push_button(LABEL_OK))
+    if (push_button(LABEL_OK) || escaped())
         ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 }
@@ -2665,7 +2683,7 @@ static void draw_dialogs(void)
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (push_button(LABEL_NO))
+        if (push_button(LABEL_NO) || escaped())
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
@@ -2697,7 +2715,7 @@ static void draw_dialogs(void)
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (push_button(LABEL_NO)) {
+            if (push_button(LABEL_NO) || escaped()) {
                 decline_update();
                 ImGui::CloseCurrentPopup();
             }
@@ -2708,7 +2726,7 @@ static void draw_dialogs(void)
             ImGui::TextUnformatted(UPDATE_NO_BUILD);
             ImGui::PopTextWrapPos();
             ImGui::TextLinkOpenURL(g_update.page, g_update.page);
-            if (push_button(LABEL_OK)) {
+            if (push_button(LABEL_OK) || escaped()) {
                 decline_update();
                 ImGui::CloseCurrentPopup();
             }
@@ -2808,7 +2826,7 @@ static void draw_dialogs(void)
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (push_button(LABEL_CANCEL)) {
+        if (push_button(LABEL_CANCEL) || escaped()) {
             settings_cancel();
             ImGui::CloseCurrentPopup();
         }
@@ -2821,12 +2839,16 @@ static void draw_dialogs(void)
         if (icon_button(LABEL_FOLDER, folder_hint))
             open_in_shell(g_app_root);
         ImGui::EndDisabled();
+
+        /* Whether the policy menu stands open over the box, so that the Escape
+         * that closes the menu is not read as one aimed at the box. */
+        g_menu_open = ImGui::IsPopupOpen(NULL, ImGuiPopupFlags_AnyPopupId);
         ImGui::EndPopup();
     }
 
-    /* Shut any other way than by those two — Escape, most of it — keeps
-     * nothing: nothing has been written, and what is on screen goes back to
-     * what was written last. */
+    /* Escape is Cancel and is answered as one, above. Shut any other way than
+     * by a button keeps nothing either: nothing has been written, and what is
+     * on screen goes back to what was written last. */
     if (g_editing && !ImGui::IsPopupOpen(TITLE_SETTINGS))
         settings_cancel();
 
@@ -2894,7 +2916,7 @@ static void draw_dialogs(void)
         }
         ImGui::EndChild();
         ImGui::Separator();
-        if (push_button(LABEL_OK))
+        if (push_button(LABEL_OK) || escaped())
             ImGui::CloseCurrentPopup();
 
         /* Beside it: what is above is this sitting's worth, and the file holds
@@ -2921,7 +2943,7 @@ static void draw_dialogs(void)
         ImGui::Text(ICON_FK_DISCORD_ALT); ImGui::SameLine();
         ImGui::TextLinkOpenURL(ABOUT_DISCORD, ABOUT_DISCORD);
         ImGui::Separator();
-        if (push_button(LABEL_OK))
+        if (push_button(LABEL_OK) || escaped())
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
     }
@@ -3137,7 +3159,7 @@ int main(int argc, char **argv)
     /* Before anything that logs: what this run does is kept from its first
      * line, or from none of it, according to what the last run was left on. */
     read_settings();
-    log_line("Started %s %s", TABBER_NAME, TABBER_VERSION);
+    log_line(TABBER_START, TABBER_NAME, TABBER_VERSION);
     
     /* A binary an earlier update moved aside can only be deleted once the run
      * that was using it has ended. Tried again a moment in; see
