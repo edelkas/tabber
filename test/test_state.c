@@ -181,6 +181,65 @@ static void test_preservation(void)
     free(root);
 }
 
+/*
+ * Two handles open on one state file, which is what a front-end doing its work
+ * on a second thread has: each stages its write under a name of its own, so
+ * neither can be caught writing the other's, and the swap into place leaves
+ * one writer's whole state and nothing beside it.
+ */
+static void test_two_writers(void)
+{
+    char *root = test_dir("state_writers");
+    char *dir;
+    config *first, *second;
+    str_list left;
+    size_t i, kept = strlen(CONFIG_FILENAME), staged = 0;
+
+    test_case("two writers on one state file");
+    test_use_root(root);
+    dir = plat_app_root();
+
+    first = load_config();
+    second = load_config();
+    if (!first || !second || !dir) {
+        config_free(first);
+        config_free(second);
+        free(dir);
+        free(root);
+        return;
+    }
+
+    /* Each writes the whole file from what it read, so whichever saves last is
+     * the one on disk. What must not happen is the two of them staging over
+     * each other on the way there. */
+    config_set_downloaded(first, 1, "aaa");
+    config_set_downloaded(second, 2, "bbb");
+    save_config(first);
+    save_config(second);
+    config_free(first);
+    config_free(second);
+
+    memset(&left, 0, sizeof left);
+    if (plat_list_dir(dir, &left) == 0) {
+        for (i = 0; i < left.count; i++)
+            if (strncmp(left.items[i], CONFIG_FILENAME, kept) == 0 &&
+                strcmp(left.items[i], CONFIG_FILENAME) != 0)
+                staged++;
+    }
+    CHECK_NUM((long)staged, 0, "nothing staged is left beside it");
+    str_list_free(&left);
+
+    first = load_config();
+    if (first) {
+        CHECK(config_find_tab(first, "bbb") != NULL,
+              "the state the last writer saved is the one kept");
+        config_free(first);
+    }
+
+    free(dir);
+    free(root);
+}
+
 static void test_state_key(void)
 {
     char *root = test_dir("state_flag");
@@ -564,6 +623,7 @@ void suite_state(void)
     test_new_entries();
     test_lifecycle();
     test_preservation();
+    test_two_writers();
     test_state_key();
     test_gui_settings();
     test_server_parsing();

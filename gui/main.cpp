@@ -22,10 +22,10 @@
  * than redrawing an unchanging window sixty times a second. What it sleeps in
  * is worth a look too: see "Pacing the frames".
  *
- * The work happens on this thread, so a download or an install freezes the
- * window while it runs. What the frame before it draws is a "working" overlay,
- * so at least the reason is on screen; moving it off the main thread is the
- * next thing this file needs.
+ * The work does not happen on this thread. A download, an install or a look at
+ * GitHub is put on a queue and done by one other thread, which leaves what it
+ * found for this one to act on; see "Doing the work". Nothing else in this
+ * file runs anywhere but here, and nothing drawn is touched by that thread.
  */
 
 #include <stdarg.h>
@@ -33,6 +33,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* The worker, and the little that is shared with it. C++ has these and the
+ * tool's own library does not need to know about any of it. */
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -340,10 +347,20 @@ static const char *TITLE_UPDATE   = "Update available";
 static const char *TITLE_UPDATED  = "Updated";
 static const char *TITLE_CURRENT  = "Up to date";
 
-/* What the overlay says while the thread is away doing each of them. */
+/* What is said while each of them is being done: in the bar always, and in the
+ * overlay as well when the work is one to keep out of the way of. */
 static const char *BUSY_CHECK     = "Looking for a newer " TABBER_NAME "...";
 static const char *BUSY_UPGRADE   = "Updating " TABBER_NAME "...";
 static const char *BUSY_TABS      = "Updating the mappack list...";
+static const char *BUSY_FULL      = "Too much at once: %s was not started";
+
+/* How long one of those lines can be, how many tasks can be waiting to be
+ * done, and how much of what they found can be waiting to be read. Both counts
+ * are past anything a hand on a mouse can ask for in the time one task takes;
+ * see "Doing the work". */
+#define BUSY_TEXT_LEN   128
+#define WORK_QUEUE_MAX  16
+#define WORK_NEWS_MAX   8
 
 /* The corner: what each row says, and what its button offers. The version, the
  * count and the moment are filled in beside these. */
@@ -536,17 +553,23 @@ static long long g_rows_stamp = 0;  /* when the rows were last worked out */
 static int g_sort_column = -1;      /* -1: the digest's own order */
 static int g_sort_ascending = 1;
 
-/* Work a click has asked for, run once the overlay announcing it is on screen.
- * ACT_CHECK is the one nothing clicks: see "Updating tabber itself". */
+/* Work a click has asked for, done on the worker. ACT_CHECK is the one nothing
+ * clicks: see "Updating tabber itself". */
 typedef enum {
     ACT_NONE, ACT_UPDATE, ACT_DOWNLOAD, ACT_INSTALL, ACT_UNINSTALL, ACT_REPLACE,
     ACT_CHECK, ACT_CHECK_ASKED, ACT_UPGRADE
 } ui_action;
 
-static ui_action g_pending = ACT_NONE;
-static char g_pending_code[TAB_CODE_MAX_LEN + 1] = "";
-static int  g_pending_drawn = 0;
-static char g_busy_text[128] = "";
+/* How the window stands with the worker, read once a frame and drawn from
+ * after that: whether anything is being done, whether what is being done is
+ * to be kept out of, and what that says of itself. */
+static int  g_ui_working = 0;
+static int  g_ui_blocked = 0;
+static char g_ui_busy[BUSY_TEXT_LEN] = "";
+
+/* The tab the replacement question is about, held from the click that asked it
+ * until the answer comes back. */
+static char g_asked_code[TAB_CODE_MAX_LEN + 1] = "";
 
 /* The dialogs: what a result says, and what a replacement asks. */
 static char g_result_title[64] = "";
@@ -596,7 +619,7 @@ static int g_save_logs = 1;
  * for one are. The file keeps that distance in hours; the box asks for it as a
  * number and a unit, which is the same thing said the way people say it.
  */
-static int g_policy = UPDATE_POLICY_AUTO;
+static std::atomic<int> g_policy(UPDATE_POLICY_AUTO);  /* read by the worker */
 static int g_every = 1;      /* the number in the spinner       */
 static int g_in_days = 1;    /* ...and which unit it counts in  */
 
@@ -783,7 +806,100 @@ static void apply_sort(void)
         qsort(g_order, g_row_count, sizeof *g_order, compare_rows);
 }
 
-/* ---- Doing the work ---------------------------------------------------- */
+/* ---- Doing the work -----------------------------------------------------
+ *
+ * Everything worth an overlay — a download, an install, a look at GitHub — is
+ * done on one other thread, and what follows is the whole of the traffic
+ * between the two.
+ *
+ * The window asks with request(), which puts an item on a queue and goes back
+ * to drawing. The worker takes them one at a time, in the order they were
+ * asked for, and leaves what came of each on a second queue for the window to
+ * act on: a dialog to put up, a line for the log, a catalogue to take over,
+ * the corner to read again. The worker draws nothing and the window does no
+ * work, which is what keeps a lock out of the drawing entirely: the two share
+ * the two queues and little else.
+ *
+ * One worker, so the tasks are still done one after another. Two installs
+ * cannot overlap however fast the buttons are pressed, and each is written to
+ * expect a world that has moved on since its button was pressed anyway — the
+ * install asks the game folder again rather than trusting what the table drew.
+ *
+ * Work is asked for blocking or not, and both kinds queue on the same thread.
+ * The difference is what the window does meanwhile. Work that does not block
+ * leaves it as it was: the bar says what is happening and everything stays
+ * usable. Work that blocks puts the overlay up and stops the window taking
+ * anything in until it is done -- which is not the freeze this used to be,
+ * since the frames go on being drawn: something still drawing cannot be taken
+ * for something that has died, and a spinner or a count can go in that overlay
+ * later. What blocking is for is work nobody should be changing anything
+ * underneath. Nothing asks for it as things stand, one thread being enough to
+ * keep the tasks out of each other's way, but flipping one argument is all it
+ * takes for the ones that come to want it.
+ */
+
+/* One thing to be done, as it was asked for. */
+typedef struct {
+    ui_action action;
+    char code[TAB_CODE_MAX_LEN + 1];    /* the tab it is about, if any      */
+    char other[TAB_CODE_MAX_LEN + 1];   /* what was installed when it was asked */
+    char busy[BUSY_TEXT_LEN];
+    int  blocking;                      /* the window keeps out of the way  */
+} work_item;
+
+/*
+ * ...and what came of it. Every one of these is acted on by the main thread:
+ * the worker only fills them in, so that nothing on screen is written to from
+ * under the drawing. The pointers are handed over with it, and freed by
+ * whichever side ends up holding them.
+ */
+typedef struct {
+    char    title[64];                  /* a dialog to put up, or ""        */
+    char    text[TB_ERR_LEN + 256];
+    char    line[LOG_LINE_MAX];         /* one more line for the log, or "" */
+    digest *fresh;                      /* a catalogue read again, to take over */
+    char    ask[UPDATE_VERSION_MAX];    /* a release to put to the user, or "" */
+    char   *notes;                      /* ...what it says of itself, and   */
+    char   *page;                       /*    where the rest of it is       */
+    int     has_build;                  /* ...and whether it ships ours     */
+    int     rows;                       /* work the table out again         */
+    int     status;                     /* read the corner's line again     */
+    int     upgrade;                    /* queue what the policy wants taken */
+    int     quit;                       /* the new binary is up; this one goes */
+} work_news;
+
+/* Both queues, and everything else the two threads have between them. Nothing
+ * here is touched without the lock. */
+static work_item g_queue[WORK_QUEUE_MAX];
+static int       g_queue_head = 0;
+static int       g_queue_count = 0;
+static work_news g_news[WORK_NEWS_MAX];
+static int       g_news_head = 0;
+static int       g_news_count = 0;
+static work_item g_current;             /* what is being done right now     */
+static int       g_running = 0;         /* ...if anything is                */
+static int       g_blocking = 0;        /* how many in flight block the window */
+static int       g_stopping = 0;        /* the window is closing; stand down */
+static std::mutex g_work_lock;
+static std::condition_variable g_work_wake;  /* the worker waits for a task  */
+static std::condition_variable g_news_room;  /* ...and for room to report it */
+static std::thread g_worker;
+
+/*
+ * The catalogue the worker read after fetching a newer one, waiting for a
+ * moment when nothing is using the one on screen. A task holds pointers into
+ * the digest for as long as it runs, so the swap cannot happen under it; the
+ * window is the only thing that starts tasks, so a lull it sees is a lull it
+ * can rely on until it starts another itself.
+ */
+static digest *g_fresh = NULL;
+
+/* What the update dialog is asking about, copied out of the worker's own copy
+ * so that the drawing reads nothing the worker owns. */
+static char  g_ask_version[UPDATE_VERSION_MAX] = "";
+static char *g_ask_notes = NULL;
+static char *g_ask_page = NULL;
+static int   g_ask_build = 0;
 
 static void set_result(const char *title, const char *fmt, ...)
 {
@@ -907,115 +1023,340 @@ static int run_uninstall(const npp_tab *tab, char *err, size_t errsz)
     return 0;
 }
 
-static void run_check(int asked);
-static void run_upgrade(void);
+static void work_check(int asked, work_news *news);
+static void work_upgrade(work_news *news);
+static void refresh_update_status(void);
 
-/* Carries out whatever the last click asked for, and says how it went. */
-static void run_pending(void)
+/* What the window is to say about it, once it is next drawing. The same words
+ * set_result would have put up, written down rather than shown from here. */
+static void say(work_news *news, const char *title, const char *fmt, ...)
+{
+    va_list ap;
+
+    snprintf(news->title, sizeof news->title, "%s", title);
+    va_start(ap, fmt);
+    vsnprintf(news->text, sizeof news->text, fmt, ap);
+    va_end(ap);
+}
+
+/* Carries out one task, on the worker, and writes down what came of it. */
+static void do_work(const work_item *item, work_news *news)
 {
     char err[TB_ERR_LEN];
     char upper[DIGEST_CODE_BUF], other[DIGEST_CODE_BUF];
     const npp_tab *tab, *installed;
-    ui_action action = g_pending;
-
-    if (action == ACT_NONE || !g_pending_drawn)
-        return;
-    g_pending = ACT_NONE;
-    g_pending_drawn = 0;
 
     /* Neither of these is about a tab, so neither wants the code below. */
-    if (action == ACT_CHECK || action == ACT_CHECK_ASKED) {
-        run_check(action == ACT_CHECK_ASKED);
+    if (item->action == ACT_CHECK || item->action == ACT_CHECK_ASKED) {
+        work_check(item->action == ACT_CHECK_ASKED, news);
         return;
     }
-    if (action == ACT_UPGRADE) {
-        run_upgrade();
+    if (item->action == ACT_UPGRADE) {
+        work_upgrade(news);
         return;
     }
 
-    if (action == ACT_UPDATE) {
-        /* Forced, as `update` is: an explicit refresh always goes out. */
+    if (item->action == ACT_UPDATE) {
+        digest *fresh;
+
+        /* Forced, as `update` is: an explicit refresh always goes out. The
+         * reading is done here too, but putting what was read in place of what
+         * is on screen is the window's to do, when it is using neither. */
         if (digest_ensure_fresh(1, err, sizeof err) != 0)
-            set_result(TITLE_FAILED, "The mappack list could not be updated:\n%s", err);
-        else if (reload_digest(err, sizeof err) != 0)
-            set_result(TITLE_FAILED, "The mappack list was downloaded but could "
-                                     "not be read:\n%s", err);
-        else
-            set_result(TITLE_DONE, "The mappack list is up to date: %u custom tab(s).",
-                       (unsigned)g_digest->tab_count);
-        refresh_rows();
+            say(news, TITLE_FAILED, "The mappack list could not be updated:\n%s", err);
+        else if ((fresh = digest_load(err, sizeof err)) == NULL)
+            say(news, TITLE_FAILED, "The mappack list was downloaded but could "
+                                    "not be read:\n%s", err);
+        else {
+            news->fresh = fresh;
+            say(news, TITLE_DONE, "The mappack list is up to date: %u custom tab(s).",
+                (unsigned)fresh->tab_count);
+        }
+
+        /* Unless there is a catalogue to take up: putting that in place is
+         * what works the table out, and doing it twice is doing it twice. */
+        news->rows = news->fresh == NULL;
         return;
     }
 
-    tab = find_tab(g_pending_code, err, sizeof err);
+    tab = find_tab(item->code, err, sizeof err);
     if (!tab) {
-        set_result(TITLE_FAILED, "%s", err);
+        say(news, TITLE_FAILED, "%s", err);
         return;
     }
     digest_code_upper(upper, sizeof upper, tab->code);
 
-    switch (action) {
+    switch (item->action) {
     case ACT_DOWNLOAD:
         if (run_download(tab, err, sizeof err) != 0)
-            set_result(TITLE_FAILED, "%s could not be downloaded:\n%s", upper, err);
+            say(news, TITLE_FAILED, "%s could not be downloaded:\n%s", upper, err);
         else
-            set_result(TITLE_DONE, "%s has been downloaded.", upper);
+            say(news, TITLE_DONE, "%s has been downloaded.", upper);
         break;
 
     case ACT_UNINSTALL:
         if (run_uninstall(tab, err, sizeof err) != 0)
-            set_result(TITLE_FAILED, "%s could not be uninstalled:\n%s", upper, err);
+            say(news, TITLE_FAILED, "%s could not be uninstalled:\n%s", upper, err);
         else
-            set_result(TITLE_DONE, "%s has been uninstalled, and the game is "
-                                   "back as it was.", upper);
+            say(news, TITLE_DONE, "%s has been uninstalled, and the game is "
+                                  "back as it was.", upper);
         break;
 
     case ACT_REPLACE:
         /* Take the other one out first; if that fails nothing else is tried,
-         * since installing over it is exactly what must not happen. */
-        installed = find_tab(g_installed_code, err, sizeof err);
-        digest_code_upper(other, sizeof other, g_installed_code);
+         * since installing over it is exactly what must not happen. Which tab
+         * that is was settled when the question was asked, and travels with
+         * the task: the table it was read from may have been drawn again by
+         * the time this runs. */
+        installed = find_tab(item->other, err, sizeof err);
+        digest_code_upper(other, sizeof other, item->other);
         if (!installed) {
-            set_result(TITLE_FAILED, "%s could not be uninstalled:\n%s", other, err);
+            say(news, TITLE_FAILED, "%s could not be uninstalled:\n%s", other, err);
             break;
         }
         if (run_uninstall(installed, err, sizeof err) != 0) {
-            set_result(TITLE_FAILED, "%s could not be uninstalled, so %s was not "
-                                     "installed:\n%s", other, upper, err);
+            say(news, TITLE_FAILED, "%s could not be uninstalled, so %s was not "
+                                    "installed:\n%s", other, upper, err);
             break;
         }
         if (run_install(tab, err, sizeof err) != 0)
-            set_result(TITLE_FAILED, "%s was uninstalled, but %s could not be "
-                                     "installed:\n%s", other, upper, err);
+            say(news, TITLE_FAILED, "%s was uninstalled, but %s could not be "
+                                    "installed:\n%s", other, upper, err);
         else
-            set_result(TITLE_DONE, "%s has been uninstalled and %s installed "
-                                   "in its place.", other, upper);
+            say(news, TITLE_DONE, "%s has been uninstalled and %s installed "
+                                  "in its place.", other, upper);
         break;
 
     case ACT_INSTALL:
         if (run_install(tab, err, sizeof err) != 0)
-            set_result(TITLE_FAILED, "%s could not be installed:\n%s", upper, err);
+            say(news, TITLE_FAILED, "%s could not be installed:\n%s", upper, err);
         else
-            set_result(TITLE_DONE, "%s has been installed.", upper);
+            say(news, TITLE_DONE, "%s has been installed.", upper);
         break;
 
     default:
         break;
     }
-    refresh_rows();
+    news->rows = 1;
 }
 
-/* Asks for work, and for the overlay that says so. */
-static void request(ui_action action, const char *code, const char *busy)
+/* Whatever is in it, since nobody is left to read it. */
+static void news_free(work_news *news)
 {
-    g_pending = action;
-    g_pending_drawn = 0;
-    snprintf(g_pending_code, sizeof g_pending_code, "%s", code ? code : "");
-    snprintf(g_busy_text, sizeof g_busy_text, "%s", busy);
+    digest_free(news->fresh);
+    free(news->notes);
+    free(news->page);
+    memset(news, 0, sizeof *news);
+}
+
+/*
+ * The worker itself: waits for a task, does it, leaves the news, and waits
+ * again. It holds the lock for the taking and the leaving and for nothing
+ * else — the work in between is the long part, and the window goes on drawing
+ * through all of it.
+ */
+static void worker_main(void)
+{
+    for (;;) {
+        std::unique_lock<std::mutex> lock(g_work_lock);
+        work_item item;
+        work_news news;
+
+        g_work_wake.wait(lock, [] { return g_stopping || g_queue_count > 0; });
+        if (g_stopping)
+            return;
+        item = g_queue[g_queue_head];
+        g_queue_head = (g_queue_head + 1) % WORK_QUEUE_MAX;
+        g_queue_count--;
+        g_current = item;
+        g_running = 1;
+        lock.unlock();
+
+        memset(&news, 0, sizeof news);
+        do_work(&item, &news);
+
+        lock.lock();
+        /* Room for it first. This only ever waits on a window that has stopped
+         * drawing, which is a window that is on its way out. */
+        g_news_room.wait(lock, [] { return g_stopping || g_news_count < WORK_NEWS_MAX; });
+        if (!g_stopping) {
+            g_news[(g_news_head + g_news_count) % WORK_NEWS_MAX] = news;
+            g_news_count++;
+        }
+
+        /* Done with the digest, and with the task: from here the window may
+         * put a newer catalogue in place of the one this was reading. */
+        g_running = 0;
+        if (item.blocking)
+            g_blocking--;
+        if (g_stopping) {
+            lock.unlock();
+            news_free(&news);   /* nobody left to read it */
+            return;
+        }
+        lock.unlock();
+
+        /* The window may be asleep in glfwWaitEventsTimeout. */
+        glfwPostEmptyEvent();
+    }
+}
+
+/*
+ * Asks for something to be done. `blocking` says whether the window is to keep
+ * out of the way while it is: either way the work goes on the queue and is
+ * done by the worker, and the window goes on drawing.
+ *
+ * Called from the main thread only, which is what makes a lull in the queue
+ * something the window can act on: nothing else can end one.
+ */
+static void request(ui_action action, const char *code, const char *busy,
+                    int blocking)
+{
+    work_item item;
+    int i, full = 0;
+
+    memset(&item, 0, sizeof item);
+    item.action = action;
+    snprintf(item.code, sizeof item.code, "%s", code ? code : "");
+    snprintf(item.other, sizeof item.other, "%s", g_installed_code);
+    snprintf(item.busy, sizeof item.busy, "%s", busy);
+    item.blocking = blocking;
+
+    {
+        std::lock_guard<std::mutex> lock(g_work_lock);
+
+        /* The same thing asked for twice is asked for once. A second click on
+         * a button whose work has not come round yet is a second click, not a
+         * second download. */
+        if (g_running && g_current.action == action &&
+            str_ieq(g_current.code, item.code))
+            return;
+        for (i = 0; i < g_queue_count; i++) {
+            const work_item *queued = &g_queue[(g_queue_head + i) % WORK_QUEUE_MAX];
+
+            if (queued->action == action && str_ieq(queued->code, item.code))
+                return;
+        }
+
+        if (g_queue_count == WORK_QUEUE_MAX) {
+            full = 1;
+        } else {
+            g_queue[(g_queue_head + g_queue_count) % WORK_QUEUE_MAX] = item;
+            g_queue_count++;
+            if (blocking)
+                g_blocking++;
+        }
+    }
+    if (full) {
+        log_line(BUSY_FULL, busy);
+        return;
+    }
+    g_work_wake.notify_one();
 
     /* The same line the CLI prints when it starts one of these. It stands in
      * the bar until whatever it announced has something to report. */
-    log_line("%s", g_busy_text);
+    log_line("%s", item.busy);
+}
+
+/* Whether anything is queued or being done, asked of the queue itself. */
+static int work_in_flight(void)
+{
+    std::lock_guard<std::mutex> lock(g_work_lock);
+
+    return g_running || g_queue_count > 0;
+}
+
+/* How things stand, once a frame, so that the drawing takes no lock at all. */
+static void read_work_state(void)
+{
+    std::lock_guard<std::mutex> lock(g_work_lock);
+    int i;
+
+    g_ui_working = g_running || g_queue_count > 0;
+    g_ui_blocked = g_blocking > 0;
+    g_ui_busy[0] = '\0';
+
+    /* What the overlay says: the blocking task being done, or the first one
+     * waiting to be, so that there is always a line while the window is held. */
+    if (g_running && g_current.blocking) {
+        snprintf(g_ui_busy, sizeof g_ui_busy, "%s", g_current.busy);
+        return;
+    }
+    for (i = 0; i < g_queue_count; i++) {
+        const work_item *queued = &g_queue[(g_queue_head + i) % WORK_QUEUE_MAX];
+
+        if (queued->blocking) {
+            snprintf(g_ui_busy, sizeof g_ui_busy, "%s", queued->busy);
+            return;
+        }
+    }
+}
+
+/* The oldest piece of news not yet acted on, taken off the queue. */
+static int next_news(work_news *out)
+{
+    std::lock_guard<std::mutex> lock(g_work_lock);
+
+    if (g_news_count == 0)
+        return 0;
+    *out = g_news[g_news_head];
+    g_news_head = (g_news_head + 1) % WORK_NEWS_MAX;
+    g_news_count--;
+    g_news_room.notify_one();
+    return 1;
+}
+
+/* Everything the worker has left, acted on here where it belongs. */
+static void take_news(void)
+{
+    work_news news;
+
+    while (next_news(&news)) {
+        if (news.line[0] != '\0')
+            log_line("%s", news.line);
+        if (news.title[0] != '\0')
+            set_result(news.title, "%s", news.text);
+
+        /* Held rather than put in place: see g_fresh. */
+        if (news.fresh) {
+            digest_free(g_fresh);
+            g_fresh = news.fresh;
+        }
+
+        if (news.ask[0] != '\0') {
+            snprintf(g_ask_version, sizeof g_ask_version, "%s", news.ask);
+            free(g_ask_notes);
+            free(g_ask_page);
+            g_ask_notes = news.notes;
+            g_ask_page = news.page;
+            g_ask_build = news.has_build;
+            g_open_popup = TITLE_UPDATE;
+        } else {
+            free(news.notes);
+            free(news.page);
+        }
+
+        if (news.status)
+            refresh_update_status();
+        if (news.rows)
+            refresh_rows();
+        if (news.upgrade)
+            request(ACT_UPGRADE, NULL, BUSY_UPGRADE, 0);
+        if (news.quit)
+            glfwSetWindowShouldClose(g_window, GLFW_TRUE);
+    }
+}
+
+/* A catalogue read again goes in when nothing is using the one it replaces. */
+static void take_digest(void)
+{
+    if (!g_fresh || work_in_flight())
+        return;
+    digest_free(g_digest);
+    g_digest = g_fresh;
+    g_fresh = NULL;
+    g_error[0] = '\0';
+    refresh_rows();
 }
 
 /*
@@ -1027,7 +1368,7 @@ static void request_install(const npp_tab *tab)
     char upper[DIGEST_CODE_BUF], other[DIGEST_CODE_BUF];
 
     if (g_installed_code[0] == '\0' || str_ieq(g_installed_code, tab->code)) {
-        request(ACT_INSTALL, tab->code, "Installing...");
+        request(ACT_INSTALL, tab->code, "Installing...", 1);
         return;
     }
 
@@ -1037,7 +1378,7 @@ static void request_install(const npp_tab *tab)
              "%s is installed, and only one custom tab can be installed at a "
              "time.\n\nUninstall %s and install %s in its place?",
              other, other, upper);
-    snprintf(g_pending_code, sizeof g_pending_code, "%s", tab->code);
+    snprintf(g_asked_code, sizeof g_asked_code, "%s", tab->code);
     g_open_popup = TITLE_CONFIRM;
     log_line("%s", g_confirm_text);   /* two paragraphs; the log folds them */
 }
@@ -1101,7 +1442,9 @@ static void refresh_update_status(void)
 }
 
 /* Remembers that this version was turned down, so it is offered once and not
- * every day until it is taken. */
+ * every day until it is taken. The version is the one the dialog was put up
+ * with, which is the window's own copy: what the worker knows may have moved
+ * on, and what was answered is what was asked. */
 static void decline_update(void)
 {
     char err[TB_ERR_LEN];
@@ -1109,7 +1452,7 @@ static void decline_update(void)
 
     if (!cfg)
         return;
-    config_update_decline(cfg, g_update.version);
+    config_update_decline(cfg, g_ask_version);
     config_save(cfg, err, sizeof err);
     config_free(cfg);
 }
@@ -1120,10 +1463,11 @@ static void decline_update(void)
  * `err`; `declined`, when given, comes back saying whether that exact version
  * has been turned down before.
  *
- * Anything newer than what is running is left in g_update, which is what the
- * corner reads and what applying an update works from — the version alone is
- * no use for that, since installing it wants the URL and the two promises the
- * manifest makes about the download.
+ * Anything newer than what is running is left in g_update, which is what
+ * applying an update works from — the version alone is no use for that, since
+ * installing it wants the URL and the two promises the manifest makes about
+ * the download. That copy is the worker's; what the corner and the dialog draw
+ * are the window's own, read from the state file and copied out of the news.
  */
 static int look_for_update(int *declined, char *err, size_t errsz)
 {
@@ -1145,7 +1489,6 @@ static int look_for_update(int *declined, char *err, size_t errsz)
         if (rc == 0 && declined)
             *declined = config_update_declined(cfg, info.version);
         config_save(cfg, sub, sizeof sub);
-        read_update_status(cfg);
         config_free(cfg);
     }
     if (rc != 0)
@@ -1166,41 +1509,44 @@ static int look_for_update(int *declined, char *err, size_t errsz)
  * answers both ways, because a button that can be pressed to no visible effect
  * is a button that looks broken.
  */
-static void run_check(int asked)
+static void work_check(int asked, work_news *news)
 {
     char err[TB_ERR_LEN];
     int declined = 0;
 
+    /* Asked for either way, since a look that failed is still a look that
+     * happened, and the corner says when the last one was. */
+    news->status = 1;
     if (look_for_update(&declined, err, sizeof err) != 0) {
         if (asked)
-            set_result(TITLE_FAILED, "The newest release could not be looked "
-                                     "up:\n%s", err);
+            say(news, TITLE_FAILED, "The newest release could not be looked "
+                                    "up:\n%s", err);
         return;
     }
 
-    if (g_known_version[0] == '\0') {
+    if (g_update.version[0] == '\0') {
         if (asked)
-            set_result(TITLE_CURRENT, "%s %s is the newest release.",
-                       TABBER_NAME, TABBER_VERSION);
+            say(news, TITLE_CURRENT, "%s %s is the newest release.",
+                TABBER_NAME, TABBER_VERSION);
         return;
     }
 
     /* The release notes are the bulk of the box below and are no use on one
      * line, so what is logged is the line the corner shows. It is logged
      * whatever is done next, because the corner shows it either way. */
-    log_line(STATUS_WAITING, g_known_version);
+    snprintf(news->line, sizeof news->line, STATUS_WAITING, g_update.version);
 
     /*
      * What happens now is the standing answer given in the settings, rather
      * than a question put here every time one turns up.
      *
-     * Taking it is asked for rather than done: this runs inside the work the
-     * look itself asked for, with the overlay still saying that is what is
-     * happening. Asking puts it next in line, so it waits for anything already
-     * under way and announces itself when its turn comes.
+     * Taking it is asked for rather than done: this is itself a task, and a
+     * task does not start another. The window puts it on the queue when it
+     * reads this, so it waits behind anything already asked for and announces
+     * itself when its turn comes.
      */
     if (g_policy == UPDATE_POLICY_AUTO) {
-        request(ACT_UPGRADE, NULL, BUSY_UPGRADE);
+        news->upgrade = 1;
         return;
     }
 
@@ -1210,16 +1556,22 @@ static void run_check(int asked)
         return;
 
     /* A version turned down before is not put up again on its own; a look the
-     * user asked for is an answer owed, so it is put up then. */
-    if (asked || !declined)
-        g_open_popup = TITLE_UPDATE;
+     * user asked for is an answer owed, so it is put up then. What the dialog
+     * will show travels with it: the release the worker holds is the worker's,
+     * and the window reads none of it. */
+    if (asked || !declined) {
+        snprintf(news->ask, sizeof news->ask, "%s", g_update.version);
+        news->notes = g_update.notes ? str_dup(g_update.notes) : NULL;
+        news->page = g_update.page ? str_dup(g_update.page) : NULL;
+        news->has_build = g_update.url != NULL;
+    }
 }
 
 /*
  * Takes the release the user has just said yes to. Everything up to the last
  * step is the library's; what is left here is where each outcome goes.
  */
-static void run_upgrade(void)
+static void work_upgrade(work_news *news)
 {
     char err[TB_ERR_LEN], sub[TB_ERR_LEN];
     update_plan plan;
@@ -1232,38 +1584,41 @@ static void run_upgrade(void)
      * what gets installed is whatever is newest at the moment the button is
      * pressed, not what was newest when the corner last drew.
      */
-    if (!g_update.url && look_for_update(NULL, err, sizeof err) != 0) {
-        set_result(TITLE_FAILED, "The newest release could not be looked up:\n%s\n\n"
-                                 "Nothing has changed; you are still running %s.",
-                   err, TABBER_VERSION);
-        return;
+    if (!g_update.url) {
+        news->status = 1;
+        if (look_for_update(NULL, err, sizeof err) != 0) {
+            say(news, TITLE_FAILED, "The newest release could not be looked up:\n%s\n\n"
+                                    "Nothing has changed; you are still running %s.",
+                err, TABBER_VERSION);
+            return;
+        }
     }
-    if (g_known_version[0] == '\0') {
-        set_result(TITLE_CURRENT, "%s %s is the newest release.",
-                   TABBER_NAME, TABBER_VERSION);
+    if (g_update.version[0] == '\0') {
+        say(news, TITLE_CURRENT, "%s %s is the newest release.",
+            TABBER_NAME, TABBER_VERSION);
         return;
     }
     if (!g_update.url) {
-        set_result(TITLE_FAILED, "%s %s ships no build this one can replace "
-                                 "itself with.\n\nIt can be installed by hand "
-                                 "from %s", TABBER_NAME, g_known_version,
-                   g_update.page ? g_update.page : UPDATE_RELEASES_URL);
+        say(news, TITLE_FAILED, "%s %s ships no build this one can replace "
+                                "itself with.\n\nIt can be installed by hand "
+                                "from %s", TABBER_NAME, g_update.version,
+            g_update.page ? g_update.page : UPDATE_RELEASES_URL);
         return;
     }
 
     /* Downloaded and weighed and hashed; still nothing in place. */
     if (update_plan_build(&g_update, &plan, err, sizeof err) != 0) {
-        set_result(TITLE_FAILED, "%s %s could not be downloaded:\n%s\n\n"
-                                 "Nothing has changed; you are still running %s.",
-                   TABBER_NAME, g_update.version, err, TABBER_VERSION);
+        say(news, TITLE_FAILED, "%s %s could not be downloaded:\n%s\n\n"
+                                "Nothing has changed; you are still running %s.",
+            TABBER_NAME, g_update.version, err, TABBER_VERSION);
         return;
     }
 
     /* This binary aside, the new one under its name, and the new one made to
      * say what it is before the old one is let go. */
     if (update_plan_apply(&plan, err, sizeof err) != 0) {
-        set_result(TITLE_FAILED, "The update was not applied:\n%s\n\n"
-                                 "You are still running %s.", err, TABBER_VERSION);
+        say(news, TITLE_FAILED, "The update was not applied:\n%s\n\n"
+                                "You are still running %s.", err, TABBER_VERSION);
         update_plan_free(&plan);
         return;
     }
@@ -1283,14 +1638,14 @@ static void run_upgrade(void)
      * on the old code, and the news above is given whenever it is next opened.
      */
     if (plat_spawn_detached(plan.exe, NULL, 0) != 0) {
-        set_result(TITLE_FAILED, "%s %s is installed, but it could not be "
-                                 "started.\n\nClose this window and open "
-                                 "%s again.", TABBER_NAME, plan.version, TABBER_NAME);
+        say(news, TITLE_FAILED, "%s %s is installed, but it could not be "
+                                "started.\n\nClose this window and open "
+                                "%s again.", TABBER_NAME, plan.version, TABBER_NAME);
         update_plan_free(&plan);
         return;
     }
     update_plan_free(&plan);
-    glfwSetWindowShouldClose(g_window, GLFW_TRUE);
+    news->quit = 1;   /* the window's to do: this thread does not own it */
 }
 
 /* Asks for a look, if one is due and there is nothing in the way of it. */
@@ -1302,8 +1657,9 @@ static void poll_for_update(void)
     g_update_stamp = (long long)time(NULL);
 
     /* Never over the top of something else: a dialog waiting on an answer, or
-     * work already under way on this thread. */
-    if (g_pending != ACT_NONE || g_open_popup || g_dialog_open)
+     * work already queued or under way. A look is the one piece of work nobody
+     * asked for, so it is the one that gives way. */
+    if (work_in_flight() || g_open_popup || g_dialog_open)
         return;
 
     cfg = config_load(err, sizeof err);
@@ -1311,7 +1667,7 @@ static void poll_for_update(void)
         return;
     if (config_update_enabled(cfg) &&
         config_update_due(cfg, config_update_interval(cfg)))
-        request(ACT_CHECK, NULL, BUSY_CHECK);
+        request(ACT_CHECK, NULL, BUSY_CHECK, 0);
     config_free(cfg);
 }
 
@@ -1694,11 +2050,11 @@ static void draw_row_button(const npp_tab *tab, const tab_row *row)
     ImVec2 size(button_width(), 0.0f);   /* 0 keeps the default height */
 
     /* While something is running, nothing else may be asked for. */
-    ImGui::BeginDisabled(g_pending != ACT_NONE);
+    ImGui::BeginDisabled(g_ui_blocked);
     if (row->installed) {
         push_button_colors(RED_BUTTON, RED_HOVER, RED_ACTIVE);
         if (push_button(LABEL_UNINSTALL, size))
-            request(ACT_UNINSTALL, tab->code, "Uninstalling...");
+            request(ACT_UNINSTALL, tab->code, "Uninstalling...", 1);
         ImGui::PopStyleColor(4);
     } else if (row->downloaded) {
         push_button_colors(GREEN_BUTTON, GREEN_HOVER, GREEN_ACTIVE);
@@ -1707,7 +2063,7 @@ static void draw_row_button(const npp_tab *tab, const tab_row *row)
         ImGui::PopStyleColor(4);
     } else {
         if (push_button(LABEL_DOWNLOAD, size))
-            request(ACT_DOWNLOAD, tab->code, "Downloading...");
+            request(ACT_DOWNLOAD, tab->code, "Downloading...", 0);
     }
     ImGui::EndDisabled();
 }
@@ -2207,7 +2563,7 @@ static int corner_button(ImVec2 seat, int id, const char *icon,
      * apart, so every caller passes its own. */
     ImGui::PushID(id);
     ImGui::SetCursorScreenPos(seat);
-    ImGui::BeginDisabled(works && g_pending != ACT_NONE);
+    ImGui::BeginDisabled(works && g_ui_blocked);
 
     /* An empty button, with the icon drawn on top of it: centring it by hand
      * is the point, and a label would only put a second copy of it off to one
@@ -2301,7 +2657,7 @@ static float draw_corner(ImVec2 level)
                         waiting ? LABEL_GET : LABEL_LOOK,
                         waiting ? HINT_GET : HINT_LOOK))
         request(waiting ? ACT_UPGRADE : ACT_CHECK_ASKED, NULL,
-                waiting ? BUSY_UPGRADE : BUSY_CHECK);
+                waiting ? BUSY_UPGRADE : BUSY_CHECK, 0);
 
     /*
      * The catalogue. How many tabs are in it, and when it was last fetched —
@@ -2311,7 +2667,7 @@ static float draw_corner(ImVec2 level)
              g_row_count == 1 ? "" : "s");
     snprintf(hint, sizeof hint, HINT_DATE_CHECK, g_last_updated);
     if (draw_corner_row(level, 2, text, NULL, hint, LABEL_PACKS, HINT_TABS))
-        request(ACT_UPDATE, NULL, BUSY_TABS);
+        request(ACT_UPDATE, NULL, BUSY_TABS, 0);
 
     ImGui::SetCursorScreenPos(back);
 
@@ -2710,7 +3066,7 @@ static void draw_dialogs(void)
         ImGui::TextUnformatted(g_confirm_text);
         ImGui::Separator();
         if (push_button(LABEL_YES)) {
-            request(ACT_REPLACE, g_pending_code, "Replacing the installed tab...");
+            request(ACT_REPLACE, g_asked_code, "Replacing the installed tab...", 1);
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -2730,19 +3086,19 @@ static void draw_dialogs(void)
      * remembered, so the same version is not put up again tomorrow. */
     centre_next_window();
     if (ImGui::BeginPopupModal(TITLE_UPDATE, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextColored(THEME_COLOR, "%s %s", TABBER_NAME, g_update.version);
+        ImGui::TextColored(THEME_COLOR, "%s %s", TABBER_NAME, g_ask_version);
         ImGui::TextDisabled("You have %s.", TABBER_VERSION);
-        if (g_update.notes && g_update.notes[0]) {
+        if (g_ask_notes && g_ask_notes[0]) {
             ImGui::Separator();
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + DIALOG_WRAP_WIDTH * g_scale);
-            ImGui::TextUnformatted(g_update.notes);
+            ImGui::TextUnformatted(g_ask_notes);
             ImGui::PopTextWrapPos();
         }
         ImGui::Separator();
-        if (g_update.url) {
+        if (g_ask_build) {
             ImGui::TextUnformatted(UPDATE_QUESTION);
             if (push_button(LABEL_YES)) {
-                request(ACT_UPGRADE, NULL, BUSY_UPGRADE);
+                request(ACT_UPGRADE, NULL, BUSY_UPGRADE, 0);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
@@ -2756,7 +3112,8 @@ static void draw_dialogs(void)
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + DIALOG_WRAP_WIDTH * g_scale);
             ImGui::TextUnformatted(UPDATE_NO_BUILD);
             ImGui::PopTextWrapPos();
-            ImGui::TextLinkOpenURL(g_update.page, g_update.page);
+            if (g_ask_page)
+                ImGui::TextLinkOpenURL(g_ask_page, g_ask_page);
             if (push_button(LABEL_OK) || escaped()) {
                 decline_update();
                 ImGui::CloseCurrentPopup();
@@ -2984,12 +3341,11 @@ static void draw_dialogs(void)
      * thread the moment this frame is on screen, so there is nothing to keep
      * anyone out of. Drawing it is what lets the work start.
      */
-    if (g_pending != ACT_NONE) {
+    if (g_ui_blocked) {
         centre_next_window();
         ImGui::Begin(BUSY_ID, NULL, OVERLAY_FLAGS);
-        ImGui::TextUnformatted(g_busy_text);
+        ImGui::TextUnformatted(g_ui_busy);
         ImGui::End();
-        g_pending_drawn = 1;
     }
 
     /* Whether anything is waiting on an answer, for the timed check to keep
@@ -3200,6 +3556,10 @@ int main(int argc, char **argv)
     load_digest();
     refresh_rows();
 
+    /* From here there is a second thread, and everything below asks it for
+     * work rather than doing any. It is stood down at the end of the loop. */
+    g_worker = std::thread(worker_main);
+
     /* An update this program made of itself, what is known about the next one,
      * and whether it is time to go looking again. */
     announce_update();
@@ -3282,8 +3642,20 @@ int main(int argc, char **argv)
             continue;
         }
 
-        /* Whatever the last frame asked for, now that it has been seen. */
-        run_pending();
+        /* Whatever the worker has left, and where it has got to. Both are
+         * read once, here, and everything drawn below reads what they left. */
+        take_news();
+        take_digest();
+        read_work_state();
+
+        /* Work to keep out of the way of takes the window's input away and
+         * leaves it drawing: an overlay says what is happening, and a window
+         * still drawing cannot be taken for one that has died. */
+        if (g_ui_blocked)
+            io.ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard;
+        else
+            io.ConfigFlags &= ~(ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoKeyboard);
+
         if ((long long)time(NULL) - g_rows_stamp >= REFRESH_SECONDS)
             refresh_rows();
         if ((long long)time(NULL) - g_update_stamp >= UPDATE_POLL_SECONDS)
@@ -3305,7 +3677,7 @@ int main(int argc, char **argv)
 
         /* Anything still under way keeps the frames coming on its own: a held
          * button or a dragged edge, and the click whose work has yet to run. */
-        if (ImGui::IsAnyItemActive() || g_pending != ACT_NONE)
+        if (ImGui::IsAnyItemActive() || g_ui_working)
             settle = SETTLE_FRAMES;
 
         ImGui::Render();
@@ -3330,13 +3702,30 @@ int main(int argc, char **argv)
         pace_frame();
     }
 
+    /* The worker is asked to stand down and waited for: whatever it is in the
+     * middle of is reading the catalogue and the state file, and both of those
+     * are about to go. A task already begun is finished first, so a window
+     * closed mid-install closes when the install is done rather than leaving
+     * the game half way through one. */
+    {
+        std::lock_guard<std::mutex> lock(g_work_lock);
+
+        g_stopping = 1;
+    }
+    g_work_wake.notify_all();
+    g_news_room.notify_all();
+    g_worker.join();
+
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
     glfwDestroyWindow(window);
     glfwTerminate();
+    digest_free(g_fresh);
     digest_free(g_digest);
     update_info_free(&g_update);
+    free(g_ask_notes);
+    free(g_ask_page);
     free(g_log_path);
     free(g_app_root);
     free(g_rows);

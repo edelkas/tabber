@@ -72,6 +72,9 @@ extern "C" {
 #endif
 
 #define CONFIG_FILENAME      "config.json"
+
+/* What a save writes before it swaps it into place, after the name of the file
+ * and the handle doing the writing: see config_save. */
 #define CONFIG_TMP_SUFFIX    ".tmp"
 
 /* Keys of the state file. */

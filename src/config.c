@@ -71,11 +71,15 @@ config *config_load(char *err, size_t errsz)
 int config_save(config *cfg, char *err, size_t errsz)
 {
     char *text = json_serialize(cfg->root, 1);
-    char *tmp_path = str_fmt("%s%s", cfg->path, CONFIG_TMP_SUFFIX);
+    char *tmp_path = str_fmt("%s.%p%s", cfg->path, (void *)cfg, CONFIG_TMP_SUFFIX);
     size_t len = strlen(text);
     int rc = -1;
 
-    /* Stage then swap, so an interrupted write cannot truncate the state. */
+    /* Stage then swap, so an interrupted write cannot truncate the state. The
+     * staged name is this handle's own, so that two writers -- a window and
+     * the thread it does its work on, or a terminal run beside it -- cannot be
+     * found writing the same one. The swap is atomic either way, so what is
+     * left is always one writer's whole state and never half of each. */
     if (plat_write_file(tmp_path, text, len) != 0) {
         err_set(err, errsz, "cannot write '%s'", tmp_path);
         goto done;

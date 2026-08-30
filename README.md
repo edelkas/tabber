@@ -9,6 +9,7 @@ has just been started now that the command line side is complete.
 - [Table of contents](#table-of-contents)
 - [Building](#building)
 - [The graphical front-end](#the-graphical-front-end)
+   * [The worker](#the-worker)
    * [The log](#the-log)
    * [The window's frame](#the-windows-frame)
    * [Pacing the frames](#pacing-the-frames)
@@ -277,14 +278,64 @@ without tabber being told: the game rewrites the savefile as it is played, and
 the CLI can install something from another window. So the whole table is worked
 out again on a timer, and after anything this program does.
 
-Two things it does not do yet. **The work runs on the drawing thread**, so a
-download or an install freezes the window until it finishes — the frame before
-it draws an overlay saying what is running, which is a caption on the problem
-rather than a fix. Moving it to a worker is the next thing this file needs. And
-the built-in font is ProggyClean, which covers Latin and little else: a tab
-whose author writes their name in anything further out gets `?` where the CLI
-prints the character. Fixing that means bundling a font, which is a decision
-about size and licence rather than about code.
+None of the work runs on the drawing thread. A click puts a task on a queue,
+one worker takes them in turn, and what each one found comes back for the
+window to act on when it is next drawing: see [the worker](#the-worker). What
+the window does not do yet is bundle a font — the built-in one is ProggyClean,
+which covers Latin and little else, so a tab whose author writes their name in
+anything further out gets `?` where the CLI prints the character. Fixing that
+is a decision about size and licence rather than about code.
+
+### The worker
+
+One thread besides the drawing one, started once there is a catalogue to work
+from and stood down when the window closes. Everything worth an overlay — a
+download, an install, a look at GitHub — happens on it.
+
+The traffic between the two is two queues and nothing else. `request()` puts a
+task on the first and goes back to drawing; the worker takes them one at a
+time, in the order they were asked for, and leaves what came of each on the
+second: a dialog to put up, a line for the log, a catalogue to take over, the
+corner to read again. The window acts on all of that itself, at the top of the
+frame. So the worker draws nothing, the drawing does no work, and neither takes
+a lock to read what the other wrote — apart from the two queues, they share
+almost nothing at all.
+
+One worker, so the tasks are still done one after another: two installs cannot
+overlap however fast the buttons are pressed. Each of them also asks the world
+again rather than trusting what the table drew — the install looks at the game
+folder itself — since by the time a task runs, what was on screen when its
+button was pressed may be minutes old.
+
+Two things are handled with a little more care than the rest. The catalogue a
+refresh downloads is read by the worker but put in place by the window, and
+only in a lull, because a task holds pointers into the one it started with for
+as long as it runs; the window is the only thing that starts tasks, so a lull
+it sees is one it can rely on. And the release a look finds stays the worker's:
+what the corner and the dialog draw are the window's own copies, taken from the
+state file and from the news.
+
+`request()` takes one more argument: whether the work blocks. Both kinds queue
+and both run on the worker; the difference is what the window does meanwhile.
+Work that does not block leaves it as it was, with the bar saying what is
+happening and everything still usable. Work that blocks puts the overlay up and
+stops the window taking anything in until it is done, while it goes on drawing
+throughout — which is what makes it different from the freeze this used to be:
+a window still drawing cannot be taken for one that has died, and a spinner or
+a count can go in that overlay. What it is for is work nobody should be
+changing anything underneath. Nothing asks for it today, one worker being
+enough to keep the tasks out of each other's way, but it is one argument away
+for the work that comes.
+
+What is not covered by any of that: the state file. The window writes it (a
+setting changed, a release turned down) and so does the library underneath a
+task (an install recording what it did), and those two can land at the same
+moment. Each write stages under a name of its own and swaps it into place in
+one step, so what is on disk is always one writer's whole state — but the
+later of two writes is the one that survives, and a field the other changed in
+between is lost. Both of them are rare and one of them is re-derived every five
+minutes anyway; the fix, if it is ever worth one, is a lock inside the library
+rather than one in the window.
 
 ### The log
 
@@ -399,10 +450,11 @@ Measured idle, as a share of a four-thread machine:
 | both | **0.65%** | 6% |
 
 Waking is not quite the whole story: Dear ImGui answers a click over the frames
-*after* the one that received it, and a click here asks for work that only
-starts once the overlay naming it has been drawn. So a wake buys `SETTLE_FRAMES`
-frames rather than one, and anything still under way — a held button, a dragged
-edge, a click whose work has not run — keeps topping that up.
+*after* the one that received it. So a wake buys `SETTLE_FRAMES` frames rather
+than one, and anything still going on — a held button, a dragged edge, a task
+the worker has not finished — keeps topping that up. The worker wakes the loop
+itself when it has something to report, so a window asleep between frames hears
+about it at once rather than at the end of the timeout.
 
 `DwmFlush` wants a desktop compositor, which a remote session can be without.
 If it ever fails the swap interval goes back on and the driver has the job
