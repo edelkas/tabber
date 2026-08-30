@@ -627,7 +627,7 @@ is that both architectures compile and run it.
 | `gui/main.cpp`   | Entry point of the [graphical front-end](#the-graphical-front-end) |
 | `test/`          | The test suite (see above) |
 | `res/`           | The source of the embedded files: the fresh savefile |
-| `tools/`         | Release-time scripts: embedding a resource, writing a manifest |
+| `tools/`         | Release-time scripts: embedding a resource, writing a manifest, checking one |
 | `vendor/`        | Dear ImGui and GLFW, pruned to the files the GUI compiles, and ForkAwesome's two headers |
 
 ## Environment
@@ -1645,7 +1645,8 @@ would get it otherwise.
 ### Cutting a release
 
 ```
-python tools/make_manifest.py 0.3.0 --notes "What changed." \
+python tools/make_manifest.py 0.3.0 --note "What changed." \
+    --note "One line per --note." \
     --build all --out dist/manifest.json
 ```
 
@@ -1654,12 +1655,33 @@ tag `v0.3.0` and attach every binary **and** `manifest.json` to the release.
 The first release is the odd one out, since nothing can update to it from
 nothing; publish it, then test the path from it to the next.
 
+`--note` is repeatable, the way `git commit` takes `-m`, and the lines are
+joined with a newline apiece — one, not the blank line git leaves between
+paragraphs. That is the only way to get more than one line of notes: a `\n`
+typed inside an argument arrives as the two characters it is and is written out
+as those two characters, which is what the shell hands over. The dialog the
+front-end puts a release up in shows them as the lines they are.
+
 `--build all` takes whatever the build scripts have left beside the manifest
 and works the keys out of the names; anything else in there is ignored, and a
 `KEY=PATH` given as well overrides what was found. **Generate the manifest
 last.** Every build restages `dist/`, and a binary rebuilt afterwards is a
 different file — same size, different MD5 — which the manifest would then
 describe wrongly.
+
+```
+python tools/check_manifest.py
+```
+
+says whether that has happened, printing `True` or `False` and nothing else,
+with the reason for a `False` on stderr and an exit status to match. It holds
+`dist/` and the manifest in it up against each other both ways: every build the
+manifest names has to be there under the name its URL ends in, the same size
+and the same MD5, and nothing else named like a release binary may be there
+either — a build left out of the manifest would go up with the release as
+something nothing can install. Anything in `dist/` that is not named like one
+is ignored. Worth running between the last build and the upload, since after
+the upload the first person to try updating is the one who finds out.
 
 Two front-ends ship per platform, and each looks up its own key: the CLI takes
 `<os>-<arch>` and the GUI takes `<os>-<arch>-gui` (`src/update.h`). The CLI

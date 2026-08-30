@@ -5,9 +5,15 @@ The build scripts put every finished executable in dist/ under the name it is
 released as, so the usual run is:
 
     python tools/make_manifest.py 0.3.0 \\
-        --notes "What changed, in a line or three." \\
+        --note "What changed." \\
+        --note "One line per --note, the way git commit takes -m." \\
         --build all \\
         --out dist/manifest.json
+
+The notes are joined with a single newline, in the order they were given. That
+is the only way to get more than one line into them: a "\\n" typed inside an
+argument reaches this script as the two characters it is, and is written out as
+those two characters.
 
 "all" reads whatever is sitting beside the manifest and works out the keys from
 the names, which are "tabber-<cli|gui>-<os>-<arch>" with ".exe" on Windows.
@@ -98,7 +104,9 @@ def main():
                     help="a built binary and the platform it is for, or 'all' "
                          "to take every one sitting beside the manifest; "
                          "repeatable")
-    ap.add_argument("--notes", default="", help="a line or three on what changed")
+    ap.add_argument("--note", action="append", default=[], metavar="LINE",
+                    help="a line on what changed; repeatable, and the lines "
+                         "are joined with a newline apiece")
     ap.add_argument("--repo", default="edelkas/tabber", help="owner/name on GitHub")
     ap.add_argument("--date", default=None, help="ISO 8601 UTC; defaults to now")
     ap.add_argument("--out", default=MANIFEST_NAME, help="where to write it")
@@ -134,7 +142,7 @@ def main():
     manifest = {
         "version": args.version,
         "date": date,
-        "notes": args.notes,
+        "notes": "\n".join(args.note),
         "page": PAGE_URL.format(repo=args.repo, version=args.version),
         "builds": builds,
     }
