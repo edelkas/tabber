@@ -17,6 +17,7 @@
 #include "digest.h"
 #include "install.h"
 #include "keys.h"
+#include "log.h"
 #include "loc.h"
 #include "palettes.h"
 #include "patch.h"
@@ -185,11 +186,11 @@ static int cmd_update(const options *opts)
         return EXIT_FAILED;
     }
 
-    printf("Digest updated: %u custom tab(s)%s%s\n",
+    log_line("Digest updated: %u custom tab(s)%s%s",
            (unsigned)dig->tab_count,
            dig->signature_date ? ", dated " : "",
            dig->signature_date ? dig->signature_date : "");
-    printf("Saved to %s\n", dig->path);
+    log_line("Saved to %s", dig->path);
 
     digest_free(dig);
     return EXIT_OK;
@@ -328,7 +329,7 @@ static int cmd_list(const options *opts)
 /* ---- fetch ------------------------------------------------------------- */
 
 /* Prints one aligned "  label  detail" line of the fetch log. */
-static void log_step(const char *label, const char *fmt, ...)
+static void print_step(const char *label, const char *fmt, ...)
 {
     va_list ap;
 
@@ -372,7 +373,7 @@ static int cmd_fetch(const options *opts, const char *code)
     }
 
     digest_code_upper(upper, sizeof upper, tab->code);
-    printf("Fetching %s (%s)...\n", upper, tab->name);
+    log_line("Fetching %s (%s)...", upper, tab->name);
 
     if (tab_fetch(dig, tab, &report, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": %s could not be installed: %s\n", upper, err);
@@ -381,23 +382,23 @@ static int cmd_fetch(const options *opts, const char *code)
     }
 
     if (opts->verbose)
-        log_step("source", "%s", report.link);
-    log_step("download", "%lu bytes, MD5 %s (ok)",
+        print_step("source", "%s", report.link);
+    print_step("download", "%lu bytes, MD5 %s (ok)",
              (unsigned long)report.zip_bytes, report.md5);
-    log_step("archive", "%lu entries, %lu bytes uncompressed (ok)",
+    print_step("archive", "%lu entries, %lu bytes uncompressed (ok)",
              (unsigned long)report.entry_count, (unsigned long)report.disk_bytes);
-    log_step("contents", "%lu level file(s), %lu challenge file(s) in %s/ (ok)",
+    print_step("contents", "%lu level file(s), %lu challenge file(s) in %s/ (ok)",
              (unsigned long)report.level_files, (unsigned long)report.challenge_files,
              digest_levels_dir(dig));
     if (report.palettes)
-        log_step("palettes", "%lu bundled in %s/ (ok)",
+        print_step("palettes", "%lu bundled in %s/ (ok)",
                  (unsigned long)report.palettes, digest_palettes_dir(dig));
-    log_step("extracted", "%lu file(s) to %s", (unsigned long)report.file_count, report.dir);
+    print_step("extracted", "%lu file(s) to %s", (unsigned long)report.file_count, report.dir);
     if (report.state_path[0])
-        log_step("recorded", "download in %s", report.state_path);
+        print_step("recorded", "download in %s", report.state_path);
     if (report.warning[0])
         fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
-    printf("%s fetched successfully.\n", upper);
+    log_line("%s fetched successfully.", upper);
 
     rc = EXIT_OK;
     tab_report_free(&report);
@@ -411,17 +412,17 @@ static int cmd_fetch(const options *opts, const char *code)
 static void print_save_step(const save_report *save)
 {
     if (save->backed_up)
-        log_step("savefile", "archived as %s (%lu bytes)",
+        print_step("savefile", "archived as %s (%lu bytes)",
                  save->backup_path, (unsigned long)save->backup_bytes);
     else
-        log_step("savefile", "there was none to archive");
-    log_step("", "%s written from %s%s", save->save_path, save->source_path,
+        print_step("savefile", "there was none to archive");
+    print_step("", "%s written from %s%s", save->save_path, save->source_path,
              save->used_fresh && !save->from_builtin
                  ? " (the fresh save tabber ships)" : "");
     if (save->compressed)
-        log_step("", "gzipped on the way in, %lu bytes", (unsigned long)save->save_bytes);
+        print_step("", "gzipped on the way in, %lu bytes", (unsigned long)save->save_bytes);
     if (save->removed_path[0])
-        log_step("", "%s removed, so the game reads the new one", save->removed_path);
+        print_step("", "%s removed, so the game reads the new one", save->removed_path);
 }
 
 /* One line per palette the tab bundles, saying what became of it. */
@@ -431,19 +432,19 @@ static void print_palette_step(const palette_report *pal, palette_collision mode
     size_t i;
 
     if (pal->count == 0) {
-        log_step("palettes", "the tab bundles none");
+        print_step("palettes", "the tab bundles none");
         return;
     }
 
     if (installing)
-        log_step("palettes", "%u bundled, %u installed into %s (on collision: %s)",
+        print_step("palettes", "%u bundled, %u installed into %s (on collision: %s)",
                  (unsigned)pal->count, (unsigned)pal->installed, pal->dir,
                  palette_collision_name(mode));
     else if (pal->removed)
-        log_step("palettes", "%u of the tab's own removed from %s",
+        print_step("palettes", "%u of the tab's own removed from %s",
                  (unsigned)pal->removed, pal->dir);
     else
-        log_step("palettes", "%u of the tab's own left in %s",
+        print_step("palettes", "%u of the tab's own left in %s",
                  (unsigned)pal->count, pal->dir);
 
     for (i = 0; i < pal->count; i++) {
@@ -457,13 +458,13 @@ static void print_palette_step(const palette_report *pal, palette_collision mode
             continue;
         }
         if (as)
-            log_step("", "'%s': %s, as '%s'", item->name,
+            print_step("", "'%s': %s, as '%s'", item->name,
                      palette_outcome_text(item->outcome), as);
         else if (item->detail[0])
-            log_step("", "'%s': %s (%s)", item->name,
+            print_step("", "'%s': %s (%s)", item->name,
                      palette_outcome_text(item->outcome), item->detail);
         else
-            log_step("", "'%s': %s", item->name, palette_outcome_text(item->outcome));
+            print_step("", "'%s': %s", item->name, palette_outcome_text(item->outcome));
     }
 
     /* Worth knowing when the folder is filling up: past the line the game
@@ -510,26 +511,26 @@ static void print_loc_step(const loc_report *loc, int installing)
                         "language, skipped\n", loc->unknown.items[i]);
 
     if (loc->count == 0) {
-        log_step("texts", "left alone, no language of them was selected");
+        print_step("texts", "left alone, no language of them was selected");
         return;
     }
     for (i = 0; i < loc->count; i++)
         touched += loc->items[i].outcome == LOC_CHANGED ? 1 : 0;
 
     languages_text(langs, sizeof langs, &loc->languages);
-    log_step("texts", "%u of %u %s in %s (%s)", (unsigned)touched, (unsigned)loc->count,
+    print_step("texts", "%u of %u %s in %s (%s)", (unsigned)touched, (unsigned)loc->count,
              installing ? "replaced" : "restored", loc->path, langs);
 
     for (i = 0; i < loc->count; i++) {
         const loc_item *item = &loc->items[i];
 
         if (item->outcome != LOC_CHANGED)
-            log_step("", "'%s': %s", item->id, loc_outcome_text(item->outcome));
+            print_step("", "'%s': %s", item->id, loc_outcome_text(item->outcome));
         else if (installing)
-            log_step("", "'%s': \"%s\" in %u language(s)", item->id, item->text,
+            print_step("", "'%s': \"%s\" in %u language(s)", item->id, item->text,
                      (unsigned)item->changed);
         else
-            log_step("", "'%s': the original is back in %u language(s)", item->id,
+            print_step("", "'%s': the original is back in %u language(s)", item->id,
                      (unsigned)item->changed);
     }
 }
@@ -542,7 +543,7 @@ static void print_keys_step(const keys_report *keys)
     if (!keys->path)
         return;              /* nothing asked for them, or the plan failed */
 
-    log_step("bindings", "%s", keys->path);
+    print_step("bindings", "%s", keys->path);
     for (i = 0; i < keys->count; i++) {
         const key_item *item = &keys->items[i];
 
@@ -550,11 +551,11 @@ static void print_keys_step(const keys_report *keys)
             fprintf(stderr, TABBER_NAME ": warning: '%s' is not set in the bindings "
                             "file, so it was left alone\n", item->name);
         else if (item->outcome == KEY_SAME)
-            log_step("", "%s: %s", item->name, key_outcome_text(item->outcome));
+            print_step("", "%s: %s", item->name, key_outcome_text(item->outcome));
         else
-            log_step("", "%s: %s -> %s", item->name, item->before, item->after);
+            print_step("", "%s: %s -> %s", item->name, item->before, item->after);
     }
-    log_step("changed", "%u binding(s)", (unsigned)keys->changed);
+    print_step("changed", "%u binding(s)", (unsigned)keys->changed);
 }
 
 /* One line per Steam account that has N++ cloud data, whatever happened to it. */
@@ -563,13 +564,13 @@ static void print_cloud_step(const cloud_report *cloud, cloud_mode mode)
     size_t i;
 
     if (cloud->count == 0) {
-        log_step("cloud", "%s", cloud->searched
+        print_step("cloud", "%s", cloud->searched
                  ? "no Steam account on this machine has N++ cloud data"
                  : "Steam's folder was not found, so there is nothing to sync");
         return;
     }
 
-    log_step("cloud", "%u account(s) with N++ data, mode '%s'",
+    print_step("cloud", "%u account(s) with N++ data, mode '%s'",
              (unsigned)cloud->count, cloud_mode_name(mode));
     for (i = 0; i < cloud->count; i++) {
         const cloud_user *user = &cloud->users[i];
@@ -578,18 +579,18 @@ static void print_cloud_step(const cloud_report *cloud, cloud_mode mode)
             fprintf(stderr, TABBER_NAME ": warning: Steam account %s: %s\n",
                     user->id, user->detail);
         else if (user->replaced)
-            log_step("", "%s: cloud save replaced, %lu bytes%s", user->id,
+            print_step("", "%s: cloud save replaced, %lu bytes%s", user->id,
                      (unsigned long)user->written,
                      user->removed_raw ? " (and an outdated uncompressed one removed)" : "");
         else if (user->removed_gz)
-            log_step("", "%s: cloud save removed%s", user->id,
+            print_step("", "%s: cloud save removed%s", user->id,
                      user->removed_raw ? ", uncompressed one included" : "");
         else if (user->removed_raw)
-            log_step("", "%s: an outdated uncompressed cloud save was removed", user->id);
+            print_step("", "%s: an outdated uncompressed cloud save was removed", user->id);
         else if (user->had_gz || user->had_raw)
-            log_step("", "%s: a cloud save is there and was left alone", user->id);
+            print_step("", "%s: a cloud save is there and was left alone", user->id);
         else
-            log_step("", "%s: no cloud save", user->id);
+            print_step("", "%s: no cloud save", user->id);
     }
 }
 
@@ -602,12 +603,12 @@ static int ensure_downloaded(const digest *dig, const npp_tab *tab, const char *
     if (tab_is_downloaded(tab->code))
         return 0;
 
-    printf("%s is not downloaded yet, fetching it first...\n", upper);
+    log_line("%s is not downloaded yet, fetching it first...", upper);
     if (tab_fetch(dig, tab, &report, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": %s could not be downloaded: %s\n", upper, err);
         return -1;
     }
-    log_step("downloaded", "%lu file(s) to %s",
+    print_step("downloaded", "%lu file(s) to %s",
              (unsigned long)report.file_count, report.dir);
     if (report.warning[0])
         fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
@@ -682,7 +683,7 @@ static int cmd_install(const options *opts, const char *code)
     }
     config_free(state);
 
-    printf("Installing %s (%s)...\n", upper, tab->name);
+    log_line("Installing %s (%s)...", upper, tab->name);
 
     {
         install_options run = install_opts(opts);
@@ -699,19 +700,19 @@ static int cmd_install(const options *opts, const char *code)
         fprintf(stderr, TABBER_NAME ": warning: '%s' is not a level or challenge file "
                         "the game reads, skipped\n", report.skipped.items[i]);
 
-    log_step("target", "%s", report.game_levels_dir);
-    log_step("installed", "%lu file(s), %lu skipped",
+    print_step("target", "%s", report.game_levels_dir);
+    print_step("installed", "%lu file(s), %lu skipped",
              (unsigned long)report.installed_count, (unsigned long)report.skipped.count);
-    log_step("originals", "kept alongside with the '%s' suffix", INSTALL_BACKUP_SUFFIX);
+    print_step("originals", "kept alongside with the '%s' suffix", INSTALL_BACKUP_SUFFIX);
     if (report.stale_backups.count)
-        log_step("", "%lu of them replaced a leftover backup from an earlier install",
+        print_step("", "%lu of them replaced a leftover backup from an earlier install",
                  (unsigned long)report.stale_backups.count);
-    log_step("library", "queries redirected to %s (from %s)",
+    print_step("library", "queries redirected to %s (from %s)",
              report.server_uri, report.server_source);
     if (report.credit[0])
-        log_step("credit", "the game now credits '%s'", report.credit);
+        print_step("credit", "the game now credits '%s'", report.credit);
     if (report.health.reachable)
-        log_step("server", "%s answered HTTP %d", report.health.url, report.health.status);
+        print_step("server", "%s answered HTTP %d", report.health.url, report.health.status);
     else
         fprintf(stderr, TABBER_NAME ": warning: the 3rd party server does not seem to be up "
                         "(%s: %s); the tab is installed all the same, but its scores will "
@@ -723,10 +724,10 @@ static int cmd_install(const options *opts, const char *code)
     print_save_step(&report.save);
     print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
-        log_step("recorded", "install in %s", report.state_path);
+        print_step("recorded", "install in %s", report.state_path);
     if (report.warning[0])
         fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
-    printf("%s installed successfully.\n", upper);
+    log_line("%s installed successfully.", upper);
 
     install_report_free(&report);
     rc = EXIT_OK;
@@ -781,15 +782,15 @@ static int cmd_check(const options *opts)
     if (config_save(state, err, sizeof err) != 0)
         fprintf(stderr, TABBER_NAME ": warning: the check was not recorded: %s\n", err);
 
-    log_step("library", "%s", lib_state_text(health.state));
-    log_step("points at", "%s", health.uri[0] ? health.uri : "(nothing recognisable)");
-    log_step("recorded", "%s", health.state_code[0] ? health.state_code : "no tab installed");
+    print_step("library", "%s", lib_state_text(health.state));
+    print_step("points at", "%s", health.uri[0] ? health.uri : "(nothing recognisable)");
+    print_step("recorded", "%s", health.state_code[0] ? health.state_code : "no tab installed");
     if (health.healthy) {
         /* Passed, but worth saying when the tab in the game is not one of
          * ours: uninstalling it will work, and may take a download first. */
         if (health.unrecorded)
-            log_step("note", "%s", health.detail);
-        printf("Library check passed.\n");
+            print_step("note", "%s", health.detail);
+        log_line("Library check passed.");
         rc = EXIT_OK;
     } else {
         fprintf(stderr, TABBER_NAME ": library check FAILED: %s\n", health.detail);
@@ -841,10 +842,10 @@ static int cmd_server(const options *opts)
         return up ? EXIT_OK : EXIT_FAILED;
     }
 
-    log_step("address", "%s (from %s)", health.url, server_source_name(health.source));
+    print_step("address", "%s (from %s)", health.url, server_source_name(health.source));
     if (up) {
-        log_step("reply", "HTTP %d", health.status);
-        printf("Server check passed: %s is listening.\n", health.addr.host);
+        print_step("reply", "HTTP %d", health.status);
+        log_line("Server check passed: %s is listening.", health.addr.host);
         return EXIT_OK;
     }
 
@@ -894,7 +895,7 @@ static int cmd_uninstall(const options *opts, const char *code)
         goto done;
     }
 
-    printf("Uninstalling %s (%s)...\n", upper, tab->name);
+    log_line("Uninstalling %s (%s)...", upper, tab->name);
 
     /* The files on disk decide, not the state file: a config that drifted out
      * of step must not stop a real installation from being undone. */
@@ -916,32 +917,32 @@ static int cmd_uninstall(const options *opts, const char *code)
                         "was not part of this tab\n", report.leftovers.items[i],
                 INSTALL_BACKUP_SUFFIX);
 
-    log_step("target", "%s", report.game_levels_dir);
-    log_step("restored", "%lu original file(s)", (unsigned long)report.restored_count);
+    print_step("target", "%s", report.game_levels_dir);
+    print_step("restored", "%lu original file(s)", (unsigned long)report.restored_count);
     if (report.from_originals) {
         /* The rest of them had no backup, which is what an install by one of
          * the older installers leaves behind. */
         char originals[TAB_CODE_MAX_LEN + 1];
 
         digest_code_upper(originals, sizeof originals, report.originals_code);
-        log_step("", "%lu from an '%s' backup, %lu from the %s tab%s",
+        print_step("", "%lu from an '%s' backup, %lu from the %s tab%s",
                  (unsigned long)report.from_backups, INSTALL_BACKUP_SUFFIX,
                  (unsigned long)report.from_originals, originals,
                  report.fetched_originals ? ", downloaded just now" : "");
     }
-    log_step("library", "queries point back at %s", report.server_uri);
+    print_step("library", "queries point back at %s", report.server_uri);
     if (report.credit_restored)
-        log_step("credit", "the game credits '%s' again", LIB_CREDIT_ORIGINAL);
+        print_step("credit", "the game credits '%s' again", LIB_CREDIT_ORIGINAL);
     print_palette_step(&report.palettes, opts->palettes, 0);
     print_loc_step(&report.strings, 0);
     print_keys_step(&report.bindings);
     print_save_step(&report.save);
     print_cloud_step(&report.cloud, opts->cloud);
     if (report.state_path[0])
-        log_step("recorded", "uninstall in %s", report.state_path);
+        print_step("recorded", "uninstall in %s", report.state_path);
     if (report.warning[0])
         fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
-    printf("%s uninstalled successfully.\n", upper);
+    log_line("%s uninstalled successfully.", upper);
 
     uninstall_report_free(&report);
     rc = EXIT_OK;
@@ -1028,7 +1029,7 @@ static int cmd_bind(const options *opts, const char *list)
     planned = 1;
 
     names = players_text(players, 1, count);
-    printf("Binding player%s %s to player %d's controls...\n",
+    log_line("Binding player%s %s to player %d's controls...",
            count > 2 ? "s" : "", names, players[0]);
     free(names);
 
@@ -1060,8 +1061,8 @@ static int cmd_bind(const options *opts, const char *list)
                         "(%s), so the controls were left as they were\n", err);
         goto done;
     }
-    log_step("recorded", "%u original binding(s) in %s", (unsigned)recorded, state->path);
-    printf("Controls bound.\n");
+    print_step("recorded", "%u original binding(s) in %s", (unsigned)recorded, state->path);
+    log_line("Controls bound.");
     rc = EXIT_OK;
 
 done:
@@ -1108,13 +1109,13 @@ static int cmd_unbind(const options *opts, const char *list)
     planned = 1;
 
     if (plan.count == 0) {
-        printf("No controls are on record as changed, and no player was named, so "
-               "there is nothing to undo.\n");
+        log_line("No controls are on record as changed, and no player was named, "
+                 "so there is nothing to undo.");
         rc = EXIT_OK;
         goto done;
     }
 
-    printf("Restoring the controls tabber changed...\n");
+    log_line("Restoring the controls tabber changed...");
     if (keys_plan_apply(&plan, &report, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": the controls could not be restored: %s\n", err);
         keys_report_free(&report);
@@ -1129,8 +1130,8 @@ static int cmd_unbind(const options *opts, const char *list)
         fprintf(stderr, TABBER_NAME ": warning: the controls were restored but the "
                         "record of them was not cleared: %s\n", err);
     else
-        log_step("recorded", "the record of changed controls is empty again");
-    printf("Controls restored.\n");
+        print_step("recorded", "the record of changed controls is empty again");
+    log_line("Controls restored.");
     rc = EXIT_OK;
 
 done:
@@ -1160,13 +1161,13 @@ static int confirm(const char *question)
 /* What a release says about itself, in the shape of the other reports. */
 static void print_release(const update_info *info)
 {
-    log_step("installed", "%s (%s, %s)", TABBER_VERSION, PLAT_NAME, UPDATE_BUILD_KEY);
-    log_step("latest", "%s%s%s", info->version,
+    print_step("installed", "%s (%s, %s)", TABBER_VERSION, PLAT_NAME, UPDATE_BUILD_KEY);
+    print_step("latest", "%s%s%s", info->version,
              info->date[0] ? ", released " : "", info->date);
     if (info->notes && info->notes[0])
-        log_step("notes", "%s", info->notes);
+        print_step("notes", "%s", info->notes);
     if (info->page && info->page[0])
-        log_step("page", "%s", info->page);
+        print_step("page", "%s", info->page);
 }
 
 /*
@@ -1185,26 +1186,26 @@ static int apply_upgrade(const update_info *info, char **exe_out)
     if (exe_out)
         *exe_out = NULL;
 
-    printf("Downloading " TABBER_NAME " %s...\n", info->version);
+    log_line("Downloading " TABBER_NAME " %s...", info->version);
     if (update_plan_build(info, &plan, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": the update was not applied: %s\n", err);
         return -1;
     }
-    log_step("download", "%lu bytes, MD5 %s (ok)", (unsigned long)plan.bytes, info->md5);
+    print_step("download", "%lu bytes, MD5 %s (ok)", (unsigned long)plan.bytes, info->md5);
 
     if (update_plan_apply(&plan, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": the update was not applied: %s\n", err);
         update_plan_free(&plan);
         return -1;
     }
-    log_step("replaced", "%s", plan.exe);
-    log_step("checked", "the new binary runs and reports %s", plan.version);
-    log_step("previous", "kept as %s until the next run", plan.aside);
+    print_step("replaced", "%s", plan.exe);
+    print_step("checked", "the new binary runs and reports %s", plan.version);
+    print_step("previous", "kept as %s until the next run", plan.aside);
 
     if (exe_out)
         *exe_out = str_dup(plan.exe);
     update_plan_free(&plan);
-    printf(TABBER_NAME " %s is in place.\n", info->version);
+    log_line(TABBER_NAME " %s is in place.", info->version);
     return 0;
 }
 
@@ -1234,7 +1235,7 @@ static int cmd_upgrade(const options *opts)
         return EXIT_USAGE;
     }
 
-    printf("Checking for a newer " TABBER_NAME "...\n");
+    log_line("Checking for a newer " TABBER_NAME "...");
     if (update_check(UPDATE_FLAVOUR_CLI, &info, err, sizeof err) != 0) {
         fprintf(stderr, TABBER_NAME ": the newest release could not be looked up: %s\n"
                         "Releases are listed at %s\n", err, UPDATE_RELEASES_URL);
@@ -1244,7 +1245,7 @@ static int cmd_upgrade(const options *opts)
     record_check(&info, NULL);
 
     if (!info.newer) {
-        printf("You already have the newest release.\n");
+        log_line("You already have the newest release.");
         rc = EXIT_OK;
     } else if (!info.url) {
         fprintf(stderr, TABBER_NAME ": that release ships no build for %s, so it cannot "
@@ -1342,7 +1343,8 @@ static int check_for_update(const options *opts, const char *command,
      * not having updated at all.
      */
     if (upgraded) {
-        printf("Restarting...\n\n");
+        log_line("Restarting...");
+        fputc('\n', stdout);
         plat_setenv(UPDATE_ENV_GUARD, "1");
         if (exe && plat_restart(exe, argv + 1, (size_t)(argc - 1), status) == 0)
             restarted = 1;
@@ -1401,19 +1403,19 @@ static int cmd_remove(const options *opts, const char *code)
     }
 
     if (name)
-        printf("Removing %s (%s)...\n", upper, name);
+        log_line("Removing %s (%s)...", upper, name);
     else
-        printf("Removing %s...\n", upper);
+        log_line("Removing %s...", upper);
 
     if (report.had_files)
-        log_step("deleted", "%s", report.dir);
+        print_step("deleted", "%s", report.dir);
     else
-        log_step("deleted", "nothing on disk, %s was already gone", report.dir);
+        print_step("deleted", "nothing on disk, %s was already gone", report.dir);
     if (report.recorded)
-        log_step("recorded", "removal in %s", report.state_path);
+        print_step("recorded", "removal in %s", report.state_path);
     if (report.warning[0])
         fprintf(stderr, TABBER_NAME ": warning: %s\n", report.warning);
-    printf("%s removed successfully.\n", upper);
+    log_line("%s removed successfully.", upper);
 
     tab_remove_report_free(&report);
     digest_free(dig);

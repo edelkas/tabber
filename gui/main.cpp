@@ -2,9 +2,10 @@
  * main.cpp - Entry point of the graphical front-end.
  *
  * Dear ImGui on GLFW + OpenGL 3, both built from source under vendor/. One
- * full-viewport panel: a button that refreshes the catalogue, and a sortable
- * table of every custom tab with a button per row that downloads, installs or
- * uninstalls it.
+ * full-viewport panel: a button that refreshes the catalogue, a sortable table
+ * of every custom tab with a button per row that downloads, installs or
+ * uninstalls it, and a bar along the bottom saying what has just happened and
+ * what the game has in it.
  *
  * This is a second front-end onto the library in src/, not a second copy of
  * it. Every button runs the same call the matching CLI command runs, and the
@@ -48,6 +49,7 @@
 #include "config.h"
 #include "digest.h"
 #include "install.h"
+#include "log.h"
 #include "paths.h"
 #include "platform.h"
 #include "tabs.h"
@@ -342,6 +344,11 @@ static const char *HINT_TABS       = "Look for new custom tabs";
 static const char *HINT_SETTINGS   = "Settings";
 static const char *HINT_LIGHT      = "Switch to the light theme";
 static const char *HINT_DARK       = "Switch to the dark theme";
+
+/* The bar along the bottom: what the game has in it, on the right. The left
+ * of it is whatever the tool last had to say, which is not ours to word. */
+static const char *STATUS_NO_TAB  = "No custom tabs installed";
+static const char *STATUS_ONE_TAB = "%s tab installed";
 
 /* What the settings box holds: one line, so far. */
 static const char *SETTING_THEME    = "Theme";
@@ -646,6 +653,11 @@ static void set_result(const char *title, const char *fmt, ...)
     vsnprintf(g_result_text, sizeof g_result_text, fmt, ap);
     va_end(ap);
     g_open_popup = g_result_title;
+
+    /* What a dialog says is news whether or not anyone is looking at the
+     * dialog, so it goes in the log too. The log folds it onto one line, which
+     * is what the several-line ones become in the bar along the bottom. */
+    log_line("%s", g_result_text);
 }
 
 /* The tab `code` names, or NULL with a reason when the catalogue has no such. */
@@ -859,6 +871,10 @@ static void request(ui_action action, const char *code, const char *busy)
     g_pending_drawn = 0;
     snprintf(g_pending_code, sizeof g_pending_code, "%s", code ? code : "");
     snprintf(g_busy_text, sizeof g_busy_text, "%s", busy);
+
+    /* The same line the CLI prints when it starts one of these. It stands in
+     * the bar until whatever it announced has something to report. */
+    log_line("%s", g_busy_text);
 }
 
 /*
@@ -882,6 +898,7 @@ static void request_install(const npp_tab *tab)
              other, other, upper);
     snprintf(g_pending_code, sizeof g_pending_code, "%s", tab->code);
     g_open_popup = TITLE_CONFIRM;
+    log_line("%s", g_confirm_text);   /* two paragraphs; the log folds them */
 }
 
 /* ---- Updating tabber itself ---------------------------------------------
@@ -1023,8 +1040,13 @@ static void run_check(int asked)
 
     /* A version turned down before is not put up again on its own; a look the
      * user asked for is an answer owed, so it is put up then. */
-    if (asked || !declined)
+    if (asked || !declined) {
         g_open_popup = TITLE_UPDATE;
+
+        /* The release notes are the bulk of that box and are no use on one
+         * line, so what is logged is the line the corner shows. */
+        log_line(STATUS_WAITING, g_known_version);
+    }
 }
 
 /*
@@ -1276,6 +1298,8 @@ static void draw_row_button(const npp_tab *tab, const tab_row *row)
     ImGui::EndDisabled();
 }
 
+static float status_bar_height(void);
+
 /*
  * How tall the table has to be for VISIBLE_ROWS rows under the header, or for
  * every row when there are fewer than that. Saying it outright is what stops
@@ -1286,7 +1310,10 @@ static float table_height(size_t rows)
 {
     float pad = ImGui::GetStyle().CellPadding.y * 2.0f;
     float shown = (float)(rows < VISIBLE_ROWS ? rows : VISIBLE_ROWS);
-    float avail = ImGui::GetContentRegionAvail().y;
+
+    /* The bar along the bottom is not the table's to take: it is drawn after
+     * it and outside the flow, so the room it wants comes off here. */
+    float avail = ImGui::GetContentRegionAvail().y - status_bar_height();
     float height;
 
     /* The header is one line of text; a row is as tall as the button in it. */
@@ -1873,6 +1900,115 @@ static float draw_corner(ImVec2 level)
     return level.y + (float)CORNER_ROWS * (size + style.ItemSpacing.y);
 }
 
+/* ---- The bar along the bottom -------------------------------------------
+ *
+ * One line, pegged to the foot of the panel. On the left is the newest thing
+ * the tool has said â€” the same line the CLI would have printed, which in a
+ * window has nowhere else to go; on the right, what the game has in it.
+ *
+ * The right-hand section keeps its width whatever it says, so the line beside
+ * it does not shift about as tabs are installed and taken out again. The left
+ * one takes whatever room is left over, however the window has been resized,
+ * and what does not fit in it is cut rather than allowed to run underneath.
+ */
+
+/* What the bar wants under the table: the line, and the gap above it. */
+static float status_bar_height(void)
+{
+    return ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemSpacing.y;
+}
+
+/*
+ * As much of `text` as fits in `width`, ending in an ellipsis where it was
+ * cut. Returns `text` itself when the whole of it fits, and `out` otherwise,
+ * so a caller can tell the two apart without measuring again.
+ */
+static const char *fit_text(const char *text, float width, char *out, size_t outsz)
+{
+    float dots = ImGui::CalcTextSize(LOG_ELLIPSIS).x;
+    size_t lo = 0, hi = strlen(text), cut;
+
+    if (ImGui::CalcTextSize(text).x <= width)
+        return text;
+    if (hi > outsz - sizeof LOG_ELLIPSIS)
+        hi = outsz - sizeof LOG_ELLIPSIS;
+
+    /* The longest prefix the ellipsis still fits after. No prefix is wider
+     * than a longer one, so the answer can be bisected for. */
+    while (lo < hi) {
+        size_t mid = (lo + hi + 1) / 2;
+
+        if (ImGui::CalcTextSize(text, text + mid).x + dots <= width)
+            lo = mid;
+        else
+            hi = mid - 1;
+    }
+
+    /* Never in the middle of a character: these lines carry tab names, and
+     * half a UTF-8 sequence draws as a stray box. */
+    cut = lo;
+    while (cut > 0 && ((unsigned char)text[cut] & 0xC0) == 0x80)
+        cut--;
+    memcpy(out, text, cut);
+    memcpy(out + cut, LOG_ELLIPSIS, sizeof LOG_ELLIPSIS);
+    return out;
+}
+
+static void draw_status_bar(void)
+{
+    const ImGuiViewport *vp = ImGui::GetMainViewport();
+    const ImGuiStyle &style = ImGui::GetStyle();
+    const log_entry *last = log_last();
+    char right[128], shown[LOG_LINE_MAX + 8], upper[DIGEST_CODE_BUF];
+    float line = ImGui::GetTextLineHeight();
+    float left_edge = vp->WorkPos.x + style.WindowPadding.x;
+    float right_edge = vp->WorkPos.x + vp->WorkSize.x - style.WindowPadding.x;
+    float top = vp->WorkPos.y + vp->WorkSize.y - style.WindowPadding.y - line;
+    float rule = top - style.ItemSpacing.y * 0.5f;
+    float width, room;
+
+    if (g_installed_code[0] != '\0') {
+        digest_code_upper(upper, sizeof upper, g_installed_code);
+        snprintf(right, sizeof right, STATUS_ONE_TAB, upper);
+    } else {
+        snprintf(right, sizeof right, "%s", STATUS_NO_TAB);
+    }
+
+    /* The width of the section, which is the widest thing it can say: the
+     * sentence for an empty game is longer than any code makes it. A code long
+     * enough to beat that one widens the section rather than being cut. */
+    width = ImGui::CalcTextSize(STATUS_NO_TAB).x;
+    if (ImGui::CalcTextSize(right).x > width)
+        width = ImGui::CalcTextSize(right).x;
+
+    /* The rule that divides the bar from the table, drawn rather than laid
+     * out: the bar is placed by hand, and a Separator() would go in the flow
+     * wherever the table happened to leave the cursor. */
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(left_edge, rule),
+                                        ImVec2(right_edge, rule),
+                                        ImGui::GetColorU32(ImGuiCol_Separator));
+
+    room = right_edge - width - style.ItemSpacing.x * 2.0f - left_edge;
+    if (last && room > 0.0f) {
+        const char *text = fit_text(last->text, room, shown, sizeof shown);
+
+        ImGui::SetCursorScreenPos(ImVec2(left_edge, top));
+        ImGui::TextUnformatted(text);
+
+        /* Cut lines are worth reading in full, and there is nowhere else the
+         * rest of one can be read from. */
+        if (text != last->text && ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", last->text);
+    }
+
+    /* Right-aligned, the right-hand end of its section being the panel's own. */
+    ImGui::SetCursorScreenPos(ImVec2(right_edge - ImGui::CalcTextSize(right).x, top));
+    if (g_installed_code[0] != '\0')
+        ImGui::TextUnformatted(right);
+    else
+        ImGui::TextDisabled("%s", right);   /* nothing in: nothing to report */
+}
+
 /* The one window, filling the viewport however the frame has been resized. */
 static void draw_panel(void)
 {
@@ -1904,6 +2040,7 @@ static void draw_panel(void)
     else
         ImGui::TextWrapped("%s", g_error);
 
+    draw_status_bar();
     ImGui::End();
 }
 

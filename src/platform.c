@@ -491,6 +491,16 @@ int plat_is_interactive(void)
     return _isatty(_fileno(stdin)) && _isatty(_fileno(stdout));
 }
 
+int plat_has_output(void)
+{
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+
+    /* A window opened from the desktop has none of the three, and the handle
+     * comes back empty; one started from a console that redirected the output
+     * has a real one, and writing to it is what the caller wanted. */
+    return out != NULL && out != INVALID_HANDLE_VALUE;
+}
+
 /*
  * Appends one argument to a command line the way the C runtime will parse it
  * back: quoted when it holds a space or a quote of its own, and backslashes
@@ -896,6 +906,13 @@ int plat_make_executable(const char *path)
 int plat_is_interactive(void)
 {
     return isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+}
+
+int plat_has_output(void)
+{
+    /* Here every process is started with the three streams open, whatever it
+     * draws its windows with, so there is always somewhere for a line to go. */
+    return 1;
 }
 
 /* What execv wants: the program's own name, the arguments, and a NULL. */

@@ -8,10 +8,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "digest.h"
 #include "json.h"
 #include "kv.h"
+#include "log.h"
 #include "md5.h"
 #include "platform.h"
 #include "test.h"
@@ -504,10 +506,87 @@ static void test_md5(void)
     CHECK_STR(hex, "57edf4a22be3c955ac49da2e2107b67a", "md5 across block boundaries");
 }
 
+/*
+ * The message log. Everything here runs with the echo off: what the tool has
+ * to say would otherwise land in the middle of what the suite has to say.
+ */
+static void test_log(void)
+{
+    char long_line[LOG_LINE_MAX * 2];
+    const log_entry *entry;
+    long long before, after;
+    size_t i;
+
+    test_case("the message log");
+    log_set_echo(0);
+    log_clear();
+
+    CHECK(log_last() == NULL, "a log nothing has been written to is empty");
+    CHECK_NUM(log_count(), 0, "...and counts nothing");
+    CHECK(log_at(0) == NULL, "...and has no newest line");
+
+    before = (long long)time(NULL);
+    log_line("Installing %s (%s)...", "MET", "Metanet");
+    after = (long long)time(NULL);
+    entry = log_last();
+    CHECK(entry != NULL, "a line is recorded");
+    if (!entry) {
+        log_set_echo(1);
+        return;
+    }
+    CHECK_STR(entry->text, "Installing MET (Metanet)...", "...formatted as it was given");
+    CHECK(entry->when >= before && entry->when <= after, "...and stamped with the time");
+    CHECK_NUM(log_count(), 1, "one line is being kept");
+
+    /* Several lines, and what the log calls the newest of them. */
+    log_line("MET installed successfully.");
+    CHECK_STR(log_at(0)->text, "MET installed successfully.", "the newest is age 0");
+    CHECK_STR(log_at(1)->text, "Installing MET (Metanet)...", "the one before it is age 1");
+    CHECK(log_at(2) == NULL, "and there is no third");
+
+    /* A dialog's worth of text becomes one line, which is what the bar at the
+     * bottom of the window has room for. */
+    log_line("MET is installed, and only one custom tab can be installed at a "
+             "time.\n\nUninstall MET and install LIT in its place?");
+    CHECK_STR(log_last()->text,
+              "MET is installed, and only one custom tab can be installed at a "
+              "time. Uninstall MET and install LIT in its place?",
+              "several lines are folded onto one");
+
+    log_line("  \t spaced \n out \r\n ");
+    CHECK_STR(log_last()->text, "spaced out", "runs of whitespace collapse and the ends go");
+
+    log_line("   ");
+    CHECK_STR(log_last()->text, "spaced out", "a line with nothing in it is not recorded");
+
+    /* Longer than a line may be, and cut with the ellipsis in its place. */
+    memset(long_line, 'x', sizeof long_line - 1);
+    long_line[sizeof long_line - 1] = '\0';
+    log_line("%s", long_line);
+    entry = log_last();
+    CHECK_NUM(strlen(entry->text), LOG_LINE_MAX - 1, "an over-long line is cut to fit");
+    CHECK_STR(entry->text + LOG_LINE_MAX - 1 - strlen(LOG_ELLIPSIS), LOG_ELLIPSIS,
+              "...and says so with an ellipsis");
+
+    /* The oldest fall off the end rather than the newest being refused. */
+    log_clear();
+    for (i = 0; i < LOG_HISTORY + 10; i++)
+        log_line("line %u", (unsigned)i);
+    CHECK_NUM(log_count(), LOG_HISTORY, "the log stops growing at LOG_HISTORY");
+    CHECK_STR(log_at(0)->text, "line 137", "the newest line is the last one written");
+    CHECK_STR(log_at(LOG_HISTORY - 1)->text, "line 10", "and the oldest kept is that far back");
+    CHECK(log_at(LOG_HISTORY) == NULL, "nothing older than that survives");
+
+    log_clear();
+    CHECK_NUM(log_count(), 0, "clearing empties it again");
+    log_set_echo(1);
+}
+
 void suite_core(void)
 {
     test_suite("core");
     test_strings();
+    test_log();
     test_tab_columns();
     test_timestamps();
     test_buffers();

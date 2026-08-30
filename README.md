@@ -9,6 +9,7 @@ has just been started now that the command line side is complete.
 - [Table of contents](#table-of-contents)
 - [Building](#building)
 - [The graphical front-end](#the-graphical-front-end)
+   * [The log](#the-log)
    * [The window's frame](#the-windows-frame)
    * [Pacing the frames](#pacing-the-frames)
    * [When a tab was last played](#when-a-tab-was-last-played)
@@ -181,6 +182,13 @@ over another tab is the one case the CLI refuses and this does not: it asks
 first, and on a yes uninstalls the other one before installing this one. Either
 way the outcome is a dialog — what happened, or why it did not.
 
+Along the bottom is a bar one line high. On the right, in a section as wide as
+the longest thing it can say so that nothing beside it shifts about, is what the
+game has in it: `MET tab installed`, or a dimmed `No custom tabs installed`. On
+the left is the newest line of the [log](#the-log), which takes whatever room
+the right-hand section leaves however the window is resized; what does not fit
+is cut with an ellipsis, and the whole of it is under the pointer.
+
 It also [keeps itself up to date](#in-the-front-end): a look at the newest
 release when the window opens and at most once a day after, and a Yes/No
 dialog when there is one worth taking. Under the About button a line says where
@@ -201,6 +209,26 @@ the built-in font is ProggyClean, which covers Latin and little else: a tab
 whose author writes their name in anything further out gets `?` where the CLI
 prints the character. Fixing that means bundling a font, which is a decision
 about size and licence rather than about code.
+
+### The log
+
+Everything the tool has to say about a step it took goes through one call,
+`log_line` in `src/log.h`: a fetch that started, an install that finished, a
+look that found nothing newer. It is written out where there is anywhere to
+write it — a console, or whatever the output was redirected to — and kept in
+memory either way, with the moment it happened, so a front-end that has no
+console has something to show. That is where the CLI's own progress lines come
+from, and it is why they now reach the window as well.
+
+A logged line is one line. What is handed in is folded onto a single one, runs
+of whitespace and all, and cut with an ellipsis past 512 bytes, which is what
+lets the same call serve a paragraph in a dialog and a line in a status bar:
+the front-end logs what each dialog says as it puts it up, so the news survives
+the dialog being dismissed.
+
+What the log is not is the tool's error reporting. What goes wrong is still
+handed back to the caller in its own buffer and reported by whoever asked for
+it — on `stderr` in the CLI, in a dialog in the window.
 
 ### The window's frame
 
@@ -489,6 +517,7 @@ is that both architectures compile and run it.
 | `src/net.c/.h`   | HTTPS client: WinHTTP on Windows, libcurl elsewhere |
 | `src/platform.c/.h` | OS abstraction: filesystem, environment, Windows registry, UTF-8 paths, the tool's own folder |
 | `src/util.c/.h`  | Allocation, string, buffer, timestamp and error helpers |
+| `src/log.c/.h`   | The [running account](#the-log) of what the tool has done, printed and kept |
 | `src/version.h`  | Program name, version and the date it went out |
 | `src/resource.h` | Files built into the binary |
 | `src/resource_save.c` | The fresh savefile as bytes; generated, do not edit |

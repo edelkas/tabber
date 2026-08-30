@@ -76,6 +76,14 @@ int plat_make_executable(const char *path);
 int plat_is_interactive(void);
 
 /*
+ * Whether standard output goes anywhere at all. It always does for a console
+ * program; a windowed one only has it when it was started from a console that
+ * redirected it, and on Windows writing to it otherwise goes to a handle that
+ * was never opened. What the log writes out is gated on this.
+ */
+int plat_has_output(void);
+
+/*
  * Runs `exe` with `args` (which does not include the program name) and waits
  * for it. Returns 0 with *status set to its exit code, or -1 when it could not
  * be started at all.
