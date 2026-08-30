@@ -8,8 +8,14 @@ rem   build.bat test           build and run the test suite (offline tiers)
 rem   build.bat x86 test       ...the 32-bit build's own suite
 rem   build.bat test online    build and run everything, network included
 rem   build.bat gui            also build the graphical front-end
+rem   build.bat gui test       ...and run the suite as well, in the one go
 rem   build.bat all            every build this tree produces, both architectures
+rem   build.bat all test       ...each of them running its own suite
 rem   build.bat gui clean      ...and "clean" anywhere starts that build over
+rem
+rem Past the architecture the words are read wherever they sit and in whatever
+rem order: "gui", "test", "online" and "full" each turn one thing on, and any
+rem of them may be asked for at once.
 rem
 rem Only what changed is compiled. An object older than its source, or than the
 rem newest header the group it belongs to might include, is built again; the
@@ -21,11 +27,24 @@ rem Compiler and linker diagnostics in English, whatever language the machine
 rem speaks: an error message is far easier to look up that way.
 set "VSLANG=1033"
 
-rem "clean" is read before the arguments are, so it may sit at either end of
-rem them. It discards the object tree of the architecture being built, which is
-rem the only way a source that no longer exists stops being linked in.
+rem Everything except the architecture is read here, from the arguments whole,
+rem so that a word means the same wherever it was put and none of them shuts
+rem another one out. "clean" discards the object tree of the architecture being
+rem built, which is the only way a source that no longer exists stops being
+rem linked in; the two tiers say how much of the suite to run, the later one
+rem winning, and asking for a tier is asking for the suite.
 set "FRESH="
-for %%A in (%*) do if /i "%%~A"=="clean" set "FRESH=1"
+set "DO_GUI="
+set "DO_TEST="
+set "TIER="
+for %%A in (%*) do (
+    if /i "%%~A"=="clean"  set "FRESH=1"
+    if /i "%%~A"=="gui"    set "DO_GUI=1"
+    if /i "%%~A"=="test"   set "DO_TEST=1"
+    if /i "%%~A"=="online" set "TIER=--online"
+    if /i "%%~A"=="full"   set "TIER=--full"
+)
+if defined TIER set "DO_TEST=1"
 
 rem Read, and then out of the way of the arguments that are read by position:
 rem it may come before the architecture, after it, or last of the lot.
@@ -125,22 +144,24 @@ if errorlevel 1 exit /b 1
 rem The fresh savefile is built into the binary (src\resource_save.c), so the
 rem executable is the whole program: nothing has to ship beside it.
 
-if /i "%1"=="gui" goto :build_gui
-if /i not "%1"=="test" exit /b 0
+rem The suite first when both were asked for: it is the quicker of the two to
+rem come back, and what it covers is the library the front-end is built on.
+if defined DO_TEST call :run_tests
+if errorlevel 1 exit /b 1
+if defined DO_GUI call :build_gui
+if errorlevel 1 exit /b 1
+exit /b 0
 
+rem ---------------------------------------------------------------------------
+:run_tests
+rem Builds the suite from the sources the tool was just built from, and runs
+rem the tier that was asked for, the offline one when none was.
 set "DIRTY="
 call :compile "%OUTDIR%\test" "%CFLAGS% /I src" "%TESTSRC% %LIBSRC%" "%TDEPS%"
 if errorlevel 1 exit /b 1
 call :link "%OUTDIR%\test\test_tabber.exe" "%CFLAGS%" "%OUTDIR%\test\*.obj" ""
 if errorlevel 1 exit /b 1
-
-if /i "%2"=="full" (
-    "%OUTDIR%\test\test_tabber.exe" --full
-) else if /i "%2"=="online" (
-    "%OUTDIR%\test\test_tabber.exe" --online
-) else (
-    "%OUTDIR%\test\test_tabber.exe"
-)
+"%OUTDIR%\test\test_tabber.exe" %TIER%
 exit /b %errorlevel%
 
 rem ---------------------------------------------------------------------------
@@ -175,11 +196,17 @@ rem ---------------------------------------------------------------------------
 rem Both architectures, each of them building the CLI and then the GUI. The
 rem recursion is what keeps one compiler environment per architecture: each
 rem call has its own setlocal, so vcvars64 and vcvars32 never meet.
+rem Whatever else was asked for travels with them, so that "all test" is every
+rem build and every suite. "gui" is not passed on: it is part of what "all"
+rem means, and is named there rather than depended on.
 set "PASS="
-if defined FRESH set "PASS=clean"
-call "%~f0" x64 gui %PASS%
+if defined FRESH set "PASS=%PASS% clean"
+if defined DO_TEST set "PASS=%PASS% test"
+if "%TIER%"=="--online" set "PASS=%PASS% online"
+if "%TIER%"=="--full" set "PASS=%PASS% full"
+call "%~f0" x64 gui%PASS%
 if errorlevel 1 exit /b 1
-call "%~f0" x86 gui %PASS%
+call "%~f0" x86 gui%PASS%
 if errorlevel 1 exit /b 1
 exit /b 0
 

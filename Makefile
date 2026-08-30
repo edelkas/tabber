@@ -5,6 +5,7 @@
 #   make test-online / make test-full   include the network tiers
 #   make gui        build the graphical front-end
 #   make all        both of the above, for this machine
+#   make all test   ...and the suite after them, since goals are run in order
 #   make clean      throw the objects away, so the next build starts over
 #
 # Only what changed is rebuilt, headers included; see DEPFLAGS below.
