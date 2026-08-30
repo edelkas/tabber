@@ -48,6 +48,12 @@
  * describes what is live. A value of "-1" is a binding that had no key to
  * begin with, which is worth recording like any other.
  *
+ * "update" holds what the last look for a newer tabber found, and the two
+ * things the user gets to say about the looking — what to do about a release
+ * when one turns up, and how far apart the looks are:
+ *
+ *   "update": { "policy": "auto", "interval_hours": 24, "check": true, ... }
+ *
  * "gui", last, is the graphical front-end's own corner of the file — what the
  * window was left set to, which the command line neither reads nor writes:
  *
@@ -85,6 +91,8 @@ extern "C" {
 #define CJK_KEYBINDINGS      "keybindings"/* controls changed, likewise          */
 #define CJK_UPDATE           "update"     /* what the last version check found   */
 #define CJK_CHECK            "check"      /* whether to look at all              */
+#define CJK_POLICY           "policy"     /* ...what to do about what it finds   */
+#define CJK_INTERVAL         "interval_hours" /* ...and how far apart the looks  */
 #define CJK_LAST_CHECK       "last_check"
 #define CJK_LATEST           "latest"     /* newest version the check has seen   */
 #define CJK_DECLINED         "declined"   /* version the user said no to         */
@@ -188,8 +196,44 @@ const json_value *config_get_keybindings(config *cfg);
 
 /* ---- Looking for a newer tabber ---------------------------------------- */
 
+/*
+ * What to do when a look turns up a release newer than the one running, as
+ * the file spells it. Anything else in there, the absent key included, is the
+ * first of them: a tool nobody has told otherwise keeps itself up to date.
+ */
+#define CONFIG_POLICY_AUTO    "auto"    /* take it, as soon as nothing is in the way */
+#define CONFIG_POLICY_PROMPT  "prompt"  /* ask, once per version                     */
+#define CONFIG_POLICY_NONE    "none"    /* say it is there and do no more            */
+
+typedef enum {
+    UPDATE_POLICY_AUTO, UPDATE_POLICY_PROMPT, UPDATE_POLICY_NONE
+} update_policy;
+
+/*
+ * The closest together and the furthest apart two looks may be asked to
+ * happen: a file asking for less than the one, more than the other, or for
+ * nothing that is a number at all, is held to what it can have. The far end is
+ * the largest the front-end's own control can be made to say, which is four
+ * figures of days, and is there so that a number cannot be made big enough to
+ * overflow the hours it is kept as.
+ */
+#define CONFIG_INTERVAL_MIN   1
+#define CONFIG_INTERVAL_MAX   (9999 * 24)
+
 /* Whether the user has left the check switched on. Absent means yes. */
 int config_update_enabled(config *cfg);
+
+/* What they have asked to happen when one finds something. */
+update_policy config_update_policy(config *cfg);
+void config_set_update_policy(config *cfg, update_policy policy);
+
+/*
+ * How long a look stays good for, in hours: what config_update_due is meant to
+ * be handed, rather than a figure of the caller's own. UPDATE_CHECK_HOURS when
+ * the file does not say, which is what both front-ends have always used.
+ */
+int config_update_interval(config *cfg);
+void config_set_update_interval(config *cfg, int hours);
 
 /*
  * Whether the last check was at least `hours` ago, or has never happened.

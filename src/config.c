@@ -4,6 +4,7 @@
 #include "config.h"
 #include "json.h"
 #include "platform.h"
+#include "update.h"   /* UPDATE_CHECK_HOURS, the interval nobody has changed */
 #include "util.h"
 
 char *config_path(void)
@@ -278,6 +279,48 @@ static json_value *update_record(config *cfg, int create)
 int config_update_enabled(config *cfg)
 {
     return json_get_bool(update_record(cfg, 0), CJK_CHECK, 1);
+}
+
+update_policy config_update_policy(config *cfg)
+{
+    const char *name = json_get_string(update_record(cfg, 0), CJK_POLICY, "");
+
+    /* Read by name, so that a file written by a version that knows one more of
+     * these still reads as something rather than as a number gone wrong. */
+    if (str_ieq(name, CONFIG_POLICY_PROMPT))
+        return UPDATE_POLICY_PROMPT;
+    if (str_ieq(name, CONFIG_POLICY_NONE))
+        return UPDATE_POLICY_NONE;
+    return UPDATE_POLICY_AUTO;
+}
+
+void config_set_update_policy(config *cfg, update_policy policy)
+{
+    const char *name = CONFIG_POLICY_AUTO;
+
+    if (policy == UPDATE_POLICY_PROMPT)
+        name = CONFIG_POLICY_PROMPT;
+    else if (policy == UPDATE_POLICY_NONE)
+        name = CONFIG_POLICY_NONE;
+    json_object_set(update_record(cfg, 1), CJK_POLICY, json_new_string(name));
+}
+
+int config_update_interval(config *cfg)
+{
+    long hours = json_get_int(update_record(cfg, 0), CJK_INTERVAL, UPDATE_CHECK_HOURS);
+
+    if (hours < CONFIG_INTERVAL_MIN)
+        return CONFIG_INTERVAL_MIN;
+    return hours > CONFIG_INTERVAL_MAX ? CONFIG_INTERVAL_MAX : (int)hours;
+}
+
+void config_set_update_interval(config *cfg, int hours)
+{
+    if (hours < CONFIG_INTERVAL_MIN)
+        hours = CONFIG_INTERVAL_MIN;
+    if (hours > CONFIG_INTERVAL_MAX)
+        hours = CONFIG_INTERVAL_MAX;
+    json_object_set(update_record(cfg, 1), CJK_INTERVAL, json_new_number(hours));
 }
 
 int config_update_due(config *cfg, int hours)

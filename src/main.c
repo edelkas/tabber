@@ -1295,7 +1295,12 @@ static int check_for_update(const options *opts, const char *command,
     cfg = config_load(err, sizeof err);
     if (!cfg)
         return 0;
-    if (!config_update_enabled(cfg) || !config_update_due(cfg, UPDATE_CHECK_HOURS)) {
+    /* How far apart the looks are is the user's to set, and is set in the one
+     * place both front-ends read. What is done about what they find is not
+     * shared: the policy is the window's, and here is still to say what was
+     * found and ask. */
+    if (!config_update_enabled(cfg) ||
+        !config_update_due(cfg, config_update_interval(cfg))) {
         config_free(cfg);
         return 0;
     }

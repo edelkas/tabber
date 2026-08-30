@@ -13,12 +13,12 @@
  * cells that are not shown verbatim live in digest.h.
  *
  * The window has no frame from the system. Its title bar is drawn with the
- * rest of the panel, and the three things a frame used to do â€” the buttons,
- * dragging the window, pulling on its edges â€” are done by hand under "The
+ * rest of the panel, and the three things a frame used to do — the buttons,
+ * dragging the window, pulling on its edges — are done by hand under "The
  * window's own frame" below.
  *
- * A frame is drawn when there is a reason to draw one â€” an event, or the
- * timer under IDLE_SECONDS below â€” and the loop sleeps between them rather
+ * A frame is drawn when there is a reason to draw one — an event, or the
+ * timer under IDLE_SECONDS below — and the loop sleeps between them rather
  * than redrawing an unchanging window sixty times a second. What it sleeps in
  * is worth a look too: see "Pacing the frames".
  *
@@ -80,7 +80,7 @@ static const float FONT_SIZE         = 13.0f;
 /*
  * Waiting instead of spinning. With nothing happening the loop sleeps until
  * something does, waking on its own every IDLE_SECONDS to notice what changes
- * without an event to announce it â€” the savefile the game rewrites, and the
+ * without an event to announce it — the savefile the game rewrites, and the
  * clock LAST USED counts from.
  *
  * SETTLE_FRAMES is how many frames follow the last thing that happened. Dear
@@ -95,7 +95,7 @@ static const int    SETTLE_FRAMES = 3;
  * The window wears no frame of its own: GLFW is asked for an undecorated one
  * and the bar across the top is drawn like everything else in it. That buys
  * one look on every platform, and costs the three things the frame did for
- * free â€” the buttons, dragging the window about, and pulling on its edges â€”
+ * free — the buttons, dragging the window about, and pulling on its edges —
  * all of which are put back by hand further down.
  *
  * These are in the units the style is written in and are scaled with it.
@@ -112,24 +112,25 @@ static const int   ICONIFIED_SLEEP_MS = 10;
 
 /*
  * How often the per-tab state is worked out again. Everything in it can change
- * without tabber being told â€” the game rewrites the savefile as it is played,
- * and the CLI can install a tab from another window â€” so it is read afresh on
+ * without tabber being told — the game rewrites the savefile as it is played,
+ * and the CLI can install a tab from another window — so it is read afresh on
  * a timer rather than only when this program does something.
  */
 static const long long REFRESH_SECONDS = 5 * 60;
 
 /*
  * How often the state file is asked whether a look for a newer tabber is due.
- * Only the asking happens this often: what it answers is governed by
- * UPDATE_CHECK_HOURS, so GitHub is reached at most once a day. The window is
- * the sort of thing that gets left open for a week, which is why this is on a
- * timer at all and not only done at startup.
+ * Only the asking happens this often: what it answers is governed by the
+ * interval in the settings, so GitHub is reached at most once a day unless
+ * that has been set to something else. The window is the sort of thing that
+ * gets left open for a week, which is why this is on a timer at all and not
+ * only done at startup.
  */
 static const long long UPDATE_POLL_SECONDS = 30 * 60;
 
 /*
  * The binary an update replaced cannot be deleted until the process that was
- * running it has gone â€” and on Windows that process is the one that started
+ * running it has gone — and on Windows that process is the one that started
  * this one, still shutting down as this starts. So the sweep at startup is
  * made once more this many seconds in, and only then left to the next run.
  */
@@ -138,7 +139,7 @@ static const double SWEEP_RETRY_SECONDS = 2.0;
 /*
  * How wide the text in a dialog may run before it wraps. A dialog sizes itself
  * to what it holds, and what it holds can be a message from anywhere down the
- * library â€” a URL, a path, a hash â€” which without this would push the box
+ * library — a URL, a path, a hash — which without this would push the box
  * wider than the window it is centred in.
  */
 static const float DIALOG_WRAP_WIDTH = 420.0f;
@@ -151,7 +152,7 @@ static const float DIALOG_WRAP_WIDTH = 420.0f;
 static const int CORNER_ROWS = 3;
 
 /*
- * How many buttons the widest of those rows holds â€” the strip along the top,
+ * How many buttons the widest of those rows holds — the strip along the top,
  * which is the theme, the settings and the About box. Also what keeps the
  * rows' buttons apart from one another as far as Dear ImGui is concerned:
  * every seat in the corner has its own number, row by row.
@@ -317,6 +318,7 @@ static const char *LABEL_UNINSTALL = "Uninstall";
 static const char *LABEL_YES      = "Yes";
 static const char *LABEL_NO       = "No";
 static const char *LABEL_OK       = "OK";
+static const char *LABEL_CANCEL   = "Cancel";
 static const char *LABEL_ABOUT    = ICON_FK_INFO_CIRCLE;
 static const char *LABEL_LOOK     = ICON_FK_REFRESH;
 static const char *LABEL_PACKS    = ICON_FK_LIST_ALT;
@@ -373,12 +375,54 @@ static const char *HINT_NO_LOG    = "There is no logfile to open";
 static const int   LOG_VIEW_MIN_ROWS = 3;
 static const float LOG_VIEW_MAX_PART = 0.6f;
 
-/* What the settings box holds, one line each. */
+/* What the settings box holds: three tabs, and one line each within them. */
+static const char *TAB_GENERAL        = "General";
+static const char *TAB_INTERFACE      = "Interface";
+static const char *TAB_UPDATES        = "Updates";
 static const char *SETTING_THEME      = "Theme";
 static const char *SETTING_STATUS_BAR = "Show status bar";
 static const char *SETTING_SAVE_LOGS  = "Save logs to disk";
+static const char *SETTING_POLICY     = "Update policy";
+static const char *SETTING_FREQUENCY  = "Update frequency";
 static const char *THEME_DARK_NAME    = "Dark";
 static const char *THEME_LIGHT_NAME   = "Light";
+
+/* The three answers to "a newer tabber has turned up", in the order the
+ * update_policy values run in: the list hands back one of those. */
+static const char *POLICY_NAMES[] = {
+    "Update automatically", "Prompt for confirmation", "None"
+};
+static const int POLICY_COUNT = (int)(sizeof POLICY_NAMES / sizeof *POLICY_NAMES);
+static const char *HINT_POLICY = "What to do when updates are available";
+
+/* ...and how often to go looking, as a number of one of these. The number goes
+ * no higher than the field has room for, which is also as far as it can go
+ * without the days it may be counting overflowing the hours they are kept as
+ * (CONFIG_INTERVAL_MAX). Four figures of days is twenty-seven years. */
+static const char *UNIT_HOURS  = "Hours";
+static const char *UNIT_DAYS   = "Days";
+static const int   HOURS_A_DAY = 24;
+static const int   EVERY_MAX   = 9999;
+
+/*
+ * How wide those two are drawn: the menu, enough for the longest of the three
+ * answers it can be showing; the number, enough for four figures and the two
+ * buttons that step it, which is further than anyone will take it. Left to
+ * themselves both would run the width of the box.
+ */
+static const float POLICY_WIDTH  = 230.0f;
+static const float SPINNER_WIDTH = 100.0f;
+
+/*
+ * How much room the box keeps below the tabs: as wide as the longest line any
+ * of them holds and as tall, in rows of buttons, as the most any of them
+ * holds. The tabs hold different amounts, and without one size for all of them
+ * the box would resize under the pointer that switched it. Two of them run to
+ * two lines; the menu counts as one, since it opens over the box rather than
+ * in it.
+ */
+static const float SETTINGS_WIDTH = 380.0f;
+static const float SETTINGS_ROWS  = 2.4f;
 
 /* Where the logfile is, under the setting that fills it, and where the folder
  * holding it is, under the button that opens that folder. */
@@ -409,8 +453,12 @@ static const char *DRAG_ID    = "##titlebar";
 static const char *BUTTON_ID  = "##corner";
 static const char *LOG_ID     = "##log";     /* the scrolling region  */
 static const char *SETTINGS_ID = "##settings";  /* its two columns       */
+static const char *TABS_ID     = "##settingstabs";
+static const char *PANE_ID     = "##settingspane"; /* what the tabs open into */
 static const char *BAR_ID      = "##statusbar"; /* and the two switches  */
 static const char *SAVE_ID     = "##savelogs";   /* the icon goes on by hand */
+static const char *POLICY_ID   = "##policy";     /* the list of the three     */
+static const char *EVERY_ID    = "##every";      /* and the number of hours   */
 static const char *MINIMISE_ID = "##minimise";
 static const char *MAXIMISE_ID = "##maximise";
 static const char *CLOSE_ID    = "##close";
@@ -424,7 +472,7 @@ static const ImVec4 RED_HOVER   (0.66f, 0.22f, 0.22f, 1.00f);
 static const ImVec4 RED_ACTIVE  (0.42f, 0.12f, 0.12f, 1.00f);
 
 /* A green for reading rather than for pressing: the button greens above are
- * too dark to put a line of text in on a dark background â€” and too pale for
+ * too dark to put a line of text in on a dark background — and too pale for
  * one on a light background, so there is one of each, picked by the theme. */
 static const ImVec4 GREEN_TEXT  (0.45f, 0.80f, 0.45f, 1.00f);
 static const ImVec4 GREEN_ON_LIGHT(0.06f, 0.45f, 0.12f, 1.00f);
@@ -514,7 +562,7 @@ static long long g_update_stamp = 0;   /* when the state file was last asked */
 
 /*
  * What the corner says, mirrored out of the state file. A newer version is
- * known across runs â€” the check that found it wrote it down â€” so this is read
+ * known across runs — the check that found it wrote it down — so this is read
  * from there rather than from g_update, which is only filled by a check this
  * session made and is empty in a window opened after one.
  */
@@ -530,6 +578,28 @@ static int g_light = 0;
  * unless the state file says otherwise, which is how they have always been. */
 static int g_status_bar = 1;
 static int g_save_logs = 1;
+
+/*
+ * What is done about a release when one turns up, and how far apart the looks
+ * for one are. The file keeps that distance in hours; the box asks for it as a
+ * number and a unit, which is the same thing said the way people say it.
+ */
+static int g_policy = UPDATE_POLICY_AUTO;
+static int g_every = 1;      /* the number in the spinner       */
+static int g_in_days = 1;    /* ...and which unit it counts in  */
+
+/*
+ * All of it together, which is what the settings box takes a copy of when it
+ * opens: a change is followed at once, so that a theme can be looked at rather
+ * than imagined, but nothing is written until OK says to keep it, and Cancel
+ * puts this back instead.
+ */
+typedef struct {
+    int light, status_bar, save_logs, policy, every, in_days;
+} ui_settings;
+
+static ui_settings g_before;
+static int g_editing = 0;   /* the box is open, so nothing is being written */
 
 /* That file, and the folder it and everything else of ours sits in, for the
  * settings box to name and to open. NULL when there is nowhere to put one;
@@ -974,12 +1044,18 @@ static void request_install(const npp_tab *tab)
  * user already had carries on running, which is the one thing an update must
  * never take away from them. And nothing that goes right can be reported by
  * the process that did it, because on success it hands over to the binary it
- * just installed and exits â€” so the news is written to the state file and the
+ * just installed and exits — so the news is written to the state file and the
  * new process gives it, once.
  *
  * The looking is on a timer rather than a button: at startup and every
- * UPDATE_POLL_SECONDS after, asking GitHub at most once a day. Only a version
- * the user has not already said no to interrupts them.
+ * UPDATE_POLL_SECONDS after, asking GitHub as often as the settings say and
+ * no oftener, which is once a day until someone changes it.
+ *
+ * What a look does with what it finds is the settings' too, and is the whole
+ * of the difference between the three update policies: it takes the release,
+ * or it asks first, or it leaves the corner to mention it. Only the middle one
+ * interrupts anybody, and then only over a version they have not turned down
+ * already.
  */
 
 /*
@@ -1033,7 +1109,7 @@ static void decline_update(void)
  * has been turned down before.
  *
  * Anything newer than what is running is left in g_update, which is what the
- * corner reads and what applying an update works from â€” the version alone is
+ * corner reads and what applying an update works from — the version alone is
  * no use for that, since installing it wants the URL and the two promises the
  * manifest makes about the download.
  */
@@ -1073,7 +1149,7 @@ static int look_for_update(int *declined, char *err, size_t errsz)
 
 /*
  * A look, and what is said about one that turns up nothing. A look nobody
- * asked for is silent either way â€” no network is not this window's problem to
+ * asked for is silent either way — no network is not this window's problem to
  * report, and nothing to report is not worth a dialog. One that was asked for
  * answers both ways, because a button that can be pressed to no visible effect
  * is a button that looks broken.
@@ -1097,15 +1173,34 @@ static void run_check(int asked)
         return;
     }
 
+    /* The release notes are the bulk of the box below and are no use on one
+     * line, so what is logged is the line the corner shows. It is logged
+     * whatever is done next, because the corner shows it either way. */
+    log_line(STATUS_WAITING, g_known_version);
+
+    /*
+     * What happens now is the standing answer given in the settings, rather
+     * than a question put here every time one turns up.
+     *
+     * Taking it is asked for rather than done: this runs inside the work the
+     * look itself asked for, with the overlay still saying that is what is
+     * happening. Asking puts it next in line, so it waits for anything already
+     * under way and announces itself when its turn comes.
+     */
+    if (g_policy == UPDATE_POLICY_AUTO) {
+        request(ACT_UPGRADE, NULL, BUSY_UPGRADE);
+        return;
+    }
+
+    /* Nothing further, on a look nobody asked for. A look that was asked for
+     * is an answer owed whatever the policy, and this is the answer. */
+    if (g_policy == UPDATE_POLICY_NONE && !asked)
+        return;
+
     /* A version turned down before is not put up again on its own; a look the
      * user asked for is an answer owed, so it is put up then. */
-    if (asked || !declined) {
+    if (asked || !declined)
         g_open_popup = TITLE_UPDATE;
-
-        /* The release notes are the bulk of that box and are no use on one
-         * line, so what is logged is the line the corner shows. */
-        log_line(STATUS_WAITING, g_known_version);
-    }
 }
 
 /*
@@ -1120,7 +1215,7 @@ static void run_upgrade(void)
 
     /*
      * A window opened since the look that found the release knows only what
-     * the state file kept â€” which version, not where to get it â€” so the
+     * the state file kept — which version, not where to get it — so the
      * manifest is read again. Which is the honest thing to do in any case:
      * what gets installed is whatever is newest at the moment the button is
      * pressed, not what was newest when the corner last drew.
@@ -1172,7 +1267,7 @@ static void run_upgrade(void)
     /*
      * Started and not waited for: this process is about to go, and on Windows
      * waiting would keep it holding the binary it was replaced from. If it
-     * will not start, the update itself still stands â€” the window stays open
+     * will not start, the update itself still stands — the window stays open
      * on the old code, and the news above is given whenever it is next opened.
      */
     if (plat_spawn_detached(plan.exe, NULL, 0) != 0) {
@@ -1202,7 +1297,8 @@ static void poll_for_update(void)
     cfg = config_load(err, sizeof err);
     if (!cfg)
         return;
-    if (config_update_enabled(cfg) && config_update_due(cfg, UPDATE_CHECK_HOURS))
+    if (config_update_enabled(cfg) &&
+        config_update_due(cfg, config_update_interval(cfg)))
         request(ACT_CHECK, NULL, BUSY_CHECK);
     config_free(cfg);
 }
@@ -1253,11 +1349,27 @@ static void apply_theme(void)
      * and StyleColors* leaves them alone. */
     THEME_COLOR = ImGui::GetStyleColorVec4(ImGuiCol_Button);
 
-    /* That colour is a tint â€” two fifths opaque â€” which carries as text on the
+    /* That colour is a tint — two fifths opaque — which carries as text on the
      * dark ground and dissolves into the light one, so there it is taken at
      * full strength. Same hue either way, which is what makes it the accent. */
     if (g_light)
         THEME_COLOR.w = 1.0f;
+}
+
+/*
+ * The stored number of hours as a number and a unit. Whole days are said in
+ * days, since that is how the one everybody starts on — a day — reads best;
+ * anything else is said in the hours it is, however many that comes to.
+ */
+static void split_interval(int hours, int *every, int *in_days)
+{
+    if (hours >= HOURS_A_DAY && hours % HOURS_A_DAY == 0) {
+        *every = hours / HOURS_A_DAY;
+        *in_days = 1;
+    } else {
+        *every = hours;
+        *in_days = 0;
+    }
 }
 
 /*
@@ -1280,6 +1392,8 @@ static void read_settings(void)
     g_light = theme && strcmp(theme, CONFIG_THEME_LIGHT) == 0;
     g_status_bar = config_gui_status_bar(cfg);
     g_save_logs = config_gui_save_logs(cfg);
+    g_policy = config_update_policy(cfg);
+    split_interval(config_update_interval(cfg), &g_every, &g_in_days);
     config_free(cfg);
     log_set_saving(g_save_logs && g_log_path != NULL);
 
@@ -1288,8 +1402,10 @@ static void read_settings(void)
     free(path);
 }
 
-/* The three of them, for the one function that writes one down. */
-typedef enum { SET_THEME, SET_STATUS_BAR, SET_SAVE_LOGS } ui_setting;
+/* Every one of them, for the one function that writes one down. */
+typedef enum {
+    SET_THEME, SET_STATUS_BAR, SET_SAVE_LOGS, SET_POLICY, SET_INTERVAL
+} ui_setting;
 
 /*
  * Records what the window has just been told. The window has already followed
@@ -1301,8 +1417,14 @@ typedef enum { SET_THEME, SET_STATUS_BAR, SET_SAVE_LOGS } ui_setting;
 static void remember_setting(ui_setting which, int value)
 {
     char err[TB_ERR_LEN];
-    config *cfg = config_load(err, sizeof err);
+    config *cfg;
 
+    /* Except while the settings box is open, where a change is shown at once
+     * and written only if it is kept: see settings_write. */
+    if (g_editing)
+        return;
+
+    cfg = config_load(err, sizeof err);
     if (!cfg)
         return;
     switch (which) {
@@ -1315,6 +1437,12 @@ static void remember_setting(ui_setting which, int value)
     case SET_SAVE_LOGS:
         config_set_gui_save_logs(cfg, value);
         break;
+    case SET_POLICY:
+        config_set_update_policy(cfg, (update_policy)value);
+        break;
+    case SET_INTERVAL:
+        config_set_update_interval(cfg, value);
+        break;
     }
     config_save(cfg, err, sizeof err);
     config_free(cfg);
@@ -1326,6 +1454,35 @@ static void choose_status_bar(int on)
 {
     g_status_bar = on;
     remember_setting(SET_STATUS_BAR, on);
+}
+
+/* What happens about a release that turns up. Nothing goes looking on the
+ * strength of this; it only says what the next look is to do with what it
+ * finds, which is the next one due and not one brought forward. */
+static void choose_policy(int policy)
+{
+    g_policy = policy;
+    remember_setting(SET_POLICY, policy);
+}
+
+/*
+ * How far apart the looks are, from the number and the unit the box shows.
+ * Kept in hours, which is the smaller of the two units and so says either.
+ *
+ * The number is not converted when the unit changes: six hours becomes six
+ * days rather than a quarter of one, because the unit is a menu of what the
+ * number means, and a menu that rewrites what it was set to is worse than one
+ * that leaves it where the hand put it.
+ */
+static void choose_interval(int every, int in_days)
+{
+    if (every < CONFIG_INTERVAL_MIN)
+        every = CONFIG_INTERVAL_MIN;
+    if (every > EVERY_MAX)
+        every = EVERY_MAX;
+    g_every = every;
+    g_in_days = in_days;
+    remember_setting(SET_INTERVAL, every * (in_days ? HOURS_A_DAY : 1));
 }
 
 /* Whether the lines are kept on disk. What is already in the file stays there:
@@ -1341,7 +1498,7 @@ static void choose_save_logs(int on)
  * Switches to the one asked for and writes it down. The switch happens whether
  * or not the writing does: the window has to follow the click either way, and
  * a state file that could not be written simply opens on the old theme next
- * time â€” which is a lesser thing to go wrong with than a button that looks
+ * time — which is a lesser thing to go wrong with than a button that looks
  * broken. Asking for the one already on does nothing at all, which is what a
  * radio button pressed where it stands is asking for.
  */
@@ -1352,6 +1509,101 @@ static void choose_theme(int light)
     g_light = light;
     apply_theme();
     remember_setting(SET_THEME, light);
+}
+
+/* ---- Keeping, or not, what the settings box was told ---------------------
+ *
+ * Everything in that box is followed the moment it is pressed: a theme is
+ * worth looking at rather than imagining, and a switch that waits for an OK
+ * before it moves is a switch that looks broken. What waits is the writing.
+ * The box takes a copy of where things stood when it opened; OK writes down
+ * whatever is no longer that, and Cancel puts that back and writes nothing.
+ */
+
+/* Where things stand. */
+static void settings_now(ui_settings *s)
+{
+    s->light = g_light;
+    s->status_bar = g_status_bar;
+    s->save_logs = g_save_logs;
+    s->policy = g_policy;
+    s->every = g_every;
+    s->in_days = g_in_days;
+}
+
+/*
+ * ...and back to where they stood. Only what moved is moved back, since two of
+ * these are more than a value: one repaints the window and the other opens or
+ * closes the logfile.
+ */
+static void settings_restore(const ui_settings *s)
+{
+    if (s->light != g_light) {
+        g_light = s->light;
+        apply_theme();
+    }
+    if (s->save_logs != g_save_logs) {
+        g_save_logs = s->save_logs;
+        log_set_saving(g_save_logs && g_log_path != NULL);
+    }
+    g_status_bar = s->status_bar;
+    g_policy = s->policy;
+    g_every = s->every;
+    g_in_days = s->in_days;
+}
+
+/*
+ * What OK keeps: whatever is no longer what the box opened on, in one pass
+ * over the state file rather than one per setting. A file that will not load
+ * is not written to, which leaves the next window opening on the old settings
+ * while this one goes on showing the new ones — the same way a single setting
+ * has always failed.
+ */
+static void settings_write(const ui_settings *was)
+{
+    char err[TB_ERR_LEN];
+    ui_settings now;
+    config *cfg;
+    int changed = 0;
+
+    settings_now(&now);
+    cfg = config_load(err, sizeof err);
+    if (!cfg)
+        return;
+
+    if (now.light != was->light) {
+        config_set_gui_theme(cfg, now.light ? CONFIG_THEME_LIGHT : CONFIG_THEME_DARK);
+        changed = 1;
+    }
+    if (now.status_bar != was->status_bar) {
+        config_set_gui_status_bar(cfg, now.status_bar);
+        changed = 1;
+    }
+    if (now.save_logs != was->save_logs) {
+        config_set_gui_save_logs(cfg, now.save_logs);
+        changed = 1;
+    }
+    if (now.policy != was->policy) {
+        config_set_update_policy(cfg, (update_policy)now.policy);
+        changed = 1;
+    }
+    if (now.every != was->every || now.in_days != was->in_days) {
+        config_set_update_interval(cfg,
+            now.every * (now.in_days ? HOURS_A_DAY : 1));
+        changed = 1;
+    }
+
+    /* A box opened and shut on the same settings leaves the file alone. */
+    if (changed)
+        config_save(cfg, err, sizeof err);
+    config_free(cfg);
+}
+
+/* Shutting the box on its Cancel, or on anything else that is not its OK. */
+static void settings_cancel(void)
+{
+    settings_restore(&g_before);
+    g_editing = 0;
 }
 
 /* ---- Drawing ----------------------------------------------------------- */
@@ -1742,7 +1994,7 @@ static int edges_under_pointer(void)
 /*
  * An undecorated window has no border to take hold of, so the edges are
  * watched here instead. This runs before anything else in the panel is drawn,
- * which is what gives the edges first refusal on the pointer â€” the title bar
+ * which is what gives the edges first refusal on the pointer — the title bar
  * reaches the very top of the window, and the top edge has to win there.
  *
  * Returns nonzero when it has the pointer, so the bar knows to leave it alone.
@@ -1833,7 +2085,7 @@ static void draw_banner(void)
  * The corner opposite the banner. Three rows, top to bottom: what the window
  * itself is set to, how tabber's own version stands, and how the catalogue of
  * custom tabs stands. Every button in it is square and carries one glyph of
- * the icon font merged into the default one by build_font â€” which is the whole
+ * the icon font merged into the default one by build_font — which is the whole
  * of what makes a character a picture here.
  *
  * The top row is a strip of them and says nothing; the two below hold a single
@@ -1860,7 +2112,7 @@ static ImVec2 corner_seat(ImVec2 level, int n, int slot)
     float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
 
     /* The same gap across as down. Dear ImGui's own is wider across than it is
-     * down â€” it is meant to separate words from widgets â€” and a block of
+     * down — it is meant to separate words from widgets — and a block of
      * square buttons wants the two to match, or the strip reads as three
      * things where the column reads as one. */
     float gap = ImGui::GetStyle().ItemSpacing.y;
@@ -1885,7 +2137,7 @@ static ImWchar icon_code_point(const char *icon)
  * than by the space the character is given. ForkAwesome draws inside a box
  * that is neither square nor centred on the pen, and the icons are all given
  * the same advance besides (see build_font), so a label centred the ordinary
- * way â€” on that advance, and on a line's height â€” comes out high and to the
+ * way — on that advance, and on a line's height — comes out high and to the
  * right, the same way on every one of them. Taking the glyph's own bounds out
  * of the atlas puts what is actually drawn in the middle of the button,
  * whatever shape the button is.
@@ -1918,7 +2170,7 @@ static int corner_button(ImVec2 seat, int id, const char *icon,
     int pressed;
 
     /* Dear ImGui keys a button on its label, and the corner shows the same
-     * glyph in more than one seat â€” a look for a newer tabber and a look for
+     * glyph in more than one seat — a look for a newer tabber and a look for
      * newer tabs are the same picture. The seat number is what tells them
      * apart, so every caller passes its own. */
     ImGui::PushID(id);
@@ -1985,8 +2237,8 @@ static float draw_corner(ImVec2 level)
     /*
      * The strip along the top, right to left: what this is, what can be set,
      * and which of the two themes the window wears. Alone in never going out
-     * of reach â€” none of the three starts any work, they only open a box or
-     * repaint what is already on screen â€” and alone in carrying no line of
+     * of reach — none of the three starts any work, they only open a box or
+     * repaint what is already on screen — and alone in carrying no line of
      * text, there being no state for one to report.
      */
     if (corner_button(corner_seat(level, 0, 0), 0, LABEL_ABOUT, ABOUT_HINT, 0))
@@ -2003,7 +2255,7 @@ static float draw_corner(ImVec2 level)
         choose_theme(!g_light);
 
     /*
-     * Tabber itself. The line and the button always show the same state â€”
+     * Tabber itself. The line and the button always show the same state —
      * nothing newer, so a look; a version waiting, so a download, which goes
      * ahead without asking again. The question has been put by then, or the
      * button itself is the asking.
@@ -2020,7 +2272,7 @@ static float draw_corner(ImVec2 level)
                 waiting ? BUSY_UPGRADE : BUSY_CHECK);
 
     /*
-     * The catalogue. How many tabs are in it, and when it was last fetched â€”
+     * The catalogue. How many tabs are in it, and when it was last fetched —
      * which is the date on the copy on disk, not a date anything writes down.
      */
     snprintf(text, sizeof text, STATUS_TABS, (unsigned)g_row_count,
@@ -2040,7 +2292,7 @@ static float draw_corner(ImVec2 level)
 /* ---- The bar along the bottom -------------------------------------------
  *
  * One line, pegged to the foot of the panel. On the left is the newest thing
- * the tool has said â€” the same line the CLI would have printed, which in a
+ * the tool has said — the same line the CLI would have printed, which in a
  * window has nowhere else to go; on the right, what the game has in it.
  *
  * The right-hand section keeps its width whatever it says, so the line beside
@@ -2365,6 +2617,29 @@ static void setting_row(const char *name, const char *hint)
     ImGui::TableSetColumnIndex(1);
 }
 
+/*
+ * The room one tab of the settings opens into, and the pair of columns its
+ * rows go in: the names down one side and the controls down the other, so the
+ * eye reads a setting across rather than hunting for where its control begins.
+ * Every tab is given the same room whatever it puts in it, which is what keeps
+ * the box the size it was when a tab is switched. Returns 0 when there is no
+ * table to fill, in which case there is nothing to close either.
+ */
+static int begin_settings(const ImVec2 &pane)
+{
+    ImGui::BeginChild(PANE_ID, pane);
+    if (ImGui::BeginTable(SETTINGS_ID, 2, ImGuiTableFlags_SizingFixedFit))
+        return 1;
+    ImGui::EndChild();
+    return 0;
+}
+
+static void end_settings(void)
+{
+    ImGui::EndTable();
+    ImGui::EndChild();
+}
+
 static void draw_dialogs(void)
 {
     /* Named rather than described: the one question the settings raise is
@@ -2441,44 +2716,104 @@ static void draw_dialogs(void)
         ImGui::EndPopup();
     }
 
-    /* What can be set. The theme is the whole of it so far, and is the same
-     * setting the strip's own button changes â€” pressed here or there, it goes
-     * through choose_theme and is written down the same way. */
+    /* What can be set, in three tabs: what the tool keeps, what the window
+     * looks like, and what it does about its own updates. The theme is the
+     * same setting the strip's own button changes: pressed here or there it
+     * goes through choose_theme and is written down the same way. */
     centre_next_window();
     if (ImGui::BeginPopupModal(TITLE_SETTINGS, NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImVec2 pane(SETTINGS_WIDTH * g_scale,
+                    SETTINGS_ROWS * ImGui::GetFrameHeightWithSpacing());
         bool on;
+        int value;
 
-        /* Two columns, both as wide as the widest thing in them: the names
-         * down one side and the controls down the other, so the eye reads a
-         * setting across rather than hunting for where its control begins. */
-        if (ImGui::BeginTable(SETTINGS_ID, 2, ImGuiTableFlags_SizingFixedFit)) {
-            setting_row(SETTING_THEME, NULL);
-            if (ImGui::RadioButton(THEME_DARK_NAME, !g_light))
-                choose_theme(0);
-            ImGui::SameLine();
-            if (ImGui::RadioButton(THEME_LIGHT_NAME, g_light))
-                choose_theme(1);
+        /* Where things stood on opening, for OK to compare against and for
+         * Cancel to put back. Taken here rather than where the box is asked
+         * for, since it can be asked for and never opened. */
+        if (ImGui::IsWindowAppearing()) {
+            settings_now(&g_before);
+            g_editing = 1;
+        }
 
-            setting_row(SETTING_STATUS_BAR, NULL);
-            on = g_status_bar != 0;
-            if (ImGui::Checkbox(BAR_ID, &on))
-                choose_status_bar(on);
+        if (ImGui::BeginTabBar(TABS_ID)) {
+            if (ImGui::BeginTabItem(TAB_GENERAL)) {
+                if (begin_settings(pane)) {
+                    setting_row(SETTING_SAVE_LOGS, log_hint);
+                    on = g_save_logs != 0;
+                    ImGui::BeginDisabled(g_log_path == NULL);
+                    if (ImGui::Checkbox(SAVE_ID, &on))
+                        choose_save_logs(on);
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", log_hint);
+                    end_settings();
+                }
+                ImGui::EndTabItem();
+            }
 
-            setting_row(SETTING_SAVE_LOGS, log_hint);
-            on = g_save_logs != 0;
-            ImGui::BeginDisabled(g_log_path == NULL);
-            if (ImGui::Checkbox(SAVE_ID, &on))
-                choose_save_logs(on);
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", log_hint);
-            ImGui::EndTable();
+            if (ImGui::BeginTabItem(TAB_INTERFACE)) {
+                if (begin_settings(pane)) {
+                    setting_row(SETTING_THEME, NULL);
+                    if (ImGui::RadioButton(THEME_DARK_NAME, !g_light))
+                        choose_theme(0);
+                    ImGui::SameLine();
+                    if (ImGui::RadioButton(THEME_LIGHT_NAME, g_light))
+                        choose_theme(1);
+
+                    setting_row(SETTING_STATUS_BAR, NULL);
+                    on = g_status_bar != 0;
+                    if (ImGui::Checkbox(BAR_ID, &on))
+                        choose_status_bar(on);
+                    end_settings();
+                }
+                ImGui::EndTabItem();
+            }
+
+            if (ImGui::BeginTabItem(TAB_UPDATES)) {
+                if (begin_settings(pane)) {
+                    /* Which of the three things to do about a release. The
+                     * list hands back the choice itself, which is why the
+                     * names are in the order the choices are declared in. */
+                    setting_row(SETTING_POLICY, HINT_POLICY);
+                    value = g_policy;
+                    ImGui::SetNextItemWidth(POLICY_WIDTH * g_scale);
+                    if (ImGui::Combo(POLICY_ID, &value, POLICY_NAMES, POLICY_COUNT))
+                        choose_policy(value);
+
+                    /* ...and how often to go and look: a number, and what it
+                     * counts in. Every 6 hours, or every 10 days. */
+                    setting_row(SETTING_FREQUENCY, NULL);
+                    value = g_every;
+                    ImGui::SetNextItemWidth(SPINNER_WIDTH * g_scale);
+                    if (ImGui::InputInt(EVERY_ID, &value))
+                        choose_interval(value, g_in_days);
+                    ImGui::SameLine();
+                    if (ImGui::RadioButton(UNIT_HOURS, !g_in_days))
+                        choose_interval(g_every, 0);
+                    ImGui::SameLine();
+                    if (ImGui::RadioButton(UNIT_DAYS, g_in_days))
+                        choose_interval(g_every, 1);
+                    end_settings();
+                }
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
         }
         ImGui::Separator();
-        if (push_button(LABEL_OK))
-            ImGui::CloseCurrentPopup();
 
-        /* Beside it: everything the settings talk about — the logfile, the
+        /* The one that keeps what was done here, and the one that undoes it. */
+        if (push_button(LABEL_OK)) {
+            settings_write(&g_before);
+            g_editing = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (push_button(LABEL_CANCEL)) {
+            settings_cancel();
+            ImGui::CloseCurrentPopup();
+        }
+
+        /* Beside them: everything the settings talk about — the logfile, the
          * state file they are written to — is in one folder, and this opens it
          * rather than asking anyone to copy a path out of a tooltip. */
         ImGui::SameLine();
@@ -2488,6 +2823,12 @@ static void draw_dialogs(void)
         ImGui::EndDisabled();
         ImGui::EndPopup();
     }
+
+    /* Shut any other way than by those two — Escape, most of it — keeps
+     * nothing: nothing has been written, and what is on screen goes back to
+     * what was written last. */
+    if (g_editing && !ImGui::IsPopupOpen(TITLE_SETTINGS))
+        settings_cancel();
 
     /*
      * Everything this window has said since it opened, oldest first, each line
@@ -2609,15 +2950,15 @@ static void draw_dialogs(void)
  * A swap interval of 1 hands the wait for the display's next refresh to the
  * graphics driver, and not every driver sleeps through that wait. Intel's
  * OpenGL driver polls for it instead, which costs a whole core to put sixty
- * unchanging frames on screen. GLFW knows the trick â€” see swapBuffersWGL in
- * vendor/glfw/src/wgl_context.c â€” but keeps it for Windows 7 and older, and
+ * unchanging frames on screen. GLFW knows the trick — see swapBuffersWGL in
+ * vendor/glfw/src/wgl_context.c — but keeps it for Windows 7 and older, and
  * hands the interval to the driver on anything newer.
  *
  * So on Windows the interval is left at zero and DwmFlush does the waiting.
  * It blocks on the compositor's next vertical blank and burns nothing while
  * it waits. It does want a compositor, which a remote session can be without;
  * should it ever fail, the interval goes back on and the driver has the job
- * again, spin and all â€” a warm laptop beats a window that never draws.
+ * again, spin and all — a warm laptop beats a window that never draws.
  */
 
 #ifdef _WIN32
@@ -2675,7 +3016,7 @@ static const char *ini_path(void)
  * Both halves are given the same reference size, and giving it to both is what
  * Dear ImGui asks for: the advances below are measured against a size, and a
  * font merged with a size of its own wants a destination that has one too. It
- * is a reference and not a size on screen â€” FontScaleDpi in main() decides
+ * is a reference and not a size on screen — FontScaleDpi in main() decides
  * that, and scales the pair of them together.
  *
  * The atlas is not built here. It is baked when it is first drawn from, by
@@ -2709,7 +3050,7 @@ static void build_font(ImGuiIO& io)
  * The one argument this program answers, and it is not one to type: an update
  * runs the binary it has just installed with it, and keeps that binary only if
  * it agrees about what version it is. Answered before anything is drawn, and
- * before the sweep below in particular â€” the binary being replaced is sitting
+ * before the sweep below in particular — the binary being replaced is sitting
  * under UPDATE_OLD_SUFFIX at that moment, and it is what a check that fails is
  * rolled back to. Returns 1 when that is all this run is for.
  */

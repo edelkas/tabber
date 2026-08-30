@@ -638,6 +638,95 @@ static void test_when_to_check(void)
     free(dir);
 }
 
+/* ---- What the user has asked of it ------------------------------------- */
+
+/*
+ * The two standing answers the settings hold: what to do about a release when
+ * one turns up, and how far apart the looks for one are. Either front-end may
+ * read them and a hand may have written them, so what matters here is that a
+ * file saying nothing means what it has always meant, and that a file saying
+ * something no version of this wrote is read rather than refused.
+ */
+static void test_update_settings(void)
+{
+    char err[TB_ERR_LEN];
+    char *dir = test_dir("update_settings");
+    char *path;
+    config *cfg;
+
+    test_case("what to do about an update, and how often to look for one");
+    test_use_root(dir);
+
+    cfg = config_load(err, sizeof err);
+    if (CHECK(cfg != NULL, "the state file loads (%s)", err)) {
+        CHECK(config_update_policy(cfg) == UPDATE_POLICY_AUTO,
+              "a tool nobody has told otherwise keeps itself up to date");
+        CHECK(config_update_interval(cfg) == UPDATE_CHECK_HOURS,
+              "and looks for the chance as often as it always has");
+
+        config_set_update_policy(cfg, UPDATE_POLICY_PROMPT);
+        CHECK(config_update_policy(cfg) == UPDATE_POLICY_PROMPT,
+              "being asked first can be asked for");
+        config_set_update_policy(cfg, UPDATE_POLICY_NONE);
+        CHECK(config_update_policy(cfg) == UPDATE_POLICY_NONE,
+              "...and so can hearing nothing about it");
+
+        /* The window says "every 6 hours" or "every 10 days"; what is kept is
+         * whichever of those in the hours it comes to. */
+        config_update_checked(cfg, NULL);
+        config_set_update_interval(cfg, 6);
+        CHECK(config_update_interval(cfg) == 6, "a distance is kept as it was given");
+        CHECK(!config_update_due(cfg, config_update_interval(cfg)),
+              "and is what settles when the next look is owed");
+
+        /* However it is asked for, nothing looks oftener than this. */
+        config_set_update_interval(cfg, 0);
+        CHECK(config_update_interval(cfg) == CONFIG_INTERVAL_MIN,
+              "nought is no distance at all, and is held to the shortest there is");
+        config_set_update_interval(cfg, -5);
+        CHECK(config_update_interval(cfg) == CONFIG_INTERVAL_MIN,
+              "...as is anything under it");
+
+        /* Nor further apart than the front-end's own control can ask for,
+         * which is as far as it can go without overflowing the hours. */
+        config_set_update_interval(cfg, CONFIG_INTERVAL_MAX * 2);
+        CHECK(config_update_interval(cfg) == CONFIG_INTERVAL_MAX,
+              "and no further apart than there is room to say");
+
+        config_set_update_interval(cfg, 10 * 24);
+        CHECK(config_save(cfg, err, sizeof err) == 0, "the state file saves (%s)", err);
+        config_free(cfg);
+    }
+
+    /* Both have to survive the trip through the file, or the window would open
+     * on one answer and the tool go on acting on another. */
+    cfg = config_load(err, sizeof err);
+    if (CHECK(cfg != NULL, "and loads again (%s)", err)) {
+        CHECK(config_update_policy(cfg) == UPDATE_POLICY_NONE,
+              "what to do about a release is remembered");
+        CHECK(config_update_interval(cfg) == 240, "and so is how long between looks");
+        config_free(cfg);
+    }
+
+    /* A file naming things no version of this wrote is a file somebody has
+     * edited: read for what can be read, not refused for the rest. */
+    path = path_join(dir, CONFIG_FILENAME);
+    CHECK(test_write(path, "{\"update\":{\"policy\":\"whenever\","
+                           "\"interval_hours\":\"soon\"}}") == 0,
+          "a hand-edited state file is written");
+    cfg = config_load(err, sizeof err);
+    if (CHECK(cfg != NULL, "...and still loads (%s)", err)) {
+        CHECK(config_update_policy(cfg) == UPDATE_POLICY_AUTO,
+              "a policy we do not know is the one we would have picked");
+        CHECK(config_update_interval(cfg) == UPDATE_CHECK_HOURS,
+              "and a distance that is not a number is the one we always used");
+        config_free(cfg);
+    }
+
+    free(path);
+    free(dir);
+}
+
 /* ---- Suite ------------------------------------------------------------- */
 
 void suite_update(void)
@@ -654,4 +743,5 @@ void suite_update(void)
     test_undo();
     test_handover();
     test_when_to_check();
+    test_update_settings();
 }
